@@ -78,10 +78,16 @@ async def unicorn_exception_handler(request: Request, exc: Exception):
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
     if isinstance(exc, DBError):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"message": str(exc)},
-        )
+        if exc.code is not None:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"code": exc.code, "message": str(exc)},
+            )
+        else:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"message": str(exc)},
+            )
     else:
         return Response(status_code=500)
 

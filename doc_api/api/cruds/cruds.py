@@ -1,7 +1,9 @@
 import logging
 import secrets
 from typing import List
+from uuid import UUID
 
+from pydantic import BaseModel
 from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,12 +15,80 @@ from metakat.app.api.schemas import base_objects
 
 logger = logging.getLogger(__name__)
 
+class MetakatImageForJobDefinition(BaseModel):
+    name: str
+    order: int
 
-async def get_keys(db: AsyncSession) -> List[base_objects.Key]:
+
+class MetakatJobDefinition(BaseModel):
+    images: List[MetakatImageForJobDefinition]
+    alto_required: bool = False
+    proarc_json_required: bool = False
+
+
+async def create_job(db: AsyncSession, key_id: UUID, job_definition: MetakatJobDefinition) -> model.Job:
+    try:
+        result = await db.execute(
+            select(model.Key).where(model.Key.id == key_id)
+        )
+        db_key = result.scalar_one_or_none()
+        if db_key is None:
+            raise DBError(f"Key '{key_id}' does not exist", code="KEY_NOT_FOUND", status_code=404)
+
+        db_job = model.Job(
+            key_id=key_id,
+            definition=job_definition.model_dump(mode="json"),
+            alto_required=job_definition.alto_required,
+            proarc_json_required=job_definition.proarc_json_required)
+
+        db.add(db_job)
+
+        for img in job_definition.images:
+            db_image = model.Image(
+                job=db_job,
+                name=img.name,
+                order=img.order
+            )
+            db.add(db_image)
+
+        await db.commit()
+        return db_job
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed creating new job in database", status_code=500) from e
+
+async def get_image_by_job_and_name(db: AsyncSession, job_id: UUID, image_name: str) -> model.Image:
+    try:
+        result = await db.execute(
+            select(model.Image).where(
+                model.Image.job_id == job_id,
+                model.Image.name == image_name
+            )
+        )
+        db_image = result.scalar_one_or_none()
+        if db_image is None:
+            raise DBError(f"Image '{image_name}' for Job '{job_id}' does not exist", code="IMAGE_NOT_FOUND", status_code=404)
+        return db_image
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading image from database", status_code=500) from e
+
+
+async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
+    try:
+        result = await db.execute(
+            select(model.Job).where(model.Job.id == job_id)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        return db_job
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading job from database", status_code=500) from e
+
+
+async def get_keys(db: AsyncSession) -> List[model.Key]:
     try:
         result = await db.scalars(select(model.Key).order_by(model.Key.label))
-        rows = result.all()
-        return [base_objects.Key.model_validate(row) for row in rows]
+        return list(result.all())
     except exc.SQLAlchemyError as e:
         raise DBError('Failed reading keys from database', status_code=500) from e
 
@@ -79,14 +149,14 @@ async def update_key(db: AsyncSession, key_update: base_objects.KeyUpdate) -> No
         )
         db_key = result.scalar_one_or_none()
         if db_key is None:
-            raise DBError(f"Key with id '{key_update.id}' does not exist", status_code=404)
+            raise DBError(f"Key '{key_update.id}' does not exist", code="KEY_NOT_FOUND", status_code=404)
 
         result = await db.execute(
             select(model.Key).where(model.Key.label == key_update.label)
         )
         key = result.scalar_one_or_none()
         if key is not None:
-            raise DBError(f"Key with label '{key_update.label}' already exists", status_code=409)
+            raise DBError(f"Key label '{key_update.label}' already exists", code="KEY_LABEL_ALREADY_EXISTS", status_code=409)
 
         if key_update.label is not None:
             db_key.label = key_update.label

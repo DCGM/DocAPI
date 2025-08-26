@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +13,21 @@ class ProcessingState(str, enum.Enum):
     ERROR = 'error'
     DONE = 'done'
     CANCELLED = 'cancelled'
+
+
+class Job(BaseModel):
+    id: UUID
+
+    state: ProcessingState
+
+    created_date: datetime
+    started_date: Optional[datetime] = None
+    last_change: datetime
+    finished_date: Optional[datetime] = None
+
+    log_user: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True, extra='ignore')
 
 
 class Key(BaseModel):

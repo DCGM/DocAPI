@@ -59,15 +59,15 @@ def require_api_key(*, admin: bool = False) -> Callable[..., "model.Key"]:
     ) -> model.Key:
         provided = k_hdr or k_q or k_ck
         if not provided:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail="API key missing")
+            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "MISSING_API_KEY", "message": "Missing API key"})
 
         key = await lookup_key(db, provided)
         if key is None:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail="Invalid API key")
+            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INVALID_API_KEY", "message": "Invalid API key"})
         if key is False:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail="Disabled API key")
+            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INACTIVE_API_KEY", "message": "Inactive API key"})
         if admin and not key.admin:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail="Admin API key required")
+            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "ADMIN_API_KEY_REQUIRED", "message": "Admin API key required"})
 
         return key
     return _dep

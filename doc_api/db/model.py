@@ -1,5 +1,7 @@
 import json
+from typing import Dict, Any
 
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
 from sqlalchemy import ForeignKey, DateTime
 from sqlalchemy.types import String
@@ -27,10 +29,12 @@ class Base(DeclarativeBase):
 class Job(Base):
     __tablename__ = 'jobs'
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    id_for_worker: Mapped[uuid.UUID] = mapped_column(index=True, nullable=True)
     key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=False)
 
-    definition: Mapped[str] = mapped_column(nullable=False)
+    definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    alto_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    proarc_json_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
     state: Mapped[ProcessingState] = mapped_column(index=True, default=ProcessingState.PRISTINE, nullable=False)
 
@@ -50,14 +54,13 @@ class Job(Base):
 class Image(Base):
     __tablename__ = 'images'
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    id_for_worker: Mapped[uuid.UUID] = mapped_column(index=True, nullable=True)
 
     image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
     name: Mapped[str] = mapped_column(String(300), index=True, nullable=False)
     order: Mapped[int] = mapped_column(index=True, nullable=False)
-    imagehash: Mapped[str] = mapped_column(index=True)
+    imagehash: Mapped[str] = mapped_column(index=True, nullable=True)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
 

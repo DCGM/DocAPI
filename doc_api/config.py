@@ -32,7 +32,7 @@ class Config:
         self.UPDATE_TRIGGERS = os.getenv("UPDATE_TRIGGERS", str(False)).lower() in TRUE_VALUES
 
 
-        self.IMAGE_UPLOADED_DIR = os.getenv("IMAGE_UPLOADED_DIR", os.path.join(self.BASE_DIR, "server", "image_uploaded"))
+        self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "server", "batch_uploaded"))
         self.WORKER_DIR = os.getenv("WORKER_DIR", os.path.join(self.BASE_DIR, "worker"))
 
         # how often workers check DB, time in sec
@@ -118,7 +118,7 @@ class Config:
         ################################################################################################################
 
     def create_dirs(self):
-        os.makedirs(self.IMAGE_UPLOADED_DIR, exist_ok=True)
+        os.makedirs(self.BATCH_UPLOADED_DIR, exist_ok=True)
         os.makedirs(self.WORKER_DIR, exist_ok=True)
         os.makedirs(self.WORKING_DIR, exist_ok=True)
         os.makedirs(self.LOGGING_DIR, exist_ok=True)
