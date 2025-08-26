@@ -1,10 +1,11 @@
 import logging
 import secrets
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import select, exc
+from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from metakat.app.api.authentication import hmac_sha256_hex
@@ -56,6 +57,7 @@ async def create_job(db: AsyncSession, key_id: UUID, job_definition: MetakatJobD
     except exc.SQLAlchemyError as e:
         raise DBError("Failed creating new job in database", status_code=500) from e
 
+
 async def get_image_by_job_and_name(db: AsyncSession, job_id: UUID, image_name: str) -> model.Image:
     try:
         result = await db.execute(
@@ -70,6 +72,71 @@ async def get_image_by_job_and_name(db: AsyncSession, job_id: UUID, image_name: 
         return db_image
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed reading image from database", status_code=500) from e
+
+async def start_job(db: AsyncSession, job_id: UUID) -> bool:
+    try:
+        # EXISTS: is there any image not uploaded?
+        img_missing = exists(
+            select(literal(1))
+              .select_from(model.Image)
+              .where(
+                  model.Image.job_id == job_id,
+                  model.Image.image_uploaded.is_(False),
+              )
+        )
+
+        # EXISTS: is there any ALTO not uploaded?
+        alto_missing = exists(
+            select(literal(1))
+              .select_from(model.Image)
+              .where(
+                  model.Image.job_id == job_id,
+                  model.Image.alto_uploaded.is_(False),
+              )
+        )
+
+        # proarc condition: either not required OR (required AND already uploaded)
+        proarc_ok = or_(
+            model.Job.proarc_json_required.is_(False),
+            and_(
+                model.Job.proarc_json_required.is_(True),
+                model.Job.proarc_json_uploaded.is_(True),
+            ),
+        )
+
+        # readiness condition:
+        # - if alto not required: all images uploaded  -> NOT img_missing
+        # - if alto required:    all images & all alto -> NOT img_missing AND NOT alto_missing
+        ready = or_(
+            and_(model.Job.alto_required.is_(False), not_(img_missing)),
+            and_(model.Job.alto_required.is_(True),  not_(img_missing), not_(alto_missing)),
+        )
+
+        stmt = (
+            update(model.Job)
+            .where(
+                model.Job.id == job_id,
+                model.Job.state == base_objects.ProcessingState.PRISTINE,
+                proarc_ok,
+                ready,
+            )
+            .values(
+                state=base_objects.ProcessingState.QUEUED,
+                last_change=datetime.now(timezone.utc),
+            )
+            .returning(model.Job.id)   # tells us if an update happened
+        )
+
+        res = await db.execute(stmt)
+        updated = res.scalar_one_or_none() is not None
+        if updated:
+            await db.commit()
+            return True
+        return False
+
+    except exc.SQLAlchemyError as e:
+        # keep the cause for debugging
+        raise DBError("Failed updating job state in database", status_code=500) from e
 
 
 async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:

@@ -36,6 +36,7 @@ require_user_key = require_api_key()
 async def me(key: model.Key = Depends(require_user_key)):
     return key.label
 
+
 # JOB
 ################################################
 @router.post("/job", response_model=base_objects.Job, tags=["User"])
@@ -44,6 +45,7 @@ async def create_job(job_definition: cruds.MetakatJobDefinition,
          db: AsyncSession = Depends(get_async_session)):
     job = await cruds.create_job(db, key.id, job_definition)
     return base_objects.Job.model_validate(job)
+
 
 @router.post("/proarc_json/{job_id}", tags=["User"])
 async def upload_proarc_json(job_id: UUID, proarc_json: ProarcIO,
@@ -70,6 +72,7 @@ async def upload_proarc_json(job_id: UUID, proarc_json: ProarcIO,
     db_job.proarc_json_uploaded = True
     await db.commit()
     return {"code": "PROARC_UPLOADED", "message": f"Proarc JSON for job '{job_id}' uploaded successfully"}
+
 
 @router.post("/image/{job_id}/{name}", tags=["User"])
 async def upload_image(job_id: UUID, name: str, file: UploadFile,
@@ -100,8 +103,17 @@ async def upload_image(job_id: UUID, name: str, file: UploadFile,
 
     db_image.imagehash = imagehash
     db_image.image_uploaded = True
+
     await db.commit()
-    return {"code": "IMAGE_UPLOADED", "message": f"Image '{name}' for Job '{job_id}' uploaded successfully"}
+
+    job_started = await cruds.start_job(db, job_id)
+
+    msg = f"Image '{name}' for Job '{job_id}' uploaded successfully"
+    if job_started:
+        msg += "; job started"
+
+    return {"code": "IMAGE_UPLOADED", "message": msg}
+
 
 ALLOWED_NS = {
     "http://www.loc.gov/standards/alto/ns-v2#",
@@ -184,10 +196,36 @@ async def upload_alto(job_id: UUID,
     db_image.alto_uploaded = True
     await db.commit()
 
+    job_started = await cruds.start_job(db, job_id)
+
     msg = f"ALTO for image '{name}' for Job '{job_id}' uploaded successfully"
     if schema_ver:
         msg += f" (schema {schema_ver})"
-    return {"code": "ALTO_UPLOADED", "message": f"{msg}"}
+    if job_started:
+        msg += "; job started"
+    return {"code": "ALTO_UPLOADED", "message": msg}
+
+
+@router.put("/start_job/{job_id}/", tags=["User"])
+async def start_job(job_id: UUID,
+        key: model.Key = Depends(require_user_key),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_key_access_to_job(db, key, job_id)
+    db_job = await cruds.get_job(db, job_id)
+    if db_job.state != base_objects.ProcessingState.PRISTINE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "JOB_NOT_PRISTINE", "message": f"Job '{job_id}' is not in 'pristine' state, current state: '{db_job.state.value}'"},
+        )
+    job_started = await cruds.start_job(db, job_id)
+    if job_started:
+        return {"code": "JOB_STARTED", "message": f"Job '{job_id}' started successfully"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "JOB_NOT_READY", "message": f"Job '{job_id}' is not ready to start, missing required files"},
+        )
+
 
 @router.get("/job/{job_id}", response_model=base_objects.Job, tags=["User"])
 async def get_job(job_id: UUID,
@@ -197,17 +235,20 @@ async def get_job(job_id: UUID,
     db_job = await cruds.get_job(db, job_id)
     return base_objects.Job.model_validate(db_job)
 
+
 @router.get("/jobs", response_model=List[base_objects.Job], tags=["User"])
 async def get_jobs(
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
     return
 
+
 @router.put("/cancel/{job_id}", tags=["User"])
 async def cancel_job(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
     return
+
 
 # RESULTS
 ################################################
@@ -216,6 +257,7 @@ async def get_result(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
     return
+
 
 # ADMIN
 require_admin_key = require_api_key(admin=True)
