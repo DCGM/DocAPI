@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import os
@@ -29,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 require_worker_key = require_api_key(key_role=base_objects.KeyRole.WORKER)
+
 
 @worker_router.get("/queued_jobs", response_model=List[base_objects.Job], tags=["Worker"])
 async def get_queued_jobs(

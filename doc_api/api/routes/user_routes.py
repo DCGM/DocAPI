@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 require_user_key = require_api_key(key_role=base_objects.KeyRole.USER)
 
+
 @user_router.get("/me", tags=["User"])
 async def me(key: model.Key = Depends(require_user_key)):
     return key.label

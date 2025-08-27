@@ -22,9 +22,6 @@ class Config:
         self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
 
-        # server | worker
-        self.MODE = os.getenv("MODE", 'server')
-
         self.ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "username")
         self.ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "pass")
 
@@ -32,14 +29,13 @@ class Config:
         self.UPDATE_TRIGGERS = os.getenv("UPDATE_TRIGGERS", str(False)).lower() in TRUE_VALUES
 
 
-        self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "server", "batch_uploaded"))
-        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "server", "results"))
-        self.WORKER_DIR = os.getenv("WORKER_DIR", os.path.join(self.BASE_DIR, "worker"))
+        self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "batch_uploaded"))
+        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
 
         # how often workers check DB, time in sec
         self.WORKERS_DB_FETCH_INTERVAL = os.getenv("WORKERS_DB_FETCH_INTERVAL", "5")
 
-        self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/metakat.{self.MODE}')
+        self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/metakat.api')
 
         self.PRODUCTION = os.getenv("PRODUCTION", False)
 
@@ -71,7 +67,7 @@ class Config:
         ################################################################################################################
         self.LOGGING_CONSOLE_LEVEL = os.getenv("LOGGING_CONSOLE_LEVEL", logging.INFO)
         self.LOGGING_FILE_LEVEL = os.getenv("LOGGING_FILE_LEVEL", logging.INFO)
-        self.LOGGING_DIR = os.getenv("LOGGING_DIR", os.path.join(self.BASE_DIR, self.MODE, "logs"))
+        self.LOGGING_DIR = os.getenv("LOGGING_DIR", os.path.join(self.BASE_DIR, "logs"))
         self.LOGGING_CONFIG = {
             'version': 1,
             'disable_existing_loggers': False,
@@ -94,7 +90,7 @@ class Config:
                     'when': 'midnight',
                     'utc': True,
                     'formatter': 'base',
-                    'filename': os.path.join(self.LOGGING_DIR, f'{self.MODE}.log')
+                    'filename': os.path.join(self.LOGGING_DIR, f'server.log')
                 }
             },
             'loggers': {
@@ -120,7 +116,7 @@ class Config:
 
     def create_dirs(self):
         os.makedirs(self.BATCH_UPLOADED_DIR, exist_ok=True)
-        os.makedirs(self.WORKER_DIR, exist_ok=True)
+        os.makedirs(self.RESULTS_DIR, exist_ok=True)
         os.makedirs(self.WORKING_DIR, exist_ok=True)
         os.makedirs(self.LOGGING_DIR, exist_ok=True)
 

@@ -81,7 +81,7 @@ async def unicorn_exception_handler(request: Request, exc: Exception):
                                       f'CLIENT: {request.client}\n\n'
                                       f'ERROR: {exc}\n\n'
                                       f'{traceback.format_exc()}',
-                                      extra={'subject': f'{config.MODE.upper()} {config.ADMIN_SERVER_NAME} - INTERNAL SERVER ERROR'})
+                                      extra={'subject': f'{config.ADMIN_SERVER_NAME} - INTERNAL SERVER ERROR'})
     exception_logger.error(f'URL: {request.url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
