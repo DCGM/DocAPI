@@ -73,6 +73,103 @@ async def get_image_by_job_and_name(db: AsyncSession, job_id: UUID, image_name: 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed reading image from database", status_code=500) from e
 
+
+async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
+    try:
+        result = await db.execute(
+            select(model.Job).where(model.Job.id == job_id)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        return db_job
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading job from database", status_code=500) from e
+
+
+async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> None:
+    try:
+        result = await db.execute(
+            select(model.Job).where(model.Job.id == job_update.id)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError(f"Job '{job_update.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+
+        db_job.last_change = job_update.last_change
+        if job_update.state == base_objects.ProcessingState.PROCESSING and db_job.state == base_objects.ProcessingState.QUEUED:
+            db_job.started_date = job_update.last_change
+            db_job.state = job_update.state
+        if job_update.log is not None:
+            if db_job.log is None:
+                db_job.log = job_update.log
+            else:
+                db_job.log += "\n" + job_update.log
+        if job_update.log_user is not None:
+            if db_job.log_user is None:
+                db_job.log_user = job_update.log_user
+            else:
+                db_job.log_user += "\n" + job_update.log_user
+
+        await db.commit()
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed updating job in database", status_code=500) from e
+
+async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> None:
+    try:
+        result = await db.execute(
+            select(model.Job).where(model.Job.id == job_finish.id)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError(f"Job '{job_finish.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+
+        db_job.finished_date = job_finish.finished_date
+        db_job.last_change = job_finish.finished_date
+        if db_job.state == base_objects.ProcessingState.PROCESSING:
+            db_job.state = job_finish.state
+        if job_finish.log is not None:
+            if db_job.log is None:
+                db_job.log = job_finish.log
+            else:
+                db_job.log += "\n" + job_finish.log
+        if job_finish.log_user is not None:
+            if db_job.log_user is None:
+                db_job.log_user = job_finish.log_user
+            else:
+                db_job.log_user += "\n" + job_finish.log_user
+
+        await db.commit()
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed finishing job in database", status_code=500) from e
+
+
+async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
+    try:
+        result = await db.scalars(
+            select(model.Job)
+              .where(model.Job.key_id == key_id)
+              .order_by(model.Job.created_date.desc())
+        )
+        return list(result.all())
+    except exc.SQLAlchemyError as e:
+        raise DBError('Failed reading jobs from database', status_code=500) from e
+
+
+async def get_queued_jobs(db: AsyncSession) -> List[model.Job]:
+    try:
+        result = await db.scalars(
+            select(model.Job)
+              .where(model.Job.state == base_objects.ProcessingState.QUEUED)
+              .order_by(model.Job.created_date.asc())
+        )
+        return list(result.all())
+    except exc.SQLAlchemyError as e:
+        raise DBError('Failed reading jobs from database', status_code=500) from e
+
+
 async def start_job(db: AsyncSession, job_id: UUID) -> bool:
     try:
         # EXISTS: is there any image not uploaded?
@@ -106,7 +203,7 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
 
         # readiness condition:
         # - if alto not required: all images uploaded  -> NOT img_missing
-        # - if alto required:    all images & all alto -> NOT img_missing AND NOT alto_missing
+        # - if alto required: all images & all alto -> NOT img_missing AND NOT alto_missing
         ready = or_(
             and_(model.Job.alto_required.is_(False), not_(img_missing)),
             and_(model.Job.alto_required.is_(True),  not_(img_missing), not_(alto_missing)),
@@ -116,7 +213,7 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
             update(model.Job)
             .where(
                 model.Job.id == job_id,
-                model.Job.state == base_objects.ProcessingState.PRISTINE,
+                model.Job.state == base_objects.ProcessingState.NEW,
                 proarc_ok,
                 ready,
             )
@@ -135,11 +232,10 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
         return False
 
     except exc.SQLAlchemyError as e:
-        # keep the cause for debugging
         raise DBError("Failed updating job state in database", status_code=500) from e
 
 
-async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
+async def cancel_job(db: AsyncSession, job_id: UUID) -> None:
     try:
         result = await db.execute(
             select(model.Job).where(model.Job.id == job_id)
@@ -147,9 +243,45 @@ async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
         db_job = result.scalar_one_or_none()
         if db_job is None:
             raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
-        return db_job
+
+        db_job.state = base_objects.ProcessingState.CANCELLED
+        db_job.finished_date = datetime.now(timezone.utc)
+        await db.commit()
+
     except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading job from database", status_code=500) from e
+        raise DBError("Failed updating job state in database", status_code=500) from e
+
+
+async def get_image(db: AsyncSession, image_id: UUID) -> model.Image:
+    try:
+        result = await db.execute(
+            select(model.Image).where(model.Image.id == image_id)
+        )
+        db_image = result.scalar_one_or_none()
+        if db_image is None:
+            raise DBError(f"Image '{image_id}' does not exist", code="IMAGE_NOT_FOUND", status_code=404)
+        return db_image
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading image from database", status_code=500) from e
+
+
+async def get_images(db: AsyncSession, job_id: UUID) -> List[model.Image]:
+    try:
+        result = await db.execute(
+            select(model.Job).where(model.Job.id == job_id)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+
+        result = await db.scalars(
+            select(model.Image)
+              .where(model.Image.job_id == job_id)
+              .order_by(model.Image.order.asc())
+        )
+        return list(result.all())
+    except exc.SQLAlchemyError as e:
+        raise DBError('Failed reading images from database', status_code=500) from e
 
 
 async def get_keys(db: AsyncSession) -> List[model.Key]:
@@ -229,8 +361,8 @@ async def update_key(db: AsyncSession, key_update: base_objects.KeyUpdate) -> No
             db_key.label = key_update.label
         if key_update.active is not None:
             db_key.active = key_update.active
-        if key_update.admin is not None:
-            db_key.admin = key_update.admin
+        if key_update.role is not None:
+            db_key.role = key_update.role
 
         await db.commit()
 

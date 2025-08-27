@@ -1,3 +1,4 @@
+import enum
 import hashlib
 import hmac
 import logging
@@ -12,10 +13,12 @@ from starlette.status import HTTP_403_FORBIDDEN
 
 
 from app.api.database import get_async_session
+from app.api.schemas.base_objects import KeyRole
 from metakat.app.db import model
 from metakat.app.config import config
 
 logger = logging.getLogger(__name__)
+
 
 # --- Accept keys from header, query, or cookie ---
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -50,7 +53,7 @@ async def lookup_key(db: AsyncSession, provided_key: str) -> model.Key | None | 
 
     return key
 
-def require_api_key(*, admin: bool = False) -> Callable[..., "model.Key"]:
+def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model.Key"]:
     async def _dep(
         db: AsyncSession = Depends(get_async_session),
         k_hdr: Optional[str] = Security(api_key_header),
@@ -66,8 +69,7 @@ def require_api_key(*, admin: bool = False) -> Callable[..., "model.Key"]:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INVALID_API_KEY", "message": "Invalid API key"})
         if key is False:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INACTIVE_API_KEY", "message": "Inactive API key"})
-        if admin and not key.admin:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "ADMIN_API_KEY_REQUIRED", "message": "Admin API key required"})
-
+        if key_role != key_role.ADMIN and key_role != key.role:
+            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INSUFFICIENT_API_KEY_ROLE", "message": "Insufficient API key role"})
         return key
     return _dep

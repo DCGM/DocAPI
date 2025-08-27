@@ -6,9 +6,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
-from app.api.authentication import hmac_sha256_hex
+from metakat.app.api.authentication import hmac_sha256_hex
+from metakat.app.api.schemas.base_objects import KeyRole
 from metakat.app.api.database import DBError, get_async_session
-from metakat.app.api.routes import router
+from metakat.app.api.routes import user_router, worker_router, admin_router
 from metakat.app.config import config
 from metakat.app.tools.mail.mail_logger import get_internal_mail_logger
 from metakat.app.db import model
@@ -25,6 +26,10 @@ internal_mail_logger = get_internal_mail_logger().logger
 tags_metadata = [
     {
         "name": "User",
+        "description": "",
+    },
+    {
+        "name": "Worker",
         "description": "",
     },
     {
@@ -53,13 +58,16 @@ async def startup():
                     key_hash=digest,
                     label="admin",
                     active=True,
-                    admin=True
+                    role=KeyRole.ADMIN
                 ))
                 await db.commit()
     else:
         logger.warning("ADMIN_KEY is not set! No admin API key created! (this is OK if there is another admin key in the database)")
 
-app.include_router(router, prefix="/api")
+app.include_router(user_router, prefix="/api/user")
+app.include_router(worker_router, prefix="/api/worker")
+app.include_router(admin_router, prefix="/api/admin")
+
 
 # if os.path.isdir("metakat/static"):
 #     app.mount("/", StaticFiles(directory="metakat/static", html=True), name="static")

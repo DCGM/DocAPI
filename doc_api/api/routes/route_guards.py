@@ -3,11 +3,12 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 
+from app.api.schemas.base_objects import KeyRole
 from metakat.app.db import model
 
 
 async def challenge_key_access_to_job(db: AsyncSession, key: model.Key, job_id: UUID):
-    if key.admin:
+    if key.role == KeyRole.ADMIN:
         return
     job = await db.get(model.Job, job_id)
     if job is None:

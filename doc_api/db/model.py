@@ -14,6 +14,7 @@ import math
 from torch import unique
 
 from metakat.app.api.schemas.base_objects import ProcessingState
+from metakat.app.api.schemas.base_objects import KeyRole
 
 # converts ORM row object to dict
 orm2dict = lambda r: {c.name: getattr(r, c.name) for c in r.__table__.columns}
@@ -36,7 +37,7 @@ class Job(Base):
     alto_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     proarc_json_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
-    state: Mapped[ProcessingState] = mapped_column(index=True, default=ProcessingState.PRISTINE, nullable=False)
+    state: Mapped[ProcessingState] = mapped_column(index=True, default=ProcessingState.NEW, nullable=False)
 
     proarc_json_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
@@ -55,12 +56,12 @@ class Image(Base):
     __tablename__ = 'images'
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
 
-    image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
-    alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
-
     name: Mapped[str] = mapped_column(String(300), index=True, nullable=False)
     order: Mapped[int] = mapped_column(index=True, nullable=False)
     imagehash: Mapped[str] = mapped_column(index=True, nullable=True)
+
+    image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
 
@@ -77,7 +78,7 @@ class Key(Base):
 
     label: Mapped[str] = mapped_column(String(255), nullable=False, index=True, unique=True)
     active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
-    admin: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
+    role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

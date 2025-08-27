@@ -4,7 +4,11 @@ from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+user_router = APIRouter()
+worker_router = APIRouter()
+admin_router = APIRouter()
 
-from .routes import router
+from .user_routes import user_router
+from .worker_routes import worker_router
+from .admin_routes import admin_router
 

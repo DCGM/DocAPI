@@ -33,6 +33,7 @@ class Config:
 
 
         self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "server", "batch_uploaded"))
+        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "server", "results"))
         self.WORKER_DIR = os.getenv("WORKER_DIR", os.path.join(self.BASE_DIR, "worker"))
 
         # how often workers check DB, time in sec
