@@ -67,9 +67,9 @@ def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model
         key = await lookup_key(db, provided)
         if key is None:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INVALID_API_KEY", "message": "Invalid API key"})
-        if key is False:
+        if not key.active:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INACTIVE_API_KEY", "message": "Inactive API key"})
-        if key_role != key_role.ADMIN and key_role != key.role:
+        if key.role != KeyRole.ADMIN and key_role != key.role:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INSUFFICIENT_API_KEY_ROLE", "message": "Insufficient API key role"})
         return key
     return _dep

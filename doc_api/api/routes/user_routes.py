@@ -42,6 +42,7 @@ async def me(key: model.Key = Depends(require_user_key)):
 async def create_job(job_definition: cruds.MetakatJobDefinition,
          key: model.Key = Depends(require_user_key),
          db: AsyncSession = Depends(get_async_session)):
+    #TODO check if there are duplicates in image names?
     job = await cruds.create_job(db, key.id, job_definition)
     return base_objects.Job.model_validate(job)
 
@@ -70,7 +71,14 @@ async def upload_proarc_json(job_id: UUID, proarc_json: ProarcIO,
         json.dump(proarc_json_dict, f, ensure_ascii=False, indent=4)
     db_job.proarc_json_uploaded = True
     await db.commit()
-    return {"code": "PROARC_UPLOADED", "message": f"Proarc JSON for job '{job_id}' uploaded successfully"}
+
+    job_started = await cruds.start_job(db, job_id)
+
+    msg = f"Proarc JSON for job '{job_id}' uploaded successfully"
+    if job_started:
+        msg += "; job started"
+
+    return {"code": "PROARC_UPLOADED", "message": msg}
 
 
 @user_router.post("/image/{job_id}/{name}", tags=["User"])
