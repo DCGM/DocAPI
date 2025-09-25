@@ -6,22 +6,19 @@ from fastapi import Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
-from pydantic import ValidationError
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from metakat.app.api.authentication import require_api_key
-from metakat.app.api.cruds import cruds
-from metakat.app.api.database import get_async_session
-from metakat.app.api.schemas import base_objects
-from metakat.app.db import model
-from metakat.app.api.routes import worker_router
-from metakat.app.config import config
+from doc_api.api.authentication import require_api_key
+from doc_api.api.cruds import cruds
+from doc_api.api.database import get_async_session
+from doc_api.api.schemas import base_objects
+from doc_api.db import model
+from doc_api.api.routes import worker_router
+from doc_api.config import config
 
 from typing import List
 from uuid import UUID
-
-from schemas.base_objects import MetakatIO
 
 
 logger = logging.getLogger(__name__)
@@ -103,9 +100,9 @@ async def update_job(job_id: UUID,
     return {"code": "JOB_UPDATED", "message": f"Job '{job_id}' updated successfully"}
 
 
-@worker_router.post("/result/{job_id}", response_model=MetakatIO, tags=["Worker"])
+@worker_router.post("/result/{job_id}", tags=["Worker"])
 async def upload_result(job_id: UUID,
-        result: MetakatIO,
+        result,
         key: model.Key = Depends(require_worker_key),
         db: AsyncSession = Depends(get_async_session)):
     db_job = await cruds.get_job(db, job_id)
@@ -118,7 +115,13 @@ async def upload_result(job_id: UUID,
     await aiofiles_os.makedirs(result_path, exist_ok=True)
     result_file_path = os.path.join(result_path, f"{job_id}.json")
     with open(result_file_path, "w", encoding="utf-8") as f:
-        json.dump(result.model_dump(mode="json"), f, ensure_ascii=False, indent=4)
+        try:
+            json.dump(result.model_dump(mode="json"), f, ensure_ascii=False, indent=4)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "RESULT_INVALID_JSON", "message": f"Provided result for job '{job_id}' is not valid JSON"},
+            )
     return {"code": "RESULT_UPLOADED", "message": f"Result for job '{job_id}' uploaded successfully"}
 
 
@@ -142,17 +145,11 @@ async def finish_job(job_id: UUID,
             )
         with open(result_path, "r", encoding="utf-8") as f:
             try:
-                result_json = json.load(f)
-                MetakatIO.model_validate(result_json)
+                json.load(f)
             except json.JSONDecodeError:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail={"code": "RESULT_INVALID_JSON", "message": f"Result file for job '{job_id}' is not valid JSON"},
-                )
-            except ValidationError:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={"code": "RESULT_INVALID_SCHEMA", "message": f"Result file for job '{job_id}' does not conform to Metakat schema"},
                 )
     await cruds.finish_job(db, job_finish)
     return {"code": "JOB_FINISHED", "message": f"Job '{job_id}' finished successfully"}

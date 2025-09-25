@@ -11,8 +11,8 @@ import uuid
 import numpy as np
 import math
 
-from metakat.app.api.schemas.base_objects import ProcessingState
-from metakat.app.api.schemas.base_objects import KeyRole
+from doc_api.api.schemas.base_objects import ProcessingState
+from doc_api.api.schemas.base_objects import KeyRole
 
 # converts ORM row object to dict
 orm2dict = lambda r: {c.name: getattr(r, c.name) for c in r.__table__.columns}

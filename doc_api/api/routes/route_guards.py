@@ -3,8 +3,8 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 
-from app.api.schemas.base_objects import KeyRole
-from metakat.app.db import model
+from doc_api.api.schemas.base_objects import KeyRole
+from doc_api.db import model
 
 
 async def challenge_key_access_to_job(db: AsyncSession, key: model.Key, job_id: UUID):

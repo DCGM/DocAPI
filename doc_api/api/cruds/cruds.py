@@ -8,10 +8,10 @@ from pydantic import BaseModel
 from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from metakat.app.api.authentication import hmac_sha256_hex
-from metakat.app.api.database import DBError
-from metakat.app.db import model
-from metakat.app.api.schemas import base_objects
+from doc_api.api.authentication import hmac_sha256_hex
+from doc_api.api.database import DBError
+from doc_api.db import model
+from doc_api.api.schemas import base_objects
 
 
 logger = logging.getLogger(__name__)

@@ -1,0 +1,11 @@
+aiofiles==24.1.0
+alembic==1.16.5
+asyncpg==0.30.0
+fastapi==0.117.1
+mailinglogger==6.0.0
+opencv-python==4.12.0.88
+pip-chill==1.0.3
+pipreqs==0.5.0
+python-multipart==0.0.20
+tinycss2==1.4.0
+uvicorn==0.37.0

@@ -6,13 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
-from metakat.app.api.authentication import hmac_sha256_hex
-from metakat.app.api.schemas.base_objects import KeyRole
-from metakat.app.api.database import DBError, get_async_session
-from metakat.app.api.routes import user_router, worker_router, admin_router
-from metakat.app.config import config
-from metakat.app.tools.mail.mail_logger import get_internal_mail_logger
-from metakat.app.db import model
+from doc_api.api.authentication import hmac_sha256_hex
+from doc_api.api.schemas.base_objects import KeyRole
+from doc_api.api.database import DBError, get_async_session
+from doc_api.api.routes import user_router, worker_router, admin_router
+from doc_api.config import config
+from doc_api.tools.mail.mail_logger import get_internal_mail_logger
+from doc_api.db import model
 
 
 exception_logger = logging.getLogger('metakat.exception_logger')

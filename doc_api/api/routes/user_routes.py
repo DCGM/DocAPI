@@ -13,19 +13,17 @@ from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from metakat.app.api.routes.route_guards import challenge_key_access_to_job
-from metakat.app.api.authentication import require_api_key
-from metakat.app.api.cruds import cruds
-from metakat.app.api.database import get_async_session
-from metakat.app.api.schemas import base_objects
-from metakat.app.db import model
-from metakat.app.api.routes import user_router
-from metakat.app.config import config
+from doc_api.api.routes.route_guards import challenge_key_access_to_job
+from doc_api.api.authentication import require_api_key
+from doc_api.api.cruds import cruds
+from doc_api.api.database import get_async_session
+from doc_api.api.schemas import base_objects
+from doc_api.db import model
+from doc_api.api.routes import user_router
+from doc_api.config import config
 
 from typing import List, Optional, Tuple
 from uuid import UUID
-
-from schemas.base_objects import MetakatIO, ProarcIO
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +46,7 @@ async def create_job(job_definition: cruds.MetakatJobDefinition,
 
 
 @user_router.post("/proarc_json/{job_id}", tags=["User"])
-async def upload_proarc_json(job_id: UUID, proarc_json: ProarcIO,
+async def upload_proarc_json(job_id: UUID, proarc_json,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
     await challenge_key_access_to_job(db, key, job_id)
@@ -275,9 +273,30 @@ async def cancel_job(job_id: UUID,
     return {"code": "JOB_CANCELLED", "message": f"Job '{job_id}' cancelled successfully"}
 
 
-@user_router.get("/result/{job_id}", response_model=MetakatIO, tags=["User"])
+@user_router.get("/result/{job_id}", tags=["User"])
 async def get_result(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    return
+    await challenge_key_access_to_job(db, key, job_id)
+
+    db_job = await cruds.get_job(db, job_id)
+    if db_job.state != base_objects.ProcessingState.DONE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "JOB_NOT_DONE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.DONE.value}' state to get result, current state: '{db_job.state.value}'"},
+        )
+
+    result_path = os.path.join(config.RESULT_DIR, str(job_id))
+    result_file_path = os.path.join(result_path, f"{job_id}.json")
+
+    if not os.path.exists(result_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "RESULT_NOT_FOUND", "message": f"Result for job '{job_id}' not found"},
+        )
+
+    with open(result_file_path, "r", encoding="utf-8") as f:
+        result_json = json.load(f)
+        return result_json
+
 

@@ -12,11 +12,12 @@ TRUE_VALUES = {"true", "1"}
 class Config:
     def __init__(self):
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "/")
-        self.BASE_DIR = os.getenv("BASE_DIR", "./metakat_data")
-        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "MetaKat")
-        self.SERVER_NAME = os.getenv("SERVER_NAME", "MetaKat")
+        self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
+        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "DocAPI")
+        self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
+        self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
-        self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "MetaKat")
+        self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "DocAPI")
         self.SOFTWARE_VERSION = os.getenv("SOFTWARE_VERSION", "1.0")
 
         self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
@@ -25,7 +26,7 @@ class Config:
         self.ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "username")
         self.ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "pass")
 
-        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/metakat_db")
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/doc_api_db")
         self.UPDATE_TRIGGERS = os.getenv("UPDATE_TRIGGERS", str(False)).lower() in TRUE_VALUES
 
 
@@ -35,17 +36,17 @@ class Config:
         # how often workers check DB, time in sec
         self.WORKERS_DB_FETCH_INTERVAL = os.getenv("WORKERS_DB_FETCH_INTERVAL", "5")
 
-        self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/metakat.api')
+        self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/doc_api.api')
 
         self.PRODUCTION = os.getenv("PRODUCTION", False)
 
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
 
-        # Internal mailing setting for metakat.internal_mail_logger
+        # Internal mailing setting for doc_api.internal_mail_logger
         self.INTERNAL_MAIL_SERVER = os.getenv("INTERNAL_MAIL_SERVER", None)
         self.INTERNAL_MAIL_PORT = os.getenv("INTERNAL_MAIL_PORT", 25)
-        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", "MetaKat")
+        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", "DocAPI")
         self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
         self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
         if os.getenv("INTERNAL_MAIL_RECEIVER_MAILS") is not None:
@@ -55,10 +56,10 @@ class Config:
             self.INTERNAL_MAIL_RECEIVER_MAILS = ['user@mail.server.cz']
         self.INTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("INTERNAL_MAIL_FLOOD_LEVEL", 10))
 
-        # External mailing setting for metakat.external_mail_logger
+        # External mailing setting for doc_api.external_mail_logger
         self.EXTERNAL_MAIL_SERVER = os.getenv("EXTERNAL_MAIL_SERVER", None)
         self.EXTERNAL_MAIL_PORT = os.getenv("EXTERNAL_MAIL_PORT", 25)
-        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", "MetaKat")
+        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", "DocAPI")
         self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
         self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
         self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
@@ -101,7 +102,7 @@ class Config:
                         'file_log',
                     ]
                 },
-                'metakat.exception_logger': {
+                'doc_api.exception_logger': {
                     'level': 'DEBUG',
                     'handlers': [
                         'file_log'

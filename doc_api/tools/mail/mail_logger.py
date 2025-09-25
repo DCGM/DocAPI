@@ -2,8 +2,8 @@ import logging
 from email.utils import formataddr
 from typing import Optional, List, Union
 
-from metakat.app.config import config
-from metakat.app.tools.mail.mail_handler import MailHandler
+from doc_api.config import config
+from doc_api.tools.mail.mail_handler import MailHandler
 
 logger = logging.getLogger(__name__)
 

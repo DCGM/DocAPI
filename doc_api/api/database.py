@@ -1,7 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import exc
 
-from metakat.app.config import config
+from doc_api.config import config
 from typing import AsyncGenerator
 
 import logging

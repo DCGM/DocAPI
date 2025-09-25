@@ -3,12 +3,12 @@ from fastapi import Depends
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from metakat.app.api.authentication import require_api_key
-from metakat.app.api.cruds import cruds
-from metakat.app.api.database import get_async_session
-from metakat.app.api.schemas import base_objects
-from metakat.app.db import model
-from metakat.app.api.routes import admin_router
+from doc_api.api.authentication import require_api_key
+from doc_api.api.cruds import cruds
+from doc_api.api.database import get_async_session
+from doc_api.api.schemas import base_objects
+from doc_api.db import model
+from doc_api.api.routes import admin_router
 
 from typing import List
 

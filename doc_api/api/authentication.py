@@ -1,4 +1,3 @@
-import enum
 import hashlib
 import hmac
 import logging
@@ -12,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_403_FORBIDDEN
 
 
-from app.api.database import get_async_session
-from app.api.schemas.base_objects import KeyRole
-from metakat.app.db import model
-from metakat.app.config import config
+from doc_api.api.database import get_async_session
+from doc_api.api.schemas.base_objects import KeyRole
+from doc_api.db import model
+from doc_api.config import config
 
 logger = logging.getLogger(__name__)
 
