@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_internal_mail_logger():
-    return MailLogger(logger_name='metakat.internal_mail_logger',
+    return MailLogger(logger_name='doc_api.internal_mail_logger',
                       sender_mail=config.INTERNAL_MAIL_SENDER_MAIL,
                       receiver_mails=config.INTERNAL_MAIL_RECEIVER_MAILS,
                       server=config.INTERNAL_MAIL_SERVER,
@@ -20,7 +20,7 @@ def get_internal_mail_logger():
 
 
 def get_external_mail_logger():
-    return MailLogger(logger_name='metakat.external_mail_logger',
+    return MailLogger(logger_name='doc_api.external_mail_logger',
                       sender_mail=config.EXTERNAL_MAIL_SENDER_MAIL,
                       server=config.EXTERNAL_MAIL_SERVER,
                       port=config.EXTERNAL_MAIL_PORT,

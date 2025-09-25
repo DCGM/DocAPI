@@ -15,7 +15,7 @@ from doc_api.tools.mail.mail_logger import get_internal_mail_logger
 from doc_api.db import model
 
 
-exception_logger = logging.getLogger('metakat.exception_logger')
+exception_logger = logging.getLogger('doc_api.exception_logger')
 exception_logger.propagate = False
 
 
@@ -69,8 +69,8 @@ app.include_router(worker_router, prefix="/api/worker")
 app.include_router(admin_router, prefix="/api/admin")
 
 
-# if os.path.isdir("metakat/static"):
-#     app.mount("/", StaticFiles(directory="metakat/static", html=True), name="static")
+# if os.path.isdir("doc_api/static"):
+#     app.mount("/", StaticFiles(directory="doc_api/static", html=True), name="static")
 
 
 @app.exception_handler(Exception)

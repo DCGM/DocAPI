@@ -34,11 +34,12 @@ class Job(Base):
     definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
     alto_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
-    proarc_json_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    meta_json_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    meta_json_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
     state: Mapped[ProcessingState] = mapped_column(index=True, default=ProcessingState.NEW, nullable=False)
-
-    proarc_json_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    progress: Mapped[float] = mapped_column(index=True, default=0.0, nullable=False)
+    previous_attempts: Mapped[int] = mapped_column(index=True, nullable=True)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
     started_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=True)

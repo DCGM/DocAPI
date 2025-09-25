@@ -8,12 +8,13 @@ from defusedxml import ElementTree as ET
 import cv2
 import numpy as np
 from fastapi import Depends, UploadFile, HTTPException, status
+from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.routes.route_guards import challenge_key_access_to_job
+from doc_api.api.routes.route_guards import challenge_owner_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import cruds
 from doc_api.api.database import get_async_session
@@ -37,53 +38,53 @@ async def me(key: model.Key = Depends(require_user_key)):
     return key.label
 
 @user_router.post("/job", response_model=base_objects.Job, tags=["User"])
-async def create_job(job_definition: cruds.MetakatJobDefinition,
-         key: model.Key = Depends(require_user_key),
-         db: AsyncSession = Depends(get_async_session)):
+async def create_job(job_definition: cruds.JobDefinition,
+                     key: model.Key = Depends(require_user_key),
+                     db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
     job = await cruds.create_job(db, key.id, job_definition)
     return base_objects.Job.model_validate(job)
 
 
-@user_router.post("/proarc_json/{job_id}", tags=["User"])
-async def upload_proarc_json(job_id: UUID, proarc_json,
+@user_router.post("/meta_json/{job_id}", tags=["User"])
+async def upload_meta_json(job_id: UUID, meta_json,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_job = await cruds.get_job(db, job_id)
-    if not db_job.proarc_json_required:
+    if not db_job.meta_json_required:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "PROARC_NOT_REQUIRED", "message": f"Job '{job_id}' does not require Proarc JSON"},
+            detail={"code": "META_JSON_NOT_REQUIRED", "message": f"Job '{job_id}' does not require Meta JSON"},
         )
-    if db_job.proarc_json_uploaded:
+    if db_job.meta_json_uploaded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "PROARC_ALREADY_UPLOADED", "message": f"Job '{job_id}' already has Proarc JSON uploaded"},
+            detail={"code": "META_JSON_ALREADY_UPLOADED", "message": f"Job '{job_id}' already has Meta JSON uploaded"},
         )
     batch_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id))
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
-    proarc_json_path = os.path.join(batch_path, "proarc.json")
-    with open(proarc_json_path, "w", encoding="utf-8") as f:
-        proarc_json_dict = proarc_json.model_dump(mode="json")
-        json.dump(proarc_json_dict, f, ensure_ascii=False, indent=4)
-    db_job.proarc_json_uploaded = True
+    meta_json_path = os.path.join(batch_path, "meta.json")
+    with open(meta_json_path, "w", encoding="utf-8") as f:
+        meta_json_dict = meta_json.model_dump(mode="json")
+        json.dump(meta_json_dict, f, ensure_ascii=False, indent=4)
+    db_job.meta_json_uploaded = True
     await db.commit()
 
     job_started = await cruds.start_job(db, job_id)
 
-    msg = f"Proarc JSON for job '{job_id}' uploaded successfully"
+    msg = f"Meta JSON for job '{job_id}' uploaded successfully"
     if job_started:
         msg += "; job started"
 
-    return {"code": "PROARC_UPLOADED", "message": msg}
+    return {"code": "META_JSON_UPLOADED", "message": msg}
 
 
 @user_router.post("/image/{job_id}/{name}", tags=["User"])
 async def upload_image(job_id: UUID, name: str, file: UploadFile,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_image = await cruds.get_image_by_job_and_name(db, job_id, name)
     if db_image.image_uploaded:
         raise HTTPException(
@@ -166,7 +167,7 @@ async def upload_alto(job_id: UUID,
         file: UploadFile,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_image = await cruds.get_image_by_job_and_name(db, job_id, name)
     db_job = await cruds.get_job(db, job_id)
     if not db_job.alto_required:
@@ -215,7 +216,7 @@ async def upload_alto(job_id: UUID,
 async def get_job(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_job = await cruds.get_job(db, job_id)
     return base_objects.Job.model_validate(db_job)
 
@@ -224,7 +225,7 @@ async def get_job(job_id: UUID,
 async def get_images(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_images = await cruds.get_images(db, job_id)
     return [base_objects.Image.model_validate(db_image) for db_image in db_images]
 
@@ -241,7 +242,7 @@ async def get_jobs(
 async def start_job(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_job = await cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.NEW:
         raise HTTPException(
@@ -262,7 +263,7 @@ async def start_job(job_id: UUID,
 async def cancel_job(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+    await challenge_owner_access_to_job(db, key, job_id)
     db_job = await cruds.get_job(db, job_id)
     if db_job.state in {base_objects.ProcessingState.CANCELLED, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
         raise HTTPException(
@@ -274,29 +275,39 @@ async def cancel_job(job_id: UUID,
 
 
 @user_router.get("/result/{job_id}", tags=["User"])
-async def get_result(job_id: UUID,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
-    await challenge_key_access_to_job(db, key, job_id)
+async def get_result(
+    job_id: UUID,
+    key: model.Key = Depends(require_user_key),
+    db: AsyncSession = Depends(get_async_session),
+):
+    await challenge_owner_access_to_job(db, key, job_id)
 
     db_job = await cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.DONE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_DONE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.DONE.value}' state to get result, current state: '{db_job.state.value}'"},
+            detail={
+                "code": "JOB_NOT_DONE",
+                "message": (
+                    f"Job '{job_id}' must be in "
+                    f"'{base_objects.ProcessingState.DONE.value}' state to get result, "
+                    f"current state: '{db_job.state.value}'"
+                ),
+            },
         )
 
-    result_path = os.path.join(config.RESULT_DIR, str(job_id))
-    result_file_path = os.path.join(result_path, f"{job_id}.json")
+    result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
 
-    if not os.path.exists(result_path):
+    if not os.path.exists(result_file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "RESULT_NOT_FOUND", "message": f"Result for job '{job_id}' not found"},
         )
 
-    with open(result_file_path, "r", encoding="utf-8") as f:
-        result_json = json.load(f)
-        return result_json
+    return FileResponse(
+        result_file_path,
+        media_type="application/zip",
+        filename=f"{job_id}.zip",
+    )
 
 

@@ -13,6 +13,7 @@ class ProcessingState(str, enum.Enum):
     ERROR = 'error'
     DONE = 'done'
     CANCELLED = 'cancelled'
+    FAILED = 'failed'
 
 
 class KeyRole(str, enum.Enum):
@@ -39,6 +40,8 @@ class Job(BaseModel):
     id: UUID
 
     state: ProcessingState
+    progress: float
+    previous_attempts: Optional[int] = None
 
     created_date: datetime
     started_date: Optional[datetime] = None
@@ -55,8 +58,6 @@ class JobFinish(BaseModel):
 
     state: Literal[ProcessingState.ERROR, ProcessingState.DONE]
 
-    finished_date: datetime
-
     log: Optional[str] = None
     log_user: Optional[str] = None
 
@@ -65,8 +66,7 @@ class JobUpdate(BaseModel):
     id: UUID
 
     state: Optional[Literal[ProcessingState.PROCESSING]] = None
-
-    last_change: datetime
+    progress: Optional[float] = None
 
     log: Optional[str] = None
     log_user: Optional[str] = None

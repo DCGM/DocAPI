@@ -16,18 +16,18 @@ from doc_api.api.schemas import base_objects
 
 logger = logging.getLogger(__name__)
 
-class MetakatImageForJobDefinition(BaseModel):
+class ImageForJobDefinition(BaseModel):
     name: str
     order: int
 
 
-class MetakatJobDefinition(BaseModel):
-    images: List[MetakatImageForJobDefinition]
+class JobDefinition(BaseModel):
+    images: List[ImageForJobDefinition]
     alto_required: bool = False
-    proarc_json_required: bool = False
+    meta_json_required: bool = False
 
 
-async def create_job(db: AsyncSession, key_id: UUID, job_definition: MetakatJobDefinition) -> model.Job:
+async def create_job(db: AsyncSession, key_id: UUID, job_definition: JobDefinition) -> model.Job:
     try:
         result = await db.execute(
             select(model.Key).where(model.Key.id == key_id)
@@ -40,7 +40,7 @@ async def create_job(db: AsyncSession, key_id: UUID, job_definition: MetakatJobD
             key_id=key_id,
             definition=job_definition.model_dump(mode="json"),
             alto_required=job_definition.alto_required,
-            proarc_json_required=job_definition.proarc_json_required)
+            meta_json_required=job_definition.meta_json_required)
 
         db.add(db_job)
 
@@ -90,16 +90,14 @@ async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
 async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worker_key_id) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_update.id).with_for_update(skip_locked=True)
+            select(model.Job).where(model.Job.id == job_update.id)
         )
         db_job = result.scalar_one_or_none()
-        if db_job is None or (db_job.worker_key_id is not None and db_job.worker_key_id != worker_key_id):
-            raise DBError(f"Job '{job_update.id}' does not exist or locked", code="JOB_NOT_FOUND_OR_LOCKED", status_code=404)
+        if db_job is None:
+            raise DBError(f"Job '{job_update.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
 
-        db_job.last_change = job_update.last_change
-        if job_update.state == base_objects.ProcessingState.PROCESSING and db_job.state == base_objects.ProcessingState.QUEUED:
-            db_job.started_date = job_update.last_change
-            db_job.state = job_update.state
+        if job_update.progress is not None:
+            db_job.progress = job_update.progress
         if job_update.log is not None:
             if db_job.log is None:
                 db_job.log = job_update.log
@@ -111,28 +109,29 @@ async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worke
             else:
                 db_job.log_user += "\n" + job_update.log_user
 
-        if db_job.worker_key_id is None:
-            db_job.worker_key_id = worker_key_id
+        last_change = datetime.now(timezone.utc)
+        if job_update.state == base_objects.ProcessingState.PROCESSING and db_job.state == base_objects.ProcessingState.QUEUED:
+            db_job.started_date = last_change
+            db_job.state = job_update.state
+
+        db_job.last_change = last_change
 
         await db.commit()
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job in database", status_code=500) from e
+        raise DBError(f"Failed updating job '{job_update.id}' in database", status_code=500) from e
 
 
 async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_finish.id).with_for_update()
+            select(model.Job).where(model.Job.id == job_finish.id)
         )
         db_job = result.scalar_one_or_none()
         if db_job is None:
             raise DBError(f"Job '{job_finish.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
 
-        db_job.finished_date = job_finish.finished_date
-        db_job.last_change = job_finish.finished_date
-        if db_job.state == base_objects.ProcessingState.PROCESSING:
-            db_job.state = job_finish.state
+        db_job.state = job_finish.state
         if job_finish.log is not None:
             if db_job.log is None:
                 db_job.log = job_finish.log
@@ -144,6 +143,17 @@ async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> No
             else:
                 db_job.log_user += "\n" + job_finish.log_user
 
+        if db_job.previous_attempts is None:
+            db_job.previous_attempts = 0
+        else:
+            db_job.previous_attempts += 1
+
+        db_job.progress = 1.0
+
+        finished_date = datetime.now(timezone.utc)
+        db_job.finished_date = finished_date
+        db_job.last_change = finished_date
+
         await db.commit()
 
     except exc.SQLAlchemyError as e:
@@ -154,7 +164,7 @@ async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
     try:
         result = await db.scalars(
             select(model.Job)
-              .where(model.Job.key_id == key_id)
+              .where(model.Job.owner_key_id == key_id)
               .order_by(model.Job.created_date.desc())
         )
         return list(result.all())
@@ -162,14 +172,29 @@ async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
         raise DBError('Failed reading jobs from database', status_code=500) from e
 
 
-async def get_queued_jobs(db: AsyncSession) -> List[model.Job]:
+async def get_job_for_worker(db: AsyncSession, worker_key_id: UUID) -> model.Job:
     try:
-        result = await db.scalars(
+        db_job = await db.execute(
             select(model.Job)
               .where(model.Job.state == base_objects.ProcessingState.QUEUED)
               .order_by(model.Job.created_date.asc())
+              .with_for_update(skip_locked=True)
+              .limit(1)
         )
-        return list(result.all())
+        job = db_job.scalar_one_or_none()
+
+        if job is None:
+            raise DBError("No job available", code="NO_JOB_AVAILABLE", status_code=404)
+
+        job.state = base_objects.ProcessingState.PROCESSING
+        job.started_date = datetime.now(timezone.utc)
+        job.last_change = job.started_date
+        job.worker_key_id = worker_key_id
+
+        await db.commit()
+
+        return job
+
     except exc.SQLAlchemyError as e:
         raise DBError('Failed reading jobs from database', status_code=500) from e
 
@@ -196,12 +221,12 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
               )
         )
 
-        # proarc condition: either not required OR (required AND already uploaded)
-        proarc_ok = or_(
-            model.Job.proarc_json_required.is_(False),
+        # meta condition: either not required OR (required AND already uploaded)
+        meta_ok = or_(
+            model.Job.meta_json_required.is_(False),
             and_(
-                model.Job.proarc_json_required.is_(True),
-                model.Job.proarc_json_uploaded.is_(True),
+                model.Job.meta_json_required.is_(True),
+                model.Job.meta_json_uploaded.is_(True),
             ),
         )
 
@@ -218,7 +243,7 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
             .where(
                 model.Job.id == job_id,
                 model.Job.state == base_objects.ProcessingState.NEW,
-                proarc_ok,
+                meta_ok,
                 ready,
             )
             .values(
