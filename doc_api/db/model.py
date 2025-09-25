@@ -11,8 +11,6 @@ import uuid
 import numpy as np
 import math
 
-from torch import unique
-
 from metakat.app.api.schemas.base_objects import ProcessingState
 from metakat.app.api.schemas.base_objects import KeyRole
 
@@ -30,7 +28,8 @@ class Base(DeclarativeBase):
 class Job(Base):
     __tablename__ = 'jobs'
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=False)
+    owner_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=False)
+    worker_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=True)
 
     definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
@@ -82,7 +81,6 @@ class Key(Base):
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-
 
 
 def json_to_points(json_points, precision=1):

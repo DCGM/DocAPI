@@ -99,7 +99,7 @@ async def update_job(job_id: UUID,
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "JOB_NOT_UPDATABLE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.QUEUED.value}' or '{base_objects.ProcessingState.PROCESSING.value}' state to be updated, current state: '{db_job.state.value}'"},
         )
-    await cruds.update_job(db, job_update)
+    await cruds.update_job(db, job_update, key.id)
     return {"code": "JOB_UPDATED", "message": f"Job '{job_id}' updated successfully"}
 
 
@@ -133,25 +133,26 @@ async def finish_job(job_id: UUID,
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "JOB_NOT_FINISHABLE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.PROCESSING.value}' state, current state: '{db_job.state.value}'"},
         )
-    result_path = os.path.join(config.RESULT_DIR, str(job_id), f"{job_id}.json")
-    if not await aiofiles_os.path.exists(result_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "RESULT_NOT_FOUND", "message": f"Result file for job '{job_id}' not found at expected location: '{result_path}'"},
-        )
-    with open(result_path, "r", encoding="utf-8") as f:
-        try:
-            result_json = json.load(f)
-            MetakatIO.model_validate(result_json)
-        except json.JSONDecodeError:
+    if job_finish.state == base_objects.ProcessingState.DONE:
+        result_path = os.path.join(config.RESULT_DIR, str(job_id), f"{job_id}.json")
+        if not await aiofiles_os.path.exists(result_path):
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"code": "RESULT_INVALID_JSON", "message": f"Result file for job '{job_id}' is not valid JSON"},
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "RESULT_NOT_FOUND", "message": f"Result file for job '{job_id}' not found at expected location: '{result_path}'"},
             )
-        except ValidationError:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"code": "RESULT_INVALID_SCHEMA", "message": f"Result file for job '{job_id}' does not conform to Metakat schema"},
-            )
+        with open(result_path, "r", encoding="utf-8") as f:
+            try:
+                result_json = json.load(f)
+                MetakatIO.model_validate(result_json)
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"code": "RESULT_INVALID_JSON", "message": f"Result file for job '{job_id}' is not valid JSON"},
+                )
+            except ValidationError:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"code": "RESULT_INVALID_SCHEMA", "message": f"Result file for job '{job_id}' does not conform to Metakat schema"},
+                )
     await cruds.finish_job(db, job_finish)
     return {"code": "JOB_FINISHED", "message": f"Job '{job_id}' finished successfully"}

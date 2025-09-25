@@ -87,14 +87,14 @@ async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
         raise DBError(f"Failed reading job from database", status_code=500) from e
 
 
-async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> None:
+async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worker_key_id) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_update.id)
+            select(model.Job).where(model.Job.id == job_update.id).with_for_update(skip_locked=True)
         )
         db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_update.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        if db_job is None or (db_job.worker_key_id is not None and db_job.worker_key_id != worker_key_id):
+            raise DBError(f"Job '{job_update.id}' does not exist or locked", code="JOB_NOT_FOUND_OR_LOCKED", status_code=404)
 
         db_job.last_change = job_update.last_change
         if job_update.state == base_objects.ProcessingState.PROCESSING and db_job.state == base_objects.ProcessingState.QUEUED:
@@ -111,15 +111,19 @@ async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> No
             else:
                 db_job.log_user += "\n" + job_update.log_user
 
+        if db_job.worker_key_id is None:
+            db_job.worker_key_id = worker_key_id
+
         await db.commit()
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed updating job in database", status_code=500) from e
 
+
 async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_finish.id)
+            select(model.Job).where(model.Job.id == job_finish.id).with_for_update()
         )
         db_job = result.scalar_one_or_none()
         if db_job is None:
@@ -238,7 +242,7 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
 async def cancel_job(db: AsyncSession, job_id: UUID) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_id)
+            select(model.Job).where(model.Job.id == job_id).with_for_update()
         )
         db_job = result.scalar_one_or_none()
         if db_job is None:
