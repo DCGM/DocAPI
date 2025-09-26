@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import cruds
+from doc_api.api.cruds.cruds import update_processing_state_for_jobs
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.route_guards import challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
@@ -19,7 +20,7 @@ from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
 
-from typing import List
+from typing import List, Literal
 from uuid import UUID
 
 
@@ -33,7 +34,7 @@ require_worker_key = require_api_key(key_role=base_objects.KeyRole.WORKER)
 async def get_job(
         key: model.Key = Depends(require_worker_key),
         db: AsyncSession = Depends(get_async_session)):
-    db_job = await cruds.get_job_for_worker(db, key.id)
+    db_job = await cruds.assign_job_to_worker(db, key.id)
     return db_job
 
 
@@ -144,9 +145,9 @@ async def upload_result(
     return {"code": "RESULT_UPLOADED", "message": f"Result for job '{job_id}' uploaded successfully"}
 
 
-@worker_router.post("/finish_job/{job_id}", tags=["Worker"])
+@worker_router.post("/finish_job/{job_id}/{state}", tags=["Worker"])
 async def finish_job(job_id: UUID,
-        job_finish: base_objects.JobFinish,
+        state: Literal[base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR],
         key: model.Key = Depends(require_worker_key),
         db: AsyncSession = Depends(get_async_session)):
     await challenge_worker_access_to_job(db, key, job_id)
@@ -157,12 +158,12 @@ async def finish_job(job_id: UUID,
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "JOB_NOT_FINISHABLE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.PROCESSING.value}' state, current state: '{db_job.state.value}'"},
         )
-    if job_finish.state == base_objects.ProcessingState.DONE:
-        result_path = os.path.join(config.RESULT_DIR, str(job_id), f"{job_id}.json")
+    if state == base_objects.ProcessingState.DONE:
+        result_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
         if not await aiofiles_os.path.exists(result_path):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "RESULT_NOT_FOUND", "message": f"Result file for job '{job_id}' not found at expected location: '{result_path}'"},
             )
-    await cruds.finish_job(db, job_finish)
+    await cruds.finish_job(db, job_id, base_objects.ProcessingState.DONE)
     return {"code": "JOB_FINISHED", "message": f"Job '{job_id}' finished successfully"}

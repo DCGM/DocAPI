@@ -27,8 +27,14 @@ class Config:
         self.ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "pass")
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/doc_api_db")
-        self.UPDATE_TRIGGERS = os.getenv("UPDATE_TRIGGERS", str(False)).lower() in TRUE_VALUES
 
+        # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
+        #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
+        #         - the job is marked as QUEUED
+        #     else
+        #         - the job is marked as FAILED
+        self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
+        self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
 
         self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "batch_uploaded"))
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))

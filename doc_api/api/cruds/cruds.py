@@ -1,15 +1,16 @@
 import logging
 import secrets
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Literal
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
+from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.database import DBError
+from doc_api.config import config
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
 
@@ -87,7 +88,84 @@ async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
         raise DBError(f"Failed reading job from database", status_code=500) from e
 
 
-async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worker_key_id) -> None:
+async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
+    try:
+        result = await db.scalars(
+            select(model.Job)
+              .where(model.Job.owner_key_id == key_id)
+              .order_by(model.Job.created_date.desc())
+        )
+        return list(result.all())
+    except exc.SQLAlchemyError as e:
+        raise DBError('Failed reading jobs from database', status_code=500) from e
+
+
+async def assign_job_to_worker(db: AsyncSession, worker_key_id: UUID) -> model.Job:
+    try:
+        # 1) Retry timed-out or ERROR jobs
+        now = datetime.now(timezone.utc)
+        timeout_threshold = now - config.JOB_TIMEOUT_SECONDS
+        max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
+
+        previous_attempts = func.coalesce(model.Job.previous_attempts, -1)
+
+        retryable_predicate = or_(
+            and_(
+                model.Job.state == base_objects.ProcessingState.PROCESSING,
+                model.Job.last_change < timeout_threshold,
+            ),
+            model.Job.state == base_objects.ProcessingState.ERROR,
+        )
+
+        await db.execute(
+            update(model.Job)
+            .where(retryable_predicate, previous_attempts < max_attempts_minus_1)
+            .values(
+                state=base_objects.ProcessingState.QUEUED,
+                worker_key_id=None,
+                last_change=now,
+                progress=0.0
+            )
+        )
+
+        await db.execute(
+            update(model.Job)
+            .where(retryable_predicate, previous_attempts >= max_attempts_minus_1)
+            .values(
+                state=base_objects.ProcessingState.FAILED,
+                last_change=now,
+                finished_date=now,
+                progress=1.0,
+            )
+        )
+
+        # 2) Pick one QUEUED job atomically
+        result = await db.execute(
+            select(model.Job)
+            .where(model.Job.state == base_objects.ProcessingState.QUEUED)
+            .order_by(model.Job.created_date.asc())
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        db_job = result.scalar_one_or_none()
+        if db_job is None:
+            raise DBError("No job available", code="NO_JOB_AVAILABLE", status_code=404)
+
+        db_job.state = base_objects.ProcessingState.PROCESSING
+        db_job.started_date = now
+        db_job.last_change = now
+        db_job.worker_key_id = worker_key_id
+        db_job.previous_attempts = (db_job.previous_attempts or 0) + 1
+
+        await db.commit()
+
+        return db_job
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed reading/updating jobs in database", status_code=500) from e
+
+
+async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> None:
     try:
         result = await db.execute(
             select(model.Job).where(model.Job.id == job_update.id)
@@ -98,23 +176,19 @@ async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worke
 
         if job_update.progress is not None:
             db_job.progress = job_update.progress
+
+        db_job.last_change = datetime.now(timezone.utc)
+
         if job_update.log is not None:
             if db_job.log is None:
                 db_job.log = job_update.log
             else:
-                db_job.log += "\n" + job_update.log
+                db_job.log += job_update.log
         if job_update.log_user is not None:
             if db_job.log_user is None:
                 db_job.log_user = job_update.log_user
             else:
-                db_job.log_user += "\n" + job_update.log_user
-
-        last_change = datetime.now(timezone.utc)
-        if job_update.state == base_objects.ProcessingState.PROCESSING and db_job.state == base_objects.ProcessingState.QUEUED:
-            db_job.started_date = last_change
-            db_job.state = job_update.state
-
-        db_job.last_change = last_change
+                db_job.log_user += job_update.log_user
 
         await db.commit()
 
@@ -122,31 +196,20 @@ async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate, worke
         raise DBError(f"Failed updating job '{job_update.id}' in database", status_code=500) from e
 
 
-async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> None:
+async def finish_job(db: AsyncSession, job_id: UUID,
+                     state: Literal[base_objects.ProcessingState.ERROR, base_objects.ProcessingState.DONE]) -> None:
     try:
         result = await db.execute(
-            select(model.Job).where(model.Job.id == job_finish.id)
+            select(model.Job).where(model.Job.id == job_id)
         )
         db_job = result.scalar_one_or_none()
         if db_job is None:
-            raise DBError(f"Job '{job_finish.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
 
-        db_job.state = job_finish.state
-        if job_finish.log is not None:
-            if db_job.log is None:
-                db_job.log = job_finish.log
-            else:
-                db_job.log += "\n" + job_finish.log
-        if job_finish.log_user is not None:
-            if db_job.log_user is None:
-                db_job.log_user = job_finish.log_user
-            else:
-                db_job.log_user += "\n" + job_finish.log_user
+        if state not in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.DONE}:
+            raise DBError(f"Invalid state '{state}' for finishing job '{job_id}'", code="INVALID_JOB_STATE", status_code=400)
 
-        if db_job.previous_attempts is None:
-            db_job.previous_attempts = 0
-        else:
-            db_job.previous_attempts += 1
+        db_job.state = state
 
         db_job.progress = 1.0
 
@@ -160,43 +223,42 @@ async def finish_job(db: AsyncSession, job_finish: base_objects.JobFinish) -> No
         raise DBError("Failed finishing job in database", status_code=500) from e
 
 
-async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
-    try:
-        result = await db.scalars(
-            select(model.Job)
-              .where(model.Job.owner_key_id == key_id)
-              .order_by(model.Job.created_date.desc())
-        )
-        return list(result.all())
-    except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading jobs from database', status_code=500) from e
+async def get_log_header_for_job(db: AsyncSession, job_id: UUID) -> str:
+    result = await db.execute(
+        select(model.Job).where(model.Job.id == job_id)
+    )
+    db_job = result.scalar_one_or_none()
+    if db_job is None:
+        raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
 
-
-async def get_job_for_worker(db: AsyncSession, worker_key_id: UUID) -> model.Job:
-    try:
-        db_job = await db.execute(
-            select(model.Job)
-              .where(model.Job.state == base_objects.ProcessingState.QUEUED)
-              .order_by(model.Job.created_date.asc())
-              .with_for_update(skip_locked=True)
-              .limit(1)
-        )
-        job = db_job.scalar_one_or_none()
-
-        if job is None:
-            raise DBError("No job available", code="NO_JOB_AVAILABLE", status_code=404)
-
-        job.state = base_objects.ProcessingState.PROCESSING
-        job.started_date = datetime.now(timezone.utc)
-        job.last_change = job.started_date
-        job.worker_key_id = worker_key_id
-
-        await db.commit()
-
-        return job
-
-    except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading jobs from database', status_code=500) from e
+    db_worker_key = await db.execute(
+        select(model.Key).where(model.Key.id == db_job.worker_key_id)
+    )
+    db_worker_key = db_worker_key.scalar_one_or_none()
+    db_owner_key = await db.execute(
+        select(model.Key).where(model.Key.id == db_job.owner_key_id)
+    )
+    db_owner_key = db_owner_key.scalar_one_or_none()
+    log_header = (f"\n\n"
+                  f"JOB_UPDATE_STAMP - {db_job.last_change} - {config.SERVER_NAME}\n"
+                  f"########################################################################\n"
+                  f"OWNER_LABEL: {db_owner_key.label}\n"
+                  f"WORKER_LABEL: {None if db_worker_key is None else db_worker_key.label}\n"
+                  f"JOB_STATE: {db_job.state}\n"
+                  f"JOB_PROGRESS: {db_job.progress}\n"
+                  f"JOB_PREVIOUS_ATTEMPTS: {db_job.previous_attempts}\n"
+                  f"\n"
+                  f"JOB_CREATED: {db_job.created_date}\n"
+                  f"JOB_STARTED: {db_job.started_date}\n"
+                  f"JOB_LAST_CHANGE: {db_job.last_change}\n"
+                  f"JOB_FINISHED: {db_job.finished_date}\n"
+                  f"\n"
+                  f"OWNER_ID: {db_owner_key.id}\n"
+                  f"WORKER_ID: {None if db_worker_key is None else db_worker_key.id}\n"
+                  f"JOB_ID: {db_job.id}\n"
+                  f"########################################################################\n"
+                  f"\n\n")
+    return log_header
 
 
 async def start_job(db: AsyncSession, job_id: UUID) -> bool:

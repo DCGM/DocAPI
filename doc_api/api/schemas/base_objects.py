@@ -53,19 +53,9 @@ class Job(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra='ignore')
 
 
-class JobFinish(BaseModel):
-    id: UUID
-
-    state: Literal[ProcessingState.ERROR, ProcessingState.DONE]
-
-    log: Optional[str] = None
-    log_user: Optional[str] = None
-
-
 class JobUpdate(BaseModel):
     id: UUID
 
-    state: Optional[Literal[ProcessingState.PROCESSING]] = None
     progress: Optional[float] = None
 
     log: Optional[str] = None
