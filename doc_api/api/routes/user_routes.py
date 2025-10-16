@@ -66,7 +66,13 @@ async def upload_meta_json(job_id: UUID, meta_json,
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
     meta_json_path = os.path.join(batch_path, "meta.json")
     with open(meta_json_path, "w", encoding="utf-8") as f:
-        meta_json_dict = meta_json.model_dump(mode="json")
+        try:
+            meta_json_dict = json.loads(meta_json)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "META_JSON_INVALID", "message": f"Failed to decode JSON"},
+            ) from e
         json.dump(meta_json_dict, f, ensure_ascii=False, indent=4)
     db_job.meta_json_uploaded = True
     await db.commit()
