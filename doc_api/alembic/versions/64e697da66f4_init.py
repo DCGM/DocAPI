@@ -1,8 +1,8 @@
 """init
 
-Revision ID: 5c90ab9cd617
+Revision ID: 64e697da66f4
 Revises: 
-Create Date: 2025-09-24 15:52:38.601409
+Create Date: 2025-10-17 15:41:17.950086
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '5c90ab9cd617'
+revision: str = '64e697da66f4'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -43,9 +43,11 @@ def upgrade() -> None:
     sa.Column('worker_key_id', sa.Uuid(), nullable=True),
     sa.Column('definition', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('alto_required', sa.Boolean(), nullable=False),
-    sa.Column('proarc_json_required', sa.Boolean(), nullable=False),
-    sa.Column('state', sa.Enum('NEW', 'QUEUED', 'PROCESSING', 'ERROR', 'DONE', 'CANCELLED', name='processingstate'), nullable=False),
-    sa.Column('proarc_json_uploaded', sa.Boolean(), nullable=False),
+    sa.Column('meta_json_required', sa.Boolean(), nullable=False),
+    sa.Column('meta_json_uploaded', sa.Boolean(), nullable=False),
+    sa.Column('state', sa.Enum('NEW', 'QUEUED', 'PROCESSING', 'ERROR', 'DONE', 'CANCELLED', 'FAILED', name='processingstate'), nullable=False),
+    sa.Column('progress', sa.Float(), nullable=False),
+    sa.Column('previous_attempts', sa.Integer(), nullable=True),
     sa.Column('created_date', sa.DateTime(timezone=True), nullable=False),
     sa.Column('started_date', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_change', sa.DateTime(timezone=True), nullable=False),
@@ -60,9 +62,11 @@ def upgrade() -> None:
     op.create_index(op.f('ix_jobs_created_date'), 'jobs', ['created_date'], unique=False)
     op.create_index(op.f('ix_jobs_finished_date'), 'jobs', ['finished_date'], unique=False)
     op.create_index(op.f('ix_jobs_last_change'), 'jobs', ['last_change'], unique=False)
+    op.create_index(op.f('ix_jobs_meta_json_required'), 'jobs', ['meta_json_required'], unique=False)
+    op.create_index(op.f('ix_jobs_meta_json_uploaded'), 'jobs', ['meta_json_uploaded'], unique=False)
     op.create_index(op.f('ix_jobs_owner_key_id'), 'jobs', ['owner_key_id'], unique=False)
-    op.create_index(op.f('ix_jobs_proarc_json_required'), 'jobs', ['proarc_json_required'], unique=False)
-    op.create_index(op.f('ix_jobs_proarc_json_uploaded'), 'jobs', ['proarc_json_uploaded'], unique=False)
+    op.create_index(op.f('ix_jobs_previous_attempts'), 'jobs', ['previous_attempts'], unique=False)
+    op.create_index(op.f('ix_jobs_progress'), 'jobs', ['progress'], unique=False)
     op.create_index(op.f('ix_jobs_started_date'), 'jobs', ['started_date'], unique=False)
     op.create_index(op.f('ix_jobs_state'), 'jobs', ['state'], unique=False)
     op.create_index(op.f('ix_jobs_worker_key_id'), 'jobs', ['worker_key_id'], unique=False)
@@ -102,9 +106,11 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_jobs_worker_key_id'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_state'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_started_date'), table_name='jobs')
-    op.drop_index(op.f('ix_jobs_proarc_json_uploaded'), table_name='jobs')
-    op.drop_index(op.f('ix_jobs_proarc_json_required'), table_name='jobs')
+    op.drop_index(op.f('ix_jobs_progress'), table_name='jobs')
+    op.drop_index(op.f('ix_jobs_previous_attempts'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_owner_key_id'), table_name='jobs')
+    op.drop_index(op.f('ix_jobs_meta_json_uploaded'), table_name='jobs')
+    op.drop_index(op.f('ix_jobs_meta_json_required'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_last_change'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_finished_date'), table_name='jobs')
     op.drop_index(op.f('ix_jobs_created_date'), table_name='jobs')

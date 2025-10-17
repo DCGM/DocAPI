@@ -4,14 +4,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Callable
 
-from fastapi import Depends, Security, HTTPException
+from fastapi import Security, HTTPException
 from fastapi.security.api_key import APIKeyHeader, APIKeyQuery, APIKeyCookie
 from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_403_FORBIDDEN
 
 
-from doc_api.api.database import get_async_session
+from doc_api.api.database import open_session
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.db import model
 from doc_api.config import config
@@ -54,7 +54,6 @@ async def lookup_key(db: AsyncSession, provided_key: str) -> model.Key | None | 
 
 def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model.Key"]:
     async def _dep(
-        db: AsyncSession = Depends(get_async_session),
         k_hdr: Optional[str] = Security(api_key_header),
         k_q:   Optional[str] = Security(api_key_query),
         k_ck:  Optional[str] = Security(api_key_cookie),
@@ -63,12 +62,13 @@ def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model
         if not provided:
             raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "MISSING_API_KEY", "message": "Missing API key"})
 
-        key = await lookup_key(db, provided)
-        if key is None:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INVALID_API_KEY", "message": "Invalid API key"})
-        if not key.active:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INACTIVE_API_KEY", "message": "Inactive API key"})
-        if key.role != KeyRole.ADMIN and key_role != key.role:
-            raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INSUFFICIENT_API_KEY_ROLE", "message": "Insufficient API key role"})
-        return key
+        async with open_session() as db:
+            key = await lookup_key(db, provided)
+            if key is None:
+                raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INVALID_API_KEY", "message": "Invalid API key"})
+            if not key.active:
+                raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INACTIVE_API_KEY", "message": "Inactive API key"})
+            if key.role != KeyRole.ADMIN and key_role != key.role:
+                raise HTTPException(HTTP_403_FORBIDDEN, detail={"code": "INSUFFICIENT_API_KEY_ROLE", "message": "Insufficient API key role"})
+            return key
     return _dep

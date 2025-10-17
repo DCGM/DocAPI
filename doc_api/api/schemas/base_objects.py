@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProcessingState(str, enum.Enum):
@@ -36,21 +36,63 @@ class Image(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra='ignore')
 
 
+
 class Job(BaseModel):
-    id: UUID
+    id: UUID = Field(
+        ...,
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
+        description="Unique identifier of the job."
+    )
 
-    state: ProcessingState
-    progress: float
-    previous_attempts: Optional[int] = None
+    state: ProcessingState = Field(
+        ...,
+        examples=["PROCESSING"],
+        description="Current state of the job."
+    )
 
-    created_date: datetime
-    started_date: Optional[datetime] = None
-    last_change: datetime
-    finished_date: Optional[datetime] = None
+    progress: float = Field(
+        ...,
+        examples=[0.65],
+        description="Progress of the job (0.0 - 1.0)."
+    )
 
-    log_user: Optional[str] = None
+    previous_attempts: Optional[int] = Field(
+        None,
+        examples=[1],
+        description="Number of previous attempts if the job was retried."
+    )
 
-    model_config = ConfigDict(from_attributes=True, extra='ignore')
+    created_date: datetime = Field(
+        ...,
+        examples=["2025-10-17T09:00:00Z"],
+        description="UTC timestamp when the job was created."
+    )
+
+    started_date: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-17T09:05:00Z"],
+        description="UTC timestamp when processing started."
+    )
+
+    last_change: datetime = Field(
+        ...,
+        examples=["2025-10-17T09:45:00Z"],
+        description="UTC timestamp of the last state change."
+    )
+
+    finished_date: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-17T09:50:00Z"],
+        description="UTC timestamp when the job was finished (if applicable)."
+    )
+
+    log_user: Optional[str] = Field(
+        None,
+        examples=["string"],
+        description="User or worker identifier associated with this job."
+    )
+
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class JobUpdate(BaseModel):
@@ -81,4 +123,8 @@ class KeyUpdate(BaseModel):
     label: Optional[str] = None
     active: Optional[bool] = None
     role: Optional[KeyRole] = None
+
+def model_example(model_cls):
+    schema = model_cls.model_json_schema()
+    return {p: f.get("examples", [f"<{p}>"])[0] for p, f in schema["properties"].items()}
 

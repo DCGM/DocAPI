@@ -1,4 +1,4 @@
-import json
+import http
 import logging
 import os
 
@@ -12,30 +12,71 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import cruds
-from doc_api.api.cruds.cruds import update_processing_state_for_jobs
 from doc_api.api.database import get_async_session
+from doc_api.api.routes.helper import render_msg, render_example, RouteInvariantError
 from doc_api.api.routes.route_guards import challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
+from doc_api.api.schemas.responses import AppCode, DocAPIResponse, \
+    DocAPIResponseWithOptionalData, DocAPIResponseWithData
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
 
-from typing import List, Literal
+from typing import List, Literal, Tuple
 from uuid import UUID
-
 
 logger = logging.getLogger(__name__)
 
 
 require_worker_key = require_api_key(key_role=base_objects.KeyRole.WORKER)
 
-
-@worker_router.get("/job", response_model=base_objects.Job, tags=["Worker"])
+MESSAGES_GET_JOB = {
+    AppCode.JOB_ASSIGNED:    "Job '{job_id}' assigned.",
+    AppCode.JOB_QUEUE_EMPTY: "Queue is empty right now, try again shortly.",
+}
+@worker_router.get(
+    "/job",
+    response_model=DocAPIResponse | DocAPIResponseWithData[base_objects.Job],
+    responses={
+        200: {
+            "description": f"Job assignment for workers.",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "example_0": {
+                            "summary": AppCode.JOB_ASSIGNED.value,
+                            "description": "A job has been assigned to the worker.",
+                            "value": {
+                                "status_code": 200,
+                                "app_code": AppCode.JOB_ASSIGNED.value,
+                                "message": render_example(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED),
+                                "data": base_objects.model_example(base_objects.Job),
+                            }},
+                        "example_1": {
+                            "summary": AppCode.JOB_QUEUE_EMPTY.value,
+                            "description": "No jobs are currently available in the queue.",
+                            "value": {
+                                "status_code": 200,
+                                "app_code": AppCode.JOB_QUEUE_EMPTY.value,
+                                "message": render_example(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY)
+                            }}
+                    }}}}},
+    tags=["Worker"])
 async def get_job(
         key: model.Key = Depends(require_worker_key),
         db: AsyncSession = Depends(get_async_session)):
-    db_job = await cruds.assign_job_to_worker(db, key.id)
-    return db_job
+    db_job, app_code = await cruds.assign_job_to_worker(db, key.id)
+    if app_code == AppCode.JOB_ASSIGNED:
+        return DocAPIResponseWithData(status_code=http.HTTPStatus.OK,
+                                      app_code=app_code,
+                                      message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED, job_id=str(db_job.id)),
+                                      data=base_objects.Job.model_validate(db_job))
+    elif app_code == AppCode.JOB_QUEUE_EMPTY:
+        return DocAPIResponse(status_code=http.HTTPStatus.OK,
+                              app_code=app_code,
+                              message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY))
+
+    raise RouteInvariantError(f"Unexpected app_code '{app_code}' from assign_job_to_worker")
 
 
 @worker_router.get("/images/{job_id}", response_model=List[base_objects.Image], tags=["Worker"])

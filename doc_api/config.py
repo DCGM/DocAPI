@@ -15,13 +15,13 @@ class Config:
         self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
         self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "DocAPI")
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
-        self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
         self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "DocAPI")
         self.SOFTWARE_VERSION = os.getenv("SOFTWARE_VERSION", "1.0")
 
         self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
+        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
 
         self.ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "username")
         self.ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "pass")
@@ -43,8 +43,6 @@ class Config:
         self.WORKERS_DB_FETCH_INTERVAL = os.getenv("WORKERS_DB_FETCH_INTERVAL", "5")
 
         self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/doc_api.api')
-
-        self.PRODUCTION = os.getenv("PRODUCTION", False)
 
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################

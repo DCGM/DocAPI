@@ -41,9 +41,9 @@ class Job(Base):
     progress: Mapped[float] = mapped_column(index=True, default=0.0, nullable=False)
     previous_attempts: Mapped[int] = mapped_column(index=True, nullable=True)
 
-    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
+    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
     started_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
-    last_change: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
+    last_change: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
     finished_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
 
     log: Mapped[str] = mapped_column(nullable=True)
@@ -63,7 +63,7 @@ class Image(Base):
     image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
-    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), index=True, nullable=False)
+    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
 
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('jobs.id'), index=True, nullable=False)
     job: Mapped['Job'] = relationship(back_populates="images", foreign_keys='Image.job_id')
@@ -80,7 +80,7 @@ class Key(Base):
     active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
     role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)
 
-    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False, index=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 

@@ -1,7 +1,7 @@
 import logging
 import secrets
-from datetime import datetime, timezone
-from typing import List, Literal
+from datetime import datetime, timezone, timedelta
+from typing import List, Literal, Tuple, Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.database import DBError
+from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
@@ -38,7 +39,7 @@ async def create_job(db: AsyncSession, key_id: UUID, job_definition: JobDefiniti
             raise DBError(f"Key '{key_id}' does not exist", code="KEY_NOT_FOUND", status_code=404)
 
         db_job = model.Job(
-            key_id=key_id,
+            owner_key_id=key_id,
             definition=job_definition.model_dump(mode="json"),
             alto_required=job_definition.alto_required,
             meta_json_required=job_definition.meta_json_required)
@@ -97,72 +98,73 @@ async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
         )
         return list(result.all())
     except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading jobs from database', status_code=500) from e
+        raise DBError('Failed reading jobs from database') from e
 
 
-async def assign_job_to_worker(db: AsyncSession, worker_key_id: UUID) -> model.Job:
+async def assign_job_to_worker(db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
     try:
-        # 1) Retry timed-out or ERROR jobs
-        now = datetime.now(timezone.utc)
-        timeout_threshold = now - config.JOB_TIMEOUT_SECONDS
-        max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
+        async with db.begin():
+            # 1) Retry timed-out or ERROR jobs
+            now = datetime.now(timezone.utc)
+            timeout_threshold = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+            max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
 
-        previous_attempts = func.coalesce(model.Job.previous_attempts, -1)
+            previous_attempts = func.coalesce(model.Job.previous_attempts, -1)
 
-        retryable_predicate = or_(
-            and_(
-                model.Job.state == base_objects.ProcessingState.PROCESSING,
-                model.Job.last_change < timeout_threshold,
-            ),
-            model.Job.state == base_objects.ProcessingState.ERROR,
-        )
-
-        await db.execute(
-            update(model.Job)
-            .where(retryable_predicate, previous_attempts < max_attempts_minus_1)
-            .values(
-                state=base_objects.ProcessingState.QUEUED,
-                worker_key_id=None,
-                last_change=now,
-                progress=0.0
+            retryable_predicate = or_(
+                and_(
+                    model.Job.state == base_objects.ProcessingState.PROCESSING,
+                    model.Job.last_change < timeout_threshold,
+                ),
+                model.Job.state == base_objects.ProcessingState.ERROR,
             )
-        )
 
-        await db.execute(
-            update(model.Job)
-            .where(retryable_predicate, previous_attempts >= max_attempts_minus_1)
-            .values(
-                state=base_objects.ProcessingState.FAILED,
-                last_change=now,
-                finished_date=now,
-                progress=1.0,
+            await db.execute(
+                update(model.Job)
+                .where(retryable_predicate, previous_attempts < max_attempts_minus_1)
+                .values(
+                    state=base_objects.ProcessingState.QUEUED,
+                    worker_key_id=None,
+                    last_change=now,
+                    progress=0.0
+                )
             )
-        )
 
-        # 2) Pick one QUEUED job atomically
-        result = await db.execute(
-            select(model.Job)
-            .where(model.Job.state == base_objects.ProcessingState.QUEUED)
-            .order_by(model.Job.created_date.asc())
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError("No job available", code="NO_JOB_AVAILABLE", status_code=404)
+            await db.execute(
+                update(model.Job)
+                .where(retryable_predicate, previous_attempts >= max_attempts_minus_1)
+                .values(
+                    state=base_objects.ProcessingState.FAILED,
+                    last_change=now,
+                    finished_date=now,
+                    progress=1.0,
+                )
+            )
 
-        db_job.state = base_objects.ProcessingState.PROCESSING
-        db_job.started_date = now
-        db_job.last_change = now
-        db_job.worker_key_id = worker_key_id
-        db_job.previous_attempts = (db_job.previous_attempts or 0) + 1
+            # 2) Pick one QUEUED job atomically
+            result = await db.execute(
+                select(model.Job)
+                .where(model.Job.state == base_objects.ProcessingState.QUEUED)
+                .order_by(model.Job.created_date.asc())
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return None, AppCode.JOB_QUEUE_EMPTY
 
-        await db.commit()
+            db_job.state = base_objects.ProcessingState.PROCESSING
+            db_job.started_date = now
+            db_job.last_change = now
+            db_job.worker_key_id = worker_key_id
+            db_job.previous_attempts = (db_job.previous_attempts or 0) + 1
 
-        return db_job
+        return db_job, AppCode.JOB_ASSIGNED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed reading/updating jobs in database", status_code=500) from e
+        raise DBError("Failed assigning job to worker in database") from e
+
+
 
 
 async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> None:
@@ -323,7 +325,7 @@ async def start_job(db: AsyncSession, job_id: UUID) -> bool:
         return False
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job state in database", status_code=500) from e
+        raise DBError("Failed updating job state in database") from e
 
 
 async def cancel_job(db: AsyncSession, job_id: UUID) -> None:
@@ -383,12 +385,11 @@ async def get_keys(db: AsyncSession) -> List[model.Key]:
         raise DBError('Failed reading keys from database', status_code=500) from e
 
 
-KEY_PREFIX = "mk_"
 KEY_BYTES = 32  # 32 bytes ≈ 256-bit entropy (recommended)
 
 def generate_raw_key() -> str:
     # URL-safe Base64 without padding-ish chars; good for headers, query, and cookies
-    return KEY_PREFIX + secrets.token_urlsafe(KEY_BYTES)
+    return config.KEY_PREFIX + secrets.token_urlsafe(KEY_BYTES)
 
 async def new_key(db: AsyncSession, label: str) -> str:
     """
