@@ -1,11 +1,13 @@
 import logging
 import logging.config
 import traceback
+from typing import Optional, List, Set
 
 import fastapi
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
+from fastapi.routing import APIRoute
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi import HTTPException as FastAPIHTTPException
@@ -132,6 +134,64 @@ async def unhandled(request: Request, exc: Exception):
     ))
 
 # override OpenAPI generation to include 422 response with our error envelope
+def _extract_allowed_from_callable(call) -> Optional[Set[KeyRole]]:
+    """Pull the captured `allowed` set out of the require_api_key closure."""
+    clo = getattr(call, "__closure__", None)
+    code = getattr(call, "__code__", None)
+    if not clo or not code:
+        return None
+    names = code.co_freevars
+    cells = [c.cell_contents for c in clo]
+    env = {n: v for n, v in zip(names, cells)}
+    allowed = env.get("allowed")
+    if isinstance(allowed, set):
+        return allowed
+    return None
+
+def _collect_roles_from_dependant(dependant) -> Optional[Set[KeyRole]]:
+    """Walk the dependant graph to find any require_api_key closure and return its allowed set."""
+    if dependant is None:
+        return None
+    # Check this node
+    if callable(getattr(dependant, "call", None)):
+        allowed = _extract_allowed_from_callable(dependant.call)
+        if allowed is not None:
+            return allowed
+    # Recurse into dependencies
+    for sub in getattr(dependant, "dependencies", []) or []:
+        found = _collect_roles_from_dependant(sub)
+        if found is not None:
+            return found
+    return None
+
+def _collect_roles_from_route(route: APIRoute) -> Optional[List[str]]:
+    """
+    Return a list of role strings to document (always includes ADMIN).
+    - If no allowed set is found: return None (don’t inject anything).
+    - If allowed is empty: ADMIN-only endpoint.
+    """
+    # 1) Endpoint signature deps (covers your common case)
+    allowed = _collect_roles_from_dependant(getattr(route, "dependant", None))
+
+    # 2) Router-level dependencies as a fallback
+    if allowed is None:
+        for dep in getattr(route, "dependencies", []) or []:
+            call = getattr(dep, "dependency", None)
+            if callable(call):
+                allowed = _extract_allowed_from_callable(call)
+                if allowed is not None:
+                    break
+
+    if allowed is None:
+        return None  # no role guard found
+
+    # ADMIN always allowed
+    roles_out = [r.value if isinstance(r, KeyRole) else str(r) for r in sorted(allowed, key=lambda x: str(x))]
+    if "ADMIN" not in roles_out:
+        roles_out.append("ADMIN")
+    return roles_out
+
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -158,6 +218,36 @@ def custom_openapi():
         "DocAPIResponseClientError",
         {k: v for k, v in error_schema_full.items() if k != "$defs"}
     )
+
+    # === ROLES DOC START ===
+    # Build a map (path, method) -> roles using the actual route objects
+    route_roles_map = {}
+    for r in app.routes:
+        if isinstance(r, APIRoute) and r.include_in_schema:
+            roles = _collect_roles_from_route(r)
+            if roles is None:
+                continue
+            for method in r.methods or []:
+                route_roles_map[(r.path, method.upper())] = roles
+
+    # Inject the roles into descriptions and as x-roles-allowed
+    for path, ops in schema.get("paths", {}).items():
+        for method, op in ops.items():
+            if not isinstance(op, dict):
+                continue
+            roles = route_roles_map.get((path, method.upper()))
+            if not roles:
+                continue
+
+            # Add machine-readable extension
+            op["x-roles-allowed"] = roles
+
+            # Append human-readable line to description (without clobbering existing text)
+            desc = op.get("description") or ""
+            line = f"**Allowed roles:** {', '.join(roles)}"
+            if line not in desc:
+                op["description"] = (desc + ("\n\n" if desc else "") + line)
+    # === ROLES DOC END ===
 
     # Replace ONLY the JSON schema of existing 422 responses
     for path, ops in schema.get("paths", {}).items():
@@ -189,22 +279,22 @@ def custom_openapi():
                 existing_examples[example_key] = {
                     "summary": AppCode.REQUEST_VALIDATION_ERROR.value,
                     "value": DocAPIResponseClientError(
-                    status=422,
-                    code=AppCode.REQUEST_VALIDATION_ERROR,
-                    detail="Request validation failed.",
-                    details=[
-                        {
-                            "loc": ["body", "field_name"],
-                            "msg": "field required",
-                            "type": "value_error.missing",
-                        },
-                        {
-                            "loc": ["query", "limit"],
-                            "msg": "value is not a valid integer",
-                            "type": "type_error.integer",
-                        },
-                    ],
-                ).model_dump(mode="json", exclude_none=True),
+                        status=422,
+                        code=AppCode.REQUEST_VALIDATION_ERROR,
+                        detail="Request validation failed.",
+                        details=[
+                            {
+                                "loc": ["body", "field_name"],
+                                "msg": "field required",
+                                "type": "value_error.missing",
+                            },
+                            {
+                                "loc": ["query", "limit"],
+                                "msg": "value is not a valid integer",
+                                "type": "type_error.integer",
+                            },
+                        ],
+                    ).model_dump(mode="json", exclude_none=True),
                 }
             app_json["examples"] = existing_examples
 
