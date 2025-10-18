@@ -127,11 +127,14 @@ def validate_client_error_response(payload: DocAPIResponseClientError, headers: 
 
     return JSONResponse(
         status_code=int(payload.status),
-        content=payload.model_dump(mode="json"),
+        content=payload.model_dump(mode="json", exclude_none=True),
         headers=hdrs
     )
 
 
 def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONResponse:
     """Render a validated 5xx error."""
-    return JSONResponse(status_code=int(payload.status), content=payload.model_dump(mode="json"))
+    return JSONResponse(
+        status_code=int(payload.status),
+        content=payload.model_dump(mode="json", exclude_none=True)
+    )
