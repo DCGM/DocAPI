@@ -11,8 +11,14 @@ class AppCode(str, enum.Enum):
     # 2xx
     JOB_ASSIGNED = 'JOB_ASSIGNED'
     JOB_QUEUE_EMPTY = 'JOB_QUEUE_EMPTY'
+    JOB_IMAGE_RETRIEVED = 'JOB_IMAGE_RETRIEVED'
+    JOB_IMAGE_NOT_UPLOADED = 'JOB_IMAGE_NOT_UPLOADED'
+    JOB_IMAGES_RETRIEVED = 'JOB_IMAGES_RETRIEVED'
 
     # 4xx
+    JOB_NOT_FOUND = 'JOB_NOT_FOUND'
+    JOB_IMAGE_NOT_FOUND = 'JOB_IMAGE_NOT_FOUND'
+
     HTTP_ERROR = 'HTTP_ERROR'
     REQUEST_VALIDATION_ERROR = 'REQUEST_VALIDATION_ERROR'
 
@@ -20,10 +26,24 @@ class AppCode(str, enum.Enum):
     API_KEY_INVALID = 'API_KEY_INVALID'
     API_KEY_INACTIVE = 'API_KEY_INACTIVE'
     API_KEY_INSUFFICIENT_ROLE = 'API_KEY_INSUFFICIENT_ROLE'
-    KEY_NOT_FOUND = 'KEY_NOT_FOUND'
+    API_KEY_FORBIDDEN_FOR_JOB = 'API_KEY_FORBIDDEN_FOR_JOB'
+    API_KEY_NOT_FOUND = 'API_KEY_NOT_FOUND'
 
     # 5xx
     INTERNAL_ERROR = 'INTERNAL_ERROR'
+
+
+DETAILS_GENERAL = {
+    # 4xx
+    AppCode.JOB_NOT_FOUND: "Job (id={job_id}) does not exist.",
+    AppCode.JOB_IMAGE_NOT_FOUND: "Image (id={image_id}) does not exist for Job (id={job_id}).",
+
+    AppCode.HTTP_ERROR: "An HTTP error occurred.",
+    AppCode.REQUEST_VALIDATION_ERROR: "The request could not be validated.",
+
+    # 5xx
+    AppCode.INTERNAL_ERROR: "An internal server error occurred.",
+}
 
 T = TypeVar("T")
 

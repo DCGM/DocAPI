@@ -3,6 +3,8 @@ import json
 import logging
 import os
 from xml.etree.ElementTree import ParseError
+
+import fastapi
 from defusedxml import ElementTree as ET
 
 import cv2
@@ -19,6 +21,7 @@ from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
+from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode
 from doc_api.db import model
 from doc_api.api.routes import user_router
 from doc_api.config import config
@@ -37,7 +40,42 @@ require_user_key = require_api_key(key_role=base_objects.KeyRole.USER)
 async def me(key: model.Key = Depends(require_user_key)):
     return key.label
 
-@user_router.post("/job", response_model=base_objects.Job, tags=["User"])
+@user_router.post(
+    "/job",
+    response_model=base_objects.Job,
+    tags=["User"],
+    responses={
+        fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        # replace default from main.py
+                        "default" : {
+                            "summary": AppCode.REQUEST_VALIDATION_ERROR.value,
+                            "description": "Input validation failed",
+                            "value": DocAPIResponseClientError(
+                                            status=422,
+                                            code=AppCode.REQUEST_VALIDATION_ERROR.value,
+                                            detail="Request validation failed.",
+                                            details=[
+                                                {
+                                                    "loc": ["body", "images", 0, "name"],
+                                                    "msg": "field required",
+                                                    "type": "value_error.missing",
+                                                },
+                                                {
+                                                    "loc": ["body", "images", 1, "order"],
+                                                    "msg": "value is not a valid integer",
+                                                    "type": "type_error.integer",
+                                                },
+                                                {
+                                                    "loc": ["body", "alto_required"],
+                                                    "msg": "value could not be parsed to a boolean",
+                                                    "type": "type_error.bool",
+                                                },
+                                            ],
+                                        ).model_dump(mode="json", exclude_none=True)}}}}}})
+
 async def create_job(job_definition: cruds.JobDefinition,
                      key: model.Key = Depends(require_user_key),
                      db: AsyncSession = Depends(get_async_session)):
@@ -232,7 +270,7 @@ async def get_images(job_id: UUID,
         key: model.Key = Depends(require_user_key),
         db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_images = await cruds.get_images(db, job_id)
+    db_images = await cruds.get_job_images(db, job_id)
     return [base_objects.Image.model_validate(db_image) for db_image in db_images]
 
 

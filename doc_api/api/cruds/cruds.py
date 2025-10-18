@@ -101,7 +101,7 @@ async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
         raise DBError('Failed reading jobs from database') from e
 
 
-async def assign_job_to_worker(db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
+async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
     try:
         async with db.begin():
             # 1) Retry timed-out or ERROR jobs
@@ -345,36 +345,43 @@ async def cancel_job(db: AsyncSession, job_id: UUID) -> None:
         raise DBError("Failed updating job state in database", status_code=500) from e
 
 
-async def get_image(db: AsyncSession, image_id: UUID) -> model.Image:
+async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -> Tuple[Optional[model.Image], AppCode]:
     try:
-        result = await db.execute(
-            select(model.Image).where(model.Image.id == image_id)
-        )
-        db_image = result.scalar_one_or_none()
-        if db_image is None:
-            raise DBError(f"Image '{image_id}' does not exist", code="IMAGE_NOT_FOUND", status_code=404)
-        return db_image
+        async with db.begin():
+            result = await db.execute(
+                select(model.Image).
+                where(model.Image.id == image_id).
+                where(model.Image.job_id == job_id)
+            )
+            db_image = result.scalar_one_or_none()
+            if db_image is None:
+                return None, AppCode.JOB_IMAGE_NOT_FOUND
+            return db_image, AppCode.JOB_IMAGE_RETRIEVED
+
     except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading image from database", status_code=500) from e
+        raise DBError(f"Failed reading image from database") from e
 
 
-async def get_images(db: AsyncSession, job_id: UUID) -> List[model.Image]:
+async def get_job_images(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[List[model.Image]], AppCode]:
     try:
-        result = await db.execute(
-            select(model.Job).where(model.Job.id == job_id)
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job).where(model.Job.id == job_id)
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return None, AppCode.JOB_NOT_FOUND
 
-        result = await db.scalars(
-            select(model.Image)
-              .where(model.Image.job_id == job_id)
-              .order_by(model.Image.order.asc())
-        )
-        return list(result.all())
+            result = await db.scalars(
+                select(model.Image)
+                  .where(model.Image.job_id == job_id)
+                  .order_by(model.Image.order.asc())
+            )
+            job_images = list(result.all())
+            return job_images, AppCode.JOB_IMAGES_RETRIEVED
+
     except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading images from database', status_code=500) from e
+        raise DBError('Failed reading images from database') from e
 
 
 async def get_keys(db: AsyncSession) -> List[model.Key]:
