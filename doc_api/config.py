@@ -1,9 +1,15 @@
 import os
 import logging
 import time
+import socket
 
-class UTCFormatter(logging.Formatter):
+
+class DocAPIFormatter(logging.Formatter):
     converter = time.gmtime
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.hostname = socket.gethostname()
+        return super().format(record)
 
 
 TRUE_VALUES = {"true", "1"}
@@ -13,7 +19,7 @@ class Config:
     def __init__(self):
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "/")
         self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
-        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "DocAPI")
+        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
         self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "DocAPI")
@@ -23,10 +29,7 @@ class Config:
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
         self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
 
-        self.ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "username")
-        self.ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "pass")
-
-        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/doc_api_db")
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
 
         # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
         #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
@@ -36,13 +39,8 @@ class Config:
         self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
         self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
 
-        self.BATCH_UPLOADED_DIR = os.getenv("BATCH_UPLOADED_DIR", os.path.join(self.BASE_DIR, "batch_uploaded"))
+        self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
-
-        # how often workers check DB, time in sec
-        self.WORKERS_DB_FETCH_INTERVAL = os.getenv("WORKERS_DB_FETCH_INTERVAL", "5")
-
-        self.WORKING_DIR = os.getenv("WORKING_DIR", f'/tmp/doc_api.api')
 
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
@@ -50,7 +48,7 @@ class Config:
         # Internal mailing setting for doc_api.internal_mail_logger
         self.INTERNAL_MAIL_SERVER = os.getenv("INTERNAL_MAIL_SERVER", None)
         self.INTERNAL_MAIL_PORT = os.getenv("INTERNAL_MAIL_PORT", 25)
-        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", "DocAPI")
+        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
         self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
         self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
         if os.getenv("INTERNAL_MAIL_RECEIVER_MAILS") is not None:
@@ -63,7 +61,7 @@ class Config:
         # External mailing setting for doc_api.external_mail_logger
         self.EXTERNAL_MAIL_SERVER = os.getenv("EXTERNAL_MAIL_SERVER", None)
         self.EXTERNAL_MAIL_PORT = os.getenv("EXTERNAL_MAIL_PORT", 25)
-        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", "DocAPI")
+        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)
         self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
         self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
         self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
@@ -78,8 +76,8 @@ class Config:
             'disable_existing_loggers': False,
             'formatters': {
                 'base': {
-                    '()': UTCFormatter,
-                    'format': '%(asctime)s : %(name)s : %(levelname)s : %(message)s'
+                    '()': DocAPIFormatter,
+                    'format': '%(asctime)s : %(name)s : %(hostname)s : %(levelname)s : %(message)s'
                 }
             },
             'handlers': {
@@ -120,9 +118,8 @@ class Config:
         ################################################################################################################
 
     def create_dirs(self):
-        os.makedirs(self.BATCH_UPLOADED_DIR, exist_ok=True)
+        os.makedirs(self.JOBS_DIR, exist_ok=True)
         os.makedirs(self.RESULTS_DIR, exist_ok=True)
-        os.makedirs(self.WORKING_DIR, exist_ok=True)
         os.makedirs(self.LOGGING_DIR, exist_ok=True)
 
 
