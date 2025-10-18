@@ -1,15 +1,15 @@
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
-from typing import List, Literal, Tuple, Optional
+from typing import List, Tuple, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
 from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.database import DBError
+from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
 from doc_api.db import model
@@ -18,95 +18,13 @@ from doc_api.api.schemas import base_objects
 
 logger = logging.getLogger(__name__)
 
-class ImageForJobDefinition(BaseModel):
-    name: str
-    order: int
-
-
-class JobDefinition(BaseModel):
-    images: List[ImageForJobDefinition]
-    alto_required: bool = False
-    meta_json_required: bool = False
-
-
-async def create_job(db: AsyncSession, key_id: UUID, job_definition: JobDefinition) -> model.Job:
-    try:
-        result = await db.execute(
-            select(model.Key).where(model.Key.id == key_id)
-        )
-        db_key = result.scalar_one_or_none()
-        if db_key is None:
-            raise DBError(f"Key '{key_id}' does not exist", code="KEY_NOT_FOUND", status_code=404)
-
-        db_job = model.Job(
-            owner_key_id=key_id,
-            definition=job_definition.model_dump(mode="json"),
-            alto_required=job_definition.alto_required,
-            meta_json_required=job_definition.meta_json_required)
-
-        db.add(db_job)
-
-        for img in job_definition.images:
-            db_image = model.Image(
-                job=db_job,
-                name=img.name,
-                order=img.order
-            )
-            db.add(db_image)
-
-        await db.commit()
-        return db_job
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed creating new job in database", status_code=500) from e
-
-
-async def get_image_by_job_and_name(db: AsyncSession, job_id: UUID, image_name: str) -> model.Image:
-    try:
-        result = await db.execute(
-            select(model.Image).where(
-                model.Image.job_id == job_id,
-                model.Image.name == image_name
-            )
-        )
-        db_image = result.scalar_one_or_none()
-        if db_image is None:
-            raise DBError(f"Image '{image_name}' for Job '{job_id}' does not exist", code="IMAGE_NOT_FOUND", status_code=404)
-        return db_image
-    except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading image from database", status_code=500) from e
-
-
-async def get_job(db: AsyncSession, job_id: UUID) -> model.Job:
-    try:
-        result = await db.execute(
-            select(model.Job).where(model.Job.id == job_id)
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
-        return db_job
-    except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading job from database", status_code=500) from e
-
-
-async def get_jobs(db: AsyncSession, key_id: UUID) -> List[model.Job]:
-    try:
-        result = await db.scalars(
-            select(model.Job)
-              .where(model.Job.owner_key_id == key_id)
-              .order_by(model.Job.created_date.desc())
-        )
-        return list(result.all())
-    except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading jobs from database') from e
-
 
 async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
     try:
         async with db.begin():
             # 1) Retry timed-out or ERROR jobs
             now = datetime.now(timezone.utc)
-            timeout_threshold = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+            timeout_threshold = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS) - timedelta(seconds=config.JOB_TIMEOUT_GRACE_SECONDS)
             max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
 
             previous_attempts = func.coalesce(model.Job.previous_attempts, -1)
@@ -162,67 +80,122 @@ async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tupl
         return db_job, AppCode.JOB_ASSIGNED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed assigning job to worker in database") from e
+        raise DBError("Failed assigning Job to worker.") from e
 
 
-
-
-async def update_job(db: AsyncSession, job_update: base_objects.JobUpdate) -> None:
+async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tuple[AppCode, Optional[datetime], Optional[datetime]]:
     try:
-        result = await db.execute(
-            select(model.Job).where(model.Job.id == job_update.id)
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_update.id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job)
+                .where(model.Job.id == job_id)
+                .with_for_update()
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return AppCode.JOB_NOT_FOUND, None, None
+            if db_job.state != base_objects.ProcessingState.PROCESSING:
+                return AppCode.JOB_NOT_IN_PROCESSING, None, None
 
-        if job_update.progress is not None:
-            db_job.progress = job_update.progress
+            lease_expire_at, server_time = get_new_lease()
+            db_job.last_change = server_time
 
-        db_job.last_change = datetime.now(timezone.utc)
-
-        if job_update.log is not None:
-            if db_job.log is None:
-                db_job.log = job_update.log
-            else:
-                db_job.log += job_update.log
-        if job_update.log_user is not None:
-            if db_job.log_user is None:
-                db_job.log_user = job_update.log_user
-            else:
-                db_job.log_user += job_update.log_user
-
-        await db.commit()
+            return AppCode.JOB_HEARTBEAT_ACCEPTED, lease_expire_at, server_time
 
     except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed updating job '{job_update.id}' in database", status_code=500) from e
+        raise DBError("Failed updating Job lease.") from e
 
 
-async def finish_job(db: AsyncSession, job_id: UUID,
-                     state: Literal[base_objects.ProcessingState.ERROR, base_objects.ProcessingState.DONE]) -> None:
+async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
-        result = await db.execute(
-            select(model.Job).where(model.Job.id == job_id)
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job).where(model.Job.id == job_id).with_for_update()
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return None, None, None, AppCode.JOB_NOT_FOUND
+            if db_job.state != base_objects.ProcessingState.PROCESSING:
+                return db_job, None, None, AppCode.JOB_NOT_IN_PROCESSING
 
-        if state not in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.DONE}:
-            raise DBError(f"Invalid state '{state}' for finishing job '{job_id}'", code="INVALID_JOB_STATE", status_code=400)
+            if job_update.progress is not None:
+                p = job_update.progress
+                p = max(0.0, min(1.0, p))
+                db_job.progress = p
 
-        db_job.state = state
+            lease_expire_at, server_time = get_new_lease()
+            db_job.last_change = server_time
 
-        db_job.progress = 1.0
+            if job_update.log:
+                if db_job.log:
+                    if not db_job.log.endswith("\n"):
+                        db_job.log += "\n"
+                    db_job.log += job_update.log
+                else:
+                    db_job.log = job_update.log
 
-        finished_date = datetime.now(timezone.utc)
-        db_job.finished_date = finished_date
-        db_job.last_change = finished_date
+            if job_update.log_user:
+                if db_job.log_user:
+                    if not db_job.log_user.endswith("\n"):
+                        db_job.log_user += "\n"
+                    db_job.log_user += job_update.log_user
+                else:
+                    db_job.log_user = job_update.log_user
 
-        await db.commit()
+            return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed finishing job in database", status_code=500) from e
+        raise DBError(f"Failed updating job.") from e
+
+
+def get_new_lease() -> Tuple[datetime, datetime]:
+    server_time = datetime.now(timezone.utc)
+    lease_expire_at = server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+    return lease_expire_at, server_time
+
+
+async def complete_job(*, db: AsyncSession, job_id: UUID) -> AppCode:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job).where(model.Job.id == job_id).with_for_update()
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return AppCode.JOB_NOT_FOUND
+
+            if db_job.state == ProcessingState.DONE:
+                return AppCode.JOB_ALREADY_COMPLETED
+
+            db_job.state = ProcessingState.DONE
+            db_job.progress = 1.0
+
+            finished_date = datetime.now(timezone.utc)
+            db_job.finished_date = finished_date
+            db_job.last_change = finished_date
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed finishing job in database.") from e
+
+
+async def fail_job(*, db: AsyncSession, job_id: UUID) -> AppCode:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job).where(model.Job.id == job_id).with_for_update()
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return AppCode.JOB_NOT_FOUND
+
+            db_job.state = ProcessingState.FAILED
+
+            finished_date = datetime.now(timezone.utc)
+            db_job.finished_date = finished_date
+            db_job.last_change = finished_date
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed failing job in database.") from e
 
 
 async def get_log_header_for_job(db: AsyncSession, job_id: UUID) -> str:
@@ -263,88 +236,6 @@ async def get_log_header_for_job(db: AsyncSession, job_id: UUID) -> str:
     return log_header
 
 
-async def start_job(db: AsyncSession, job_id: UUID) -> bool:
-    try:
-        # EXISTS: is there any image not uploaded?
-        img_missing = exists(
-            select(literal(1))
-              .select_from(model.Image)
-              .where(
-                  model.Image.job_id == job_id,
-                  model.Image.image_uploaded.is_(False),
-              )
-        )
-
-        # EXISTS: is there any ALTO not uploaded?
-        alto_missing = exists(
-            select(literal(1))
-              .select_from(model.Image)
-              .where(
-                  model.Image.job_id == job_id,
-                  model.Image.alto_uploaded.is_(False),
-              )
-        )
-
-        # meta condition: either not required OR (required AND already uploaded)
-        meta_ok = or_(
-            model.Job.meta_json_required.is_(False),
-            and_(
-                model.Job.meta_json_required.is_(True),
-                model.Job.meta_json_uploaded.is_(True),
-            ),
-        )
-
-        # readiness condition:
-        # - if alto not required: all images uploaded  -> NOT img_missing
-        # - if alto required: all images & all alto -> NOT img_missing AND NOT alto_missing
-        ready = or_(
-            and_(model.Job.alto_required.is_(False), not_(img_missing)),
-            and_(model.Job.alto_required.is_(True),  not_(img_missing), not_(alto_missing)),
-        )
-
-        stmt = (
-            update(model.Job)
-            .where(
-                model.Job.id == job_id,
-                model.Job.state == base_objects.ProcessingState.NEW,
-                meta_ok,
-                ready,
-            )
-            .values(
-                state=base_objects.ProcessingState.QUEUED,
-                last_change=datetime.now(timezone.utc),
-            )
-            .returning(model.Job.id)   # tells us if an update happened
-        )
-
-        res = await db.execute(stmt)
-        updated = res.scalar_one_or_none() is not None
-        if updated:
-            await db.commit()
-            return True
-        return False
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job state in database") from e
-
-
-async def cancel_job(db: AsyncSession, job_id: UUID) -> None:
-    try:
-        result = await db.execute(
-            select(model.Job).where(model.Job.id == job_id).with_for_update()
-        )
-        db_job = result.scalar_one_or_none()
-        if db_job is None:
-            raise DBError(f"Job '{job_id}' does not exist", code="JOB_NOT_FOUND", status_code=404)
-
-        db_job.state = base_objects.ProcessingState.CANCELLED
-        db_job.finished_date = datetime.now(timezone.utc)
-        await db.commit()
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job state in database", status_code=500) from e
-
-
 async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -> Tuple[Optional[model.Image], AppCode]:
     try:
         async with db.begin():
@@ -355,8 +246,8 @@ async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -
             )
             db_image = result.scalar_one_or_none()
             if db_image is None:
-                return None, AppCode.JOB_IMAGE_NOT_FOUND
-            return db_image, AppCode.JOB_IMAGE_RETRIEVED
+                return None, AppCode.IMAGE_NOT_FOUND_FOR_JOB
+            return db_image, AppCode.IMAGE_RETRIEVED
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed reading image from database") from e
@@ -378,7 +269,7 @@ async def get_job_images(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[Li
                   .order_by(model.Image.order.asc())
             )
             job_images = list(result.all())
-            return job_images, AppCode.JOB_IMAGES_RETRIEVED
+            return job_images, AppCode.IMAGES_RETRIEVED
 
     except exc.SQLAlchemyError as e:
         raise DBError('Failed reading images from database') from e

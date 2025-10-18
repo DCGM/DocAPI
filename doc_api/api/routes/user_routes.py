@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.routes.route_guards import challenge_owner_access_to_job
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import cruds
+from doc_api.api.cruds import worker_cruds, user_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode
@@ -33,11 +33,8 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
-require_user_key = require_api_key(key_role=base_objects.KeyRole.USER)
-
-
 @user_router.get("/me", tags=["User"])
-async def me(key: model.Key = Depends(require_user_key)):
+async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER))):
     return key.label
 
 @user_router.post(
@@ -76,20 +73,20 @@ async def me(key: model.Key = Depends(require_user_key)):
                                             ],
                                         ).model_dump(mode="json", exclude_none=True)}}}}}})
 
-async def create_job(job_definition: cruds.JobDefinition,
-                     key: model.Key = Depends(require_user_key),
+async def create_job(job_definition: user_cruds.JobDefinition,
+                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                      db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
-    job = await cruds.create_job(db, key.id, job_definition)
+    job = await user_cruds.create_job(db, key.id, job_definition)
     return base_objects.Job.model_validate(job)
 
 
 @user_router.post("/meta_json/{job_id}", tags=["User"])
 async def upload_meta_json(job_id: UUID, meta_json,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                           key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                           db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_job = await cruds.get_job(db, job_id)
+    db_job = await user_cruds.get_job(db, job_id)
     if not db_job.meta_json_required:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -115,7 +112,7 @@ async def upload_meta_json(job_id: UUID, meta_json,
     db_job.meta_json_uploaded = True
     await db.commit()
 
-    job_started = await cruds.start_job(db, job_id)
+    job_started = await user_cruds.start_job(db, job_id)
 
     msg = f"Meta JSON for job '{job_id}' uploaded successfully"
     if job_started:
@@ -126,10 +123,10 @@ async def upload_meta_json(job_id: UUID, meta_json,
 
 @user_router.post("/image/{job_id}/{name}", tags=["User"])
 async def upload_image(job_id: UUID, name: str, file: UploadFile,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                       key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                       db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_image = await cruds.get_image_by_job_and_name(db, job_id, name)
+    db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
     if db_image.image_uploaded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -156,7 +153,7 @@ async def upload_image(job_id: UUID, name: str, file: UploadFile,
 
     await db.commit()
 
-    job_started = await cruds.start_job(db, job_id)
+    job_started = await user_cruds.start_job(db, job_id)
 
     msg = f"Image '{name}' for Job '{job_id}' uploaded successfully"
     if job_started:
@@ -209,11 +206,11 @@ def validate_alto_basic(xml_bytes: bytes) -> Tuple[bool, Optional[str], Optional
 async def upload_alto(job_id: UUID,
         name: str,
         file: UploadFile,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                      db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_image = await cruds.get_image_by_job_and_name(db, job_id, name)
-    db_job = await cruds.get_job(db, job_id)
+    db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
+    db_job = await user_cruds.get_job(db, job_id)
     if not db_job.alto_required:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -246,7 +243,7 @@ async def upload_alto(job_id: UUID,
     db_image.alto_uploaded = True
     await db.commit()
 
-    job_started = await cruds.start_job(db, job_id)
+    job_started = await user_cruds.start_job(db, job_id)
 
     msg = f"ALTO for image '{name}' for Job '{job_id}' uploaded successfully"
     if schema_ver:
@@ -258,42 +255,42 @@ async def upload_alto(job_id: UUID,
 
 @user_router.get("/job/{job_id}", response_model=base_objects.Job, tags=["User"])
 async def get_job(job_id: UUID,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                  key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                  db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_job = await cruds.get_job(db, job_id)
+    db_job = await user_cruds.get_job(db, job_id)
     return base_objects.Job.model_validate(db_job)
 
 
 @user_router.get("/images/{job_id}", response_model=List[base_objects.Image], tags=["User"])
 async def get_images(job_id: UUID,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                     db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_images = await cruds.get_job_images(db, job_id)
+    db_images = await user_cruds.get_job_images(db, job_id)
     return [base_objects.Image.model_validate(db_image) for db_image in db_images]
 
 
 @user_router.get("/jobs", response_model=List[base_objects.Job], tags=["User"])
 async def get_jobs(
-        key: model.Key = Depends(require_user_key),
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    db_jobs = await cruds.get_jobs(db, key.id)
+    db_jobs = await user_cruds.get_jobs(db, key.id)
     return [base_objects.Job.model_validate(db_job) for db_job in db_jobs]
 
 
 @user_router.put("/start_job/{job_id}/", tags=["User"])
 async def start_job(job_id: UUID,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                    key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                    db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_job = await cruds.get_job(db, job_id)
+    db_job = await user_cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.NEW:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "JOB_NOT_NEW", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.NEW.value}' state, current state: '{db_job.state.value}'"},
         )
-    job_started = await cruds.start_job(db, job_id)
+    job_started = await user_cruds.start_job(db, job_id)
     if job_started:
         return {"code": "JOB_STARTED", "message": f"Job '{job_id}' started successfully"}
     else:
@@ -305,28 +302,28 @@ async def start_job(job_id: UUID,
 
 @user_router.put("/cancel_job/{job_id}", tags=["User"])
 async def cancel_job(job_id: UUID,
-        key: model.Key = Depends(require_user_key),
-        db: AsyncSession = Depends(get_async_session)):
+                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+                     db: AsyncSession = Depends(get_async_session)):
     await challenge_owner_access_to_job(db, key, job_id)
-    db_job = await cruds.get_job(db, job_id)
+    db_job = await user_cruds.get_job(db, job_id)
     if db_job.state in {base_objects.ProcessingState.CANCELLED, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "JOB_NOT_CANCELLABLE", "message": f"Job '{job_id}' is in state '{db_job.state.value}' and cannot be cancelled"},
         )
-    await cruds.cancel_job(db, job_id)
+    await user_cruds.cancel_job(db, job_id)
     return {"code": "JOB_CANCELLED", "message": f"Job '{job_id}' cancelled successfully"}
 
 
 @user_router.get("/result/{job_id}", tags=["User"])
 async def get_result(
     job_id: UUID,
-    key: model.Key = Depends(require_user_key),
-    db: AsyncSession = Depends(get_async_session),
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session),
 ):
     await challenge_owner_access_to_job(db, key, job_id)
 
-    db_job = await cruds.get_job(db, job_id)
+    db_job = await user_cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.DONE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -90,26 +90,26 @@ class Job(BaseModel):
 
     created_date: datetime = Field(
         ...,
-        examples=["2025-10-17T09:00:00Z"],
+        examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp when the job was created."
     )
 
     started_date: Optional[datetime] = Field(
         None,
-        examples=["2025-10-17T09:05:00Z"],
+        examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp when processing started."
     )
 
     last_change: datetime = Field(
         ...,
-        examples=["2025-10-17T09:45:00Z"],
+        examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp of the last state change."
     )
 
     finished_date: Optional[datetime] = Field(
         None,
-        examples=["2025-10-17T09:50:00Z"],
-        description="UTC timestamp when the job was finished (if applicable)."
+        examples=["2025-10-18T21:30:00+00:00"],
+        description="UTC timestamp when the job was finished."
     )
 
     log_user: Optional[str] = Field(
@@ -122,12 +122,64 @@ class Job(BaseModel):
 
 
 class JobUpdate(BaseModel):
-    id: UUID
+    """
+    Partial update of an existing processing job.
+    Sent periodically by the worker to report progress or append logs.
+    """
+    progress: Optional[float] = Field(
+        None,
+        description=(
+            "Current completion percentage of the job (0.0–100.0). "
+            "Omit if progress has not changed since the last update."
+        ),
+        examples=[42.5]
+    )
 
-    progress: Optional[float] = None
+    log: Optional[str] = Field(
+        None,
+        description=(
+            "Technical or debug log text appended to the internal system log. "
+            "Used for diagnostics or backend monitoring."
+        ),
+        examples=["Loaded 500 image tiles and initialized OCR engine."]
+    )
 
-    log: Optional[str] = None
-    log_user: Optional[str] = None
+    log_user: Optional[str] = Field(
+        None,
+        description=(
+            "User-facing log message displayed in the interface. "
+            "Helps indicate current processing step or progress in human-readable form."
+        ),
+        examples=["Processing page 12 of 58."]
+    )
+
+
+class JobLease(BaseModel):
+    """
+    Represents a temporary lease (heartbeat) information for a processing job.
+    Returned when a worker reports activity to confirm that it is still alive.
+    """
+    id: UUID = Field(
+        ...,
+        description="Unique identifier of the job whose lease was renewed.",
+        examples=["9fdc1a4c-022c-4ba3-9ea4-69dcfeb1b9d3"]
+    )
+    lease_expire_at: datetime = Field(
+        ...,
+        description=(
+            "UTC timestamp when the job's lease will expire if no further heartbeats are received. "
+            "After this moment, the job may be considered stale and reassigned."
+        ),
+        examples=["2025-10-18T21:30:00+00:00"]
+    )
+    server_time: datetime = Field(
+        ...,
+        description=(
+            "UTC time on the server when this lease information was generated. "
+            "Workers can use this to estimate when to send the next heartbeat."
+        ),
+        examples=["2025-10-18T21:30:00+00:00"]
+    )
 
 
 class Key(BaseModel):

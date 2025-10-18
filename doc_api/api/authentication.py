@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Callable
+from typing import Optional, Callable, Iterable, Set
 
 import fastapi
 from fastapi import Security
@@ -52,7 +52,13 @@ async def lookup_key(db: AsyncSession, provided_key: str) -> model.Key | None | 
 
     return key
 
-def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model.Key"]:
+def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
+    """
+    Dependency enforcing API key authentication + role authorization.
+    - ADMIN is always allowed.
+    """
+    allowed = set(roles) if roles else set()
+
     async def _dep(
         k_hdr: Optional[str] = Security(api_key_header),
         k_q:   Optional[str] = Security(api_key_query),
@@ -63,32 +69,42 @@ def require_api_key(*, key_role: KeyRole = KeyRole.USER) -> Callable[..., "model
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_401_UNAUTHORIZED,
                 code=AppCode.API_KEY_MISSING,
-                detail=f"Missing API key, please provide an API key via header, query parameter, or cookie. "
-                        f"To obtain an API key for {config.SERVER_NAME}, contact: {config.CONTACT_TO_GET_NEW_KEY}.",
-                headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
+                detail=(
+                    "Missing API key. Provide it via header, query parameter, or cookie. "
+                    f"To obtain an API key for {config.SERVER_NAME}, contact: {config.CONTACT_TO_GET_NEW_KEY}."
+                ),
+                headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'},
             )
 
-        async with (open_session() as db):
+        async with open_session() as db:
             key = await lookup_key(db, provided)
             if key is None:
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_401_UNAUTHORIZED,
                     code=AppCode.API_KEY_INVALID,
-                    detail=f"Invalid API key. "
-                            f"To obtain an API key for {config.SERVER_NAME}, contact: {config.CONTACT_TO_GET_NEW_KEY}.",
-                    headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
+                    detail=(
+                        "Invalid API key. "
+                        f"To obtain an API key for {config.SERVER_NAME}, contact: {config.CONTACT_TO_GET_NEW_KEY}."
+                    ),
+                    headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'},
                 )
+
             if not key.active:
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_403_FORBIDDEN,
                     code=AppCode.API_KEY_INACTIVE,
-                    detail=f"Inactive API key."
+                    detail="Inactive API key.",
                 )
-            if key.role != KeyRole.ADMIN and key_role != key.role:
+
+            if key.role != KeyRole.ADMIN and key.role not in allowed:
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_403_FORBIDDEN,
                     code=AppCode.API_KEY_INSUFFICIENT_ROLE,
-                    detail=f"Insufficient API key role."
+                    detail="Insufficient API key role.",
                 )
+
             return key
+
     return _dep
+
+require_admin_key = require_api_key()
