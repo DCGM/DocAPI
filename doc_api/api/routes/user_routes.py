@@ -62,7 +62,7 @@ async def upload_meta_json(job_id: UUID, meta_json,
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "META_JSON_ALREADY_UPLOADED", "message": f"Job '{job_id}' already has Meta JSON uploaded"},
         )
-    batch_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id))
+    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
     meta_json_path = os.path.join(batch_path, "meta.json")
     with open(meta_json_path, "w", encoding="utf-8") as f:
@@ -97,7 +97,7 @@ async def upload_image(job_id: UUID, name: str, file: UploadFile,
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "IMAGE_ALREADY_UPLOADED", "message": f"Image '{name}' for Job '{job_id}' already uploaded"},
         )
-    batch_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id))
+    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
     image_path = os.path.join(batch_path, f'{db_image.id}.jpg')
 
@@ -198,7 +198,7 @@ async def upload_alto(job_id: UUID,
             detail={"code": "INVALID_ALTO_XML", "message": f"Not a valid ALTO XML{ns_info} or missing <Layout>"},
         )
 
-    batch_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id))
+    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
     alto_path = os.path.join(batch_path, f"{db_image.id}.xml")
 

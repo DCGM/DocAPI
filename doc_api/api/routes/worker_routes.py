@@ -16,8 +16,7 @@ from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import render_msg, render_example, RouteInvariantError
 from doc_api.api.routes.route_guards import challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.responses import AppCode, DocAPIResponse, \
-    DocAPIResponseWithOptionalData, DocAPIResponseWithData
+from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, make_validated_ok
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
@@ -36,7 +35,7 @@ MESSAGES_GET_JOB = {
 }
 @worker_router.get(
     "/job",
-    response_model=DocAPIResponse | DocAPIResponseWithData[base_objects.Job],
+    response_model=DocAPIResponseOK[base_objects.Job],
     responses={
         200: {
             "description": f"Job assignment for workers.",
@@ -67,14 +66,14 @@ async def get_job(
         db: AsyncSession = Depends(get_async_session)):
     db_job, app_code = await cruds.assign_job_to_worker(db, key.id)
     if app_code == AppCode.JOB_ASSIGNED:
-        return DocAPIResponseWithData(status_code=http.HTTPStatus.OK,
-                                      app_code=app_code,
-                                      message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED, job_id=str(db_job.id)),
-                                      data=base_objects.Job.model_validate(db_job))
+        return DocAPIResponseOK[base_objects.Job](status_code=http.HTTPStatus.OK,
+                                                  app_code=app_code,
+                                                  message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED, job_id=str(db_job.id)),
+                                                  data=db_job)
     elif app_code == AppCode.JOB_QUEUE_EMPTY:
-        return DocAPIResponse(status_code=http.HTTPStatus.OK,
-                              app_code=app_code,
-                              message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY))
+        return make_validated_ok(status_code=http.HTTPStatus.OK,
+                                 app_code=app_code,
+                                 message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY))
 
     raise RouteInvariantError(f"Unexpected app_code '{app_code}' from assign_job_to_worker")
 
@@ -101,7 +100,7 @@ async def get_image(job_id: UUID, image_id: UUID,
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "IMAGE_NOT_UPLOADED", "message": f"Image '{db_image.name}' (ID: {image_id}) is not uploaded"},
         )
-    image_path = os.path.join(config.BATCH_UPLOADED_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
+    image_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
     return FileResponse(image_path, media_type="image/jpeg", filename=db_image.name)
 
 
@@ -117,7 +116,7 @@ async def get_alto(job_id: UUID, image_id: UUID,
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "ALTO_NOT_UPLOADED", "message": f"ALTO for image '{db_image.name}' (ID: {image_id}) is not uploaded"},
         )
-    alto_path = os.path.join(config.BATCH_UPLOADED_DIR, str(db_image.job_id), f"{db_image.id}.xml")
+    alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.xml")
     return FileResponse(alto_path, media_type="application/xml", filename=f"{os.path.splitext(db_image.name)[0]}.xml")
 
 
@@ -133,7 +132,7 @@ async def get_meta_json(job_id: UUID,
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "META_JSON_NOT_UPLOADED", "message": f"Meta JSON for job '{job_id}' is not uploaded"},
         )
-    meta_json_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id), "meta.json")
+    meta_json_path = os.path.join(config.JOBS_DIR, str(job_id), "meta.json")
     return FileResponse(meta_json_path, media_type="application/json", filename="meta.json")
 
 

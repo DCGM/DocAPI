@@ -4,14 +4,13 @@ import traceback
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.schemas.base_objects import KeyRole
-from doc_api.api.database import get_async_session, open_session
+from doc_api.api.database import open_session
 from doc_api.api.routes import user_router, worker_router, admin_router
-from doc_api.api.schemas.responses import DocAPIResponse, AppCode
+from doc_api.api.schemas.responses import AppCode, make_validated_server_error
 from doc_api.config import config
 from doc_api.tools.mail.mail_logger import get_internal_mail_logger
 from doc_api.db import model
@@ -85,9 +84,8 @@ async def unhandled(request: Request, exc: Exception):
     exception_logger.error(f'URL: {request.url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
-    return JSONResponse(
+    return make_validated_server_error(
         status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-        content=DocAPIResponse(status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                               app_code=AppCode.INTERNAL_ERROR,
-                               message="Internal server error").model_dump()
+        app_code=AppCode.INTERNAL_ERROR,
+        message="Internal server error"
     )
