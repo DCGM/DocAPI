@@ -20,6 +20,8 @@ class Config:
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "/")
         self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
         self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
+
+        # used for 401 -> headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
         self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "DocAPI")
@@ -28,6 +30,8 @@ class Config:
         self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
         self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
+
+        self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
 

@@ -1,10 +1,11 @@
-import http
 import logging
 import os
+from types import NoneType
 
 import aiofiles
 from fastapi import Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse
+from http import HTTPStatus
 
 from aiofiles import os as aiofiles_os
 
@@ -13,15 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import cruds
 from doc_api.api.database import get_async_session
-from doc_api.api.routes.helper import render_msg, render_example, RouteInvariantError
+from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.routes.route_guards import challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, make_validated_ok
+from doc_api.api.schemas.base_objects import model_example
+from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, validate_no_data_ok_response
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
 
-from typing import List, Literal, Tuple
+from typing import List, Literal, Tuple, Optional, Any
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
@@ -45,20 +47,20 @@ MESSAGES_GET_JOB = {
                         "example_0": {
                             "summary": AppCode.JOB_ASSIGNED.value,
                             "description": "A job has been assigned to the worker.",
-                            "value": {
-                                "status_code": 200,
-                                "app_code": AppCode.JOB_ASSIGNED.value,
-                                "message": render_example(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED),
-                                "data": base_objects.model_example(base_objects.Job),
-                            }},
+                            "value": DocAPIResponseOK[base_objects.Job](
+                                status=HTTPStatus.OK,
+                                code=AppCode.JOB_ASSIGNED,
+                                detail=MESSAGES_GET_JOB[AppCode.JOB_ASSIGNED],
+                                data=model_example(base_objects.Job)
+                            ).model_dump(mode="json")},
                         "example_1": {
                             "summary": AppCode.JOB_QUEUE_EMPTY.value,
                             "description": "No jobs are currently available in the queue.",
-                            "value": {
-                                "status_code": 200,
-                                "app_code": AppCode.JOB_QUEUE_EMPTY.value,
-                                "message": render_example(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY)
-                            }}
+                            "value": DocAPIResponseOK[NoneType](
+                                status=HTTPStatus.OK,
+                                code=AppCode.JOB_QUEUE_EMPTY,
+                                detail=MESSAGES_GET_JOB[AppCode.JOB_QUEUE_EMPTY]
+                            ).model_dump(mode="json")}
                     }}}}},
     tags=["Worker"])
 async def get_job(
@@ -66,14 +68,19 @@ async def get_job(
         db: AsyncSession = Depends(get_async_session)):
     db_job, app_code = await cruds.assign_job_to_worker(db, key.id)
     if app_code == AppCode.JOB_ASSIGNED:
-        return DocAPIResponseOK[base_objects.Job](status_code=http.HTTPStatus.OK,
-                                                  app_code=app_code,
-                                                  message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_ASSIGNED, job_id=str(db_job.id)),
-                                                  data=db_job)
+        return DocAPIResponseOK[base_objects.Job](
+            status=HTTPStatus.OK,
+            code=AppCode.JOB_ASSIGNED,
+            detail=MESSAGES_GET_JOB[AppCode.JOB_ASSIGNED].format(job_id=str(db_job.id)),
+            data=db_job
+        )
     elif app_code == AppCode.JOB_QUEUE_EMPTY:
-        return make_validated_ok(status_code=http.HTTPStatus.OK,
-                                 app_code=app_code,
-                                 message=render_msg(MESSAGES_GET_JOB, AppCode.JOB_QUEUE_EMPTY))
+        return validate_no_data_ok_response(
+            DocAPIResponseOK[NoneType](
+                status=HTTPStatus.OK,
+                code=AppCode.JOB_QUEUE_EMPTY,
+                detail=MESSAGES_GET_JOB[AppCode.JOB_QUEUE_EMPTY])
+        )
 
     raise RouteInvariantError(f"Unexpected app_code '{app_code}' from assign_job_to_worker")
 

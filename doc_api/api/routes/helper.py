@@ -8,9 +8,6 @@ def render_msg(msg_map: dict, code, **params) -> str:
     except KeyError as e:
         raise KeyError(f"Missing placeholder {e} for {code}") from e
 
-def render_example(msg_map: dict, code) -> str:
-    return msg_map.get(code)
-
 class RouteInvariantError(RuntimeError):
     """Raised when a route reaches an impossible or unhandled state."""
     pass
