@@ -1,16 +1,18 @@
 import logging
 import logging.config
 import traceback
-from http import HTTPStatus
 
+import fastapi
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError, HTTPException
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
-from doc_api.api.routes import user_router, worker_router, admin_router
-from doc_api.api.schemas.responses import AppCode, make_validated_server_error
+from doc_api.api.routes import user_router, worker_router, admin_router, debug_router
+from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
+    DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response
 from doc_api.config import config
 from doc_api.tools.mail.mail_logger import get_internal_mail_logger
 from doc_api.db import model
@@ -36,7 +38,11 @@ tags_metadata = [
     {
         "name": "Admin",
         "description": "",
-    }
+    },
+    {
+        "name": "Debug",
+        "description": "Debugging endpoints (admin only).",
+    },
 ]
 
 
@@ -69,7 +75,37 @@ async def startup():
 app.include_router(user_router, prefix="/api/user")
 app.include_router(worker_router, prefix="/api/worker")
 app.include_router(admin_router, prefix="/api/admin")
+app.include_router(debug_router, prefix="/api/debug")
 
+
+@app.exception_handler(DocAPIClientErrorException)
+async def api_client_error_handler(_: Request, exc: DocAPIClientErrorException):
+    payload = DocAPIResponseClientError(
+        status=exc.status,
+        code=exc.code,
+        detail=exc.detail
+    )
+    return validate_client_error_response(payload, headers=exc.headers)
+
+@app.exception_handler(HTTPException)
+async def http_exc_handler(_: Request, exc: HTTPException):
+    payload = DocAPIResponseClientError(
+        status=exc.status_code,
+        code=AppCode.HTTP_ERROR,
+        detail=f"Unexpected HTTP error.",
+        details=exc.detail
+    )
+    return validate_client_error_response(payload)
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(_: Request, exc: RequestValidationError):
+    payload = DocAPIResponseClientError(
+        status=fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        code=AppCode.REQUEST_VALIDATION_ERROR,
+        detail=f"Request validation failed.",
+        details=exc.errors()
+    )
+    return validate_client_error_response(payload)
 
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
@@ -84,8 +120,8 @@ async def unhandled(request: Request, exc: Exception):
     exception_logger.error(f'URL: {request.url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
-    return make_validated_server_error(
-        status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-        app_code=AppCode.INTERNAL_ERROR,
-        message="Internal server error"
-    )
+    return validate_server_error_response(DocAPIResponseServerError(
+        status=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+        code=AppCode.INTERNAL_ERROR,
+        detail=f"Internal server error."
+    ))

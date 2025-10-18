@@ -1,105 +1,137 @@
 import enum
-from http import HTTPStatus
-from typing import Generic, TypeVar, Optional, Literal
+from typing import Generic, TypeVar, Optional, Any, Mapping
 
-from pydantic import BaseModel, Field
+import fastapi
+from pydantic import BaseModel, Field, model_validator, field_validator
 from fastapi.responses import JSONResponse, Response
 
 
 # Naming convention for AppCode: CATEGORY_ACTION
 class AppCode(str, enum.Enum):
-    JOB_QUEUE_EMPTY = 'JOB_QUEUE_EMPTY'
+    # 2xx
     JOB_ASSIGNED = 'JOB_ASSIGNED'
+    JOB_QUEUE_EMPTY = 'JOB_QUEUE_EMPTY'
 
+    # 4xx
+    HTTP_ERROR = 'HTTP_ERROR'
+    REQUEST_VALIDATION_ERROR = 'REQUEST_VALIDATION_ERROR'
+
+    API_KEY_MISSING = 'API_KEY_MISSING'
+    API_KEY_INVALID = 'API_KEY_INVALID'
+    API_KEY_INACTIVE = 'API_KEY_INACTIVE'
+    API_KEY_INSUFFICIENT_ROLE = 'API_KEY_INSUFFICIENT_ROLE'
     KEY_NOT_FOUND = 'KEY_NOT_FOUND'
 
+    # 5xx
     INTERNAL_ERROR = 'INTERNAL_ERROR'
 
 T = TypeVar("T")
 
-class DocAPIResponseERROR(BaseModel):
-    """Response without data (4xx/5xx)."""
-    status_code: HTTPStatus = Field(..., description="HTTP status code.")
-    app_code: AppCode = Field(..., description="Application-specific code.")
-    message: str = Field(..., description="Human-readable message.")
+class DocAPIResponseBase(BaseModel):
+    status: int = Field(..., description="HTTP status code.")
+    code: AppCode = Field(..., description="Application-specific code.")
+    detail: str = Field(..., description="Human-readable message.")
 
-class DocAPIResponseOK(DocAPIResponseERROR, Generic[T]):
-    """Response where data may or may not be present (2xx)."""
+    @field_validator("status")
+    def check_valid_http_code(cls, v: int) -> int:
+        if not (100 <= v <= 599):
+            raise ValueError(f"Invalid HTTP status code: {v}")
+        return v
+
+
+class DocAPIResponseOK(DocAPIResponseBase, Generic[T]):
+    """2xx envelope."""
     data: Optional[T] = Field(
         None,
         description="Optional data payload associated with the response."
     )
 
-def make_validated_ok(
-    *,
-    status_code: HTTPStatus,
-    app_code: AppCode,
-    message: str,
-) -> Response:
-    """
-    Build a validated 2xx response with NO data (for 200 with data use the Pydantic model
-    directly from the route and FastAPI response_model to validate).
-    - Raises ValueError if `status_code` is not 2xx.
-    - For 204/205 → return an empty Response (no body allowed by RFC).
-    - For other 2xx (201/202/206/…) → return a JSON envelope with data=None.
-    """
-    code = int(status_code)
-    if code < 200 or code > 299:
-        raise ValueError(f"make_validated_client_error only permits 2xx codes, got {code}")
+    @model_validator(mode="after")
+    def _ensure_2xx(self):
+        code = int(self.status)
+        if not (200 <= code <= 299):
+            raise ValueError(f"DocAPIResponseOK requires 2xx status_code, got {code}")
+        return self
 
-    # 204/205 MUST NOT include a body
-    if status_code in (HTTPStatus.NO_CONTENT, HTTPStatus.RESET_CONTENT):
+
+class DocAPIResponseClientError(DocAPIResponseBase):
+    """4xx envelope."""
+    details: Optional[Any] = Field(
+        None, description="Optional error details."
+    )
+
+    @model_validator(mode="after")
+    def _ensure_4xx(self):
+        code = int(self.status)
+        if not (400 <= code <= 499):
+            raise ValueError(f"DocAPIResponseClientError requires 4xx status_code, got {code}")
+        return self
+
+class DocAPIClientErrorException(Exception):
+    def __init__(self, *, status: int, code: AppCode, detail: str, headers: Optional[Mapping[str, str]] = None):
+        self.status = status
+        self.code = code
+        self.detail = detail
+        self.headers = headers
+        super().__init__(detail)
+
+
+class DocAPIResponseServerError(DocAPIResponseBase):
+    """5xx envelope."""
+    details: Optional[Any] = Field(
+        None, description="Optional error details."
+    )
+
+    @model_validator(mode="after")
+    def _ensure_5xx(self):
+        code = int(self.status)
+        if not (500 <= code <= 599):
+            raise ValueError(f"DocAPIResponseServerError requires 5xx status_code, got {code}")
+        return self
+
+
+NO_BODY_STATUSES = {fastapi.status.HTTP_204_NO_CONTENT, fastapi.status.HTTP_205_RESET_CONTENT}
+
+def validate_no_data_ok_response(payload: DocAPIResponseOK[T]) -> Response:
+    """
+    Render a 2xx *no-data* response, for 200 with data return Pydantic model
+    directly from route and use FastAPI response_model for validation.
+    Policy:
+      - ALL 2xx through this helper must have data is None.
+      - 204/205 => empty Response (no body) - RFC: 204/205 MUST NOT include a body.
+      - Other 2xx => JSON envelope with data=None.
+    """
+    code = int(payload.status)
+
+    if payload.data is not None:
+        raise ValueError(
+            f"validate_ok_response only permits 2xx with data=None; "
+            f"got status {code} and data={payload.data!r}"
+        )
+
+    if payload.status in NO_BODY_STATUSES:
         return Response(status_code=code)
 
-    payload = DocAPIResponseOK[Literal[None]](
-        status_code=status_code,
-        app_code=app_code,
-        message=message,
-        data=None,
-    )
     return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
 
 
-def make_validated_client_error(
-    *,
-    status_code: HTTPStatus,
-    app_code: AppCode,
-    message: str
-) -> JSONResponse:
-    """
-    Build a validated 4xx client error.
-    - Raises ValueError if `status_code` is not 4xx.
-    """
-    code = int(status_code)
-    if not (400 <= code <= 499):
-        raise ValueError(f"make_validated_client_error only permits 4xx codes, got {code}")
+def validate_client_error_response(payload: DocAPIResponseClientError, headers: Optional[Mapping[str, str]] = None) -> JSONResponse:
+    """Render a validated 4xx error."""
+    hdrs: Optional[dict[str, str]] = None
+    if headers:
+        filtered: dict[str, str] = {}
+        for k, v in headers.items():
+            if v is not None:  # skip None values
+                filtered[str(k)] = str(v)
+        hdrs = filtered or None
 
-    payload = DocAPIResponseERROR(
-        status_code=status_code,
-        app_code=app_code,
-        message=message,
+    return JSONResponse(
+        status_code=int(payload.status),
+        content=payload.model_dump(mode="json"),
+        headers=hdrs
     )
-    return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
 
 
-def make_validated_server_error(
-    *,
-    status_code: HTTPStatus,
-    app_code: AppCode,
-    message: str
-) -> JSONResponse:
-    """
-    Build a validated 5xx server error.
-    - Raises ValueError if `status_code` is not 5xx.
-    """
-    code = int(status_code)
-    if not (500 <= code <= 599):
-        raise ValueError(f"make_validated_server_error only permits 5xx codes, got {code}")
-
-    payload = DocAPIResponseERROR(
-        status_code=status_code,
-        app_code=app_code,
-        message=message,
-    )
-    return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
-
+def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONResponse:
+    """Render a validated 5xx error."""
+    return JSONResponse(status_code=int(payload.status), content=payload.model_dump(mode="json"))

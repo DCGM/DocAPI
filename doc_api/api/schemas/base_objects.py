@@ -7,19 +7,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProcessingState(str, enum.Enum):
-    NEW = 'new'
-    QUEUED = 'queued'
-    PROCESSING = 'processing'
-    ERROR = 'error'
-    DONE = 'done'
-    CANCELLED = 'cancelled'
-    FAILED = 'failed'
+    NEW = 'NEW'
+    QUEUED = 'QUEUED'
+    PROCESSING = 'PROCESSING'
+    ERROR = 'ERROR'
+    DONE = 'DONE'
+    CANCELLED = 'CANCELLED'
+    FAILED = 'FAILED'
 
 
 class KeyRole(str, enum.Enum):
-    USER = 'user'
-    WORKER = 'worker'
-    ADMIN = 'admin'
+    USER = 'USER'
+    WORKER = 'WORKER'
+    ADMIN = 'ADMIN'
 
 
 class Image(BaseModel):
@@ -46,7 +46,7 @@ class Job(BaseModel):
 
     state: ProcessingState = Field(
         ...,
-        examples=["PROCESSING"],
+        examples=[ProcessingState.PROCESSING.value],
         description="Current state of the job."
     )
 
