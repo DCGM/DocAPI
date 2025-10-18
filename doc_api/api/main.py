@@ -4,7 +4,11 @@ import traceback
 
 import fastapi
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError, HTTPException
+from fastapi.exceptions import RequestValidationError
+
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi import HTTPException as FastAPIHTTPException
+
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex
@@ -87,15 +91,14 @@ async def api_client_error_handler(_: Request, exc: DocAPIClientErrorException):
     )
     return validate_client_error_response(payload, headers=exc.headers)
 
-@app.exception_handler(HTTPException)
-async def http_exc_handler(_: Request, exc: HTTPException):
+@app.exception_handler(StarletteHTTPException)
+async def http_exc_handler(_: Request, exc: StarletteHTTPException):
     payload = DocAPIResponseClientError(
         status=exc.status_code,
         code=AppCode.HTTP_ERROR,
-        detail=f"Unexpected HTTP error.",
-        details=exc.detail
+        detail=exc.detail if exc.detail else "HTTP error."
     )
-    return validate_client_error_response(payload)
+    return validate_client_error_response(payload, headers=exc.headers)
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(_: Request, exc: RequestValidationError):
