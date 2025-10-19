@@ -1,9 +1,13 @@
 import enum
-from typing import Generic, TypeVar, Optional, Any, Mapping
+from types import NoneType
+from typing import Generic, TypeVar, Optional, Any, Mapping, Dict, Type, Iterable, get_origin, get_args
 
 import fastapi
 from pydantic import BaseModel, Field, model_validator, field_validator
 from fastapi.responses import JSONResponse, Response
+from collections import defaultdict
+
+from doc_api.api.schemas.base_objects import model_example
 
 
 # Naming convention for AppCode: CATEGORY_ACTION
@@ -178,3 +182,88 @@ def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONRe
         status_code=int(payload.status),
         content=payload.model_dump(mode="json", exclude_none=True)
     )
+
+
+def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """
+    spec item format (one dict entry per AppCode):
+
+      AppCode.SOMETHING: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "...",
+        "model": DocAPIResponseOK[JobLease],     # JSON OK with auto data (generic)
+        # OR "model": DocAPIResponseClientError  # JSON error (non-generic)
+
+        # Optional for JSON: override example payload
+        # "example_value": {...}
+
+        # Non-JSON (e.g., binary):
+        # "content_type": "image/jpeg",
+        # "example_value": "(binary image data)",
+      }
+
+    - Groups by HTTP status; preserves insertion order for examples.
+    - Attaches the JSON schema model once per status (first JSON example wins).
+    """
+    grouped = defaultdict(lambda: defaultdict(lambda: {"examples": {}}))  # status -> ctype -> examples
+    status_models: Dict[int, Optional[Type[Any]]] = {}
+
+    for app_code, cfg in spec.items():
+        status: int = cfg["status"]
+        desc: Optional[str] = cfg.get("description")
+        ctype: str = cfg.get("content_type", "application/json")
+        model_cls: Optional[Type[Any]] = cfg.get("model")
+        detail: str = cfg.get("detail", "")
+        example_value = cfg.get("example_value")
+
+        # Build example value
+        if ctype != "application/json":
+            if example_value is None:
+                raise ValueError(f"Non-JSON example requires 'example_value' for {app_code}.")
+            value = example_value
+        else:
+            # JSON
+            if example_value is not None:
+                value = example_value
+            elif model_cls is not None:
+                value = _build_json_example(model_cls=model_cls, app_code=app_code, detail=detail, status=status)
+                status_models.setdefault(status, get_origin(model_cls) or model_cls)
+            else:
+                raise ValueError(f"JSON example needs 'model' for {app_code} (generic OK or non-generic).")
+
+        grouped[status][ctype]["examples"][app_code.value] = {
+            "summary": app_code.value,
+            **({"description": desc} if desc else {}),
+            "value": value,
+        }
+
+    # Assemble FastAPI responses shape
+    responses: Dict[int, Dict[str, Any]] = {}
+    for status, c_map in grouped.items():
+        entry: Dict[str, Any] = {"content": {}}
+        if "application/json" in c_map and status in status_models and status_models[status] is not None:
+            entry["model"] = status_models[status]
+        for ctype, payload in c_map.items():
+            entry["content"][ctype] = {"examples": payload["examples"]}
+        responses[status] = entry
+    return responses
+
+def _extract_generic_arg(tp: Type[Any]) -> Optional[Type[Any]]:
+    """Return T if tp is parameterized like DocAPIResponseOK[T]; else None."""
+    args = get_args(tp) or getattr(tp, "__args__", ())
+    return args[0] if args else None
+
+def _build_json_example(*, model_cls: Type[Any], app_code, detail: str, status: int) -> dict:
+    """
+    Instantiate either:
+      - DocAPIResponseOK[T] -> auto-generate data via model_example(T)
+      - DocAPIResponseClientError (or any non-generic) -> no data needed
+    """
+    T = _extract_generic_arg(model_cls)
+    if T is not None and T is not type(None):
+        data = model_example(T)
+        inst = model_cls(status=status, code=app_code, detail=detail, data=data)
+    else:
+        # non-generic or DocAPIResponseOK[NoneType] / no data
+        inst = model_cls(status=status, code=app_code, detail=detail)
+    return inst.model_dump(mode="json", exclude_none=True)
