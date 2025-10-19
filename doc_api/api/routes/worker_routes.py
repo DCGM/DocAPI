@@ -16,7 +16,7 @@ from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import worker_cruds, job_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
-from doc_api.api.routes.route_guards import challenge_worker_access_to_job
+from doc_api.api.routes.route_guards import challenge_worker_access_to_job, uses_challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, validate_no_data_ok_response, \
     DocAPIResponseClientError, DocAPIClientErrorException, DETAILS_GENERAL, make_responses
@@ -94,6 +94,7 @@ GET_IMAGES_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Retrieve all images associated with a specific job.",
     responses=make_responses(GET_IMAGES_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def get_images_for_job(
         request: Request,
         job_id: UUID,
@@ -135,6 +136,7 @@ GET_META_JSON_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the Meta JSON file associated with a specific job.",
     responses=make_responses(GET_META_JSON_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def get_meta_json_for_job(
         request: Request,
         job_id: UUID,
@@ -184,6 +186,7 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def get_image_for_worker(
         request: Request,
         job_id: UUID, image_id: UUID,
@@ -239,6 +242,7 @@ GET_ALTO_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the ALTO file associated with a specific image of a job.",
     responses=make_responses(GET_ALTO_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def get_alto_for_job(
         request: Request,
         job_id: UUID,
@@ -283,6 +287,7 @@ POST_JOB_HEARTBEAT_RESPONSES = {
     tags=["Worker"],
     description="Confirm the worker is still processing the job and extend its lease time.",
     responses=make_responses(POST_JOB_HEARTBEAT_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def post_job_heartbeat(
     request: Request,
     job_id: UUID,
@@ -319,6 +324,7 @@ UPDATE_JOB_RESPONSES = {
     tags=["Worker"],
     description="Update the job's progress and extend its lease time.",
     responses=make_responses(UPDATE_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def patch_job(
         request: Request,
         job_id: UUID,
@@ -361,6 +367,7 @@ POST_RESULT_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
     responses=make_responses(POST_RESULT_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def post_result_for_job(
     job_id: UUID,
     result: UploadFile = File(...),
@@ -428,6 +435,7 @@ POST_JOB_COMPLETE_RESPONSES = {
     tags=["Worker"],
     description="Mark a specific job as completed after all results have been uploaded.",
     responses= make_responses(POST_JOB_COMPLETE_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def post_job_complete(
         request: Request,
         job_id: UUID,
@@ -484,6 +492,7 @@ POST_JOB_FAIL_RESPONSES = {
     tags=["Worker"],
     description="Mark a specific job as failed.",
     responses=make_responses(POST_JOB_FAIL_RESPONSES))
+@uses_challenge_worker_access_to_job
 async def post_job_fail(
     request: Request,
     job_id: UUID,

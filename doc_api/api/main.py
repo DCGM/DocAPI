@@ -10,17 +10,17 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi import HTTPException as FastAPIHTTPException
 
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex
+from doc_api.api.routes.route_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
 from doc_api.api.routes import user_router, worker_router, admin_router, debug_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
-    DETAILS_GENERAL
+    DETAILS_GENERAL, make_responses
 from doc_api.config import config
 from doc_api.tools.mail.mail_logger import get_internal_mail_logger
 from doc_api.db import model
@@ -192,6 +192,12 @@ def _collect_roles_from_route(route: APIRoute) -> Optional[List[str]]:
     return roles_out
 
 
+def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
+    if getattr(route.endpoint, "__challenge_worker_access_to_job__", False):
+        return True
+    return False
+
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -248,6 +254,47 @@ def custom_openapi():
             if line not in desc:
                 op["description"] = (desc + ("\n\n" if desc else "") + line)
     # === ROLES DOC END ===
+
+    # === WORKER ACCESS TO JOB GUARD DOC START ===
+    _worker_access_to_job_responses = make_responses(WORKER_ACCESS_TO_JOB_GUARD_RESPONSES)
+    # Collect operations marked with the decorator
+    guarded_ops = set()
+    for r in app.routes:
+        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_challenge_worker_access_to_job(r):
+            for m in (r.methods or []):
+                guarded_ops.add((r.path, m.upper()))
+
+    # Merge guard examples into those operations' responses (do not overwrite existing examples)
+    for path, ops in schema.get("paths", {}).items():
+        for method, op in ops.items():
+            if not isinstance(op, dict) or (path, method.upper()) not in guarded_ops:
+                continue
+
+            responses = op.setdefault("responses", {})
+            for status_code in (
+                    fastapi.status.HTTP_404_NOT_FOUND,
+                    fastapi.status.HTTP_403_FORBIDDEN,
+                    fastapi.status.HTTP_409_CONFLICT,
+            ):
+                key = str(status_code)
+                guard_resp = _worker_access_to_job_responses.get(status_code)
+                if not guard_resp:
+                    continue
+
+                dest_resp = responses.setdefault(key, {})
+                content = dest_resp.setdefault("content", {})
+                app_json = content.setdefault("application/json", {})
+
+                # Ensure schema reference to your error envelope
+                app_json.setdefault("schema", {"$ref": "#/components/schemas/DocAPIResponseClientError"})
+
+                # Merge examples without clobbering route-defined ones
+                existing = app_json.get("examples", {}) or {}
+                guard_examples = guard_resp["content"]["application/json"]["examples"]
+                for ex_key, ex_val in guard_examples.items():
+                    existing.setdefault(ex_key, ex_val)
+                app_json["examples"] = existing
+        # === WORKER GUARD DOC END ===
 
     # Replace ONLY the JSON schema of existing 422 responses
     for path, ops in schema.get("paths", {}).items():

@@ -9,12 +9,12 @@ from fastapi import HTTPException
 
 from doc_api.api.database import DBError
 from doc_api.api.schemas.base_objects import KeyRole, ProcessingState
-from doc_api.api.schemas.responses import DocAPIClientErrorException, AppCode, DETAILS_GENERAL, \
+from doc_api.api.schemas.responses import DocAPIClientErrorException, AppCode, \
     DocAPIResponseClientError
 from doc_api.db import model
 
 
-async def challenge_owner_access_to_job(db: AsyncSession, key: model.Key, job_id: UUID):
+async def challenge_user_access_to_job(db: AsyncSession, key: model.Key, job_id: UUID):
     if key.role == KeyRole.ADMIN:
         return
     job = await db.get(model.Job, job_id)
@@ -29,52 +29,32 @@ async def challenge_owner_access_to_job(db: AsyncSession, key: model.Key, job_id
             detail={"code": "KEY_FORBIDDEN_FOR_JOB", "message": f"Key '{key.id}' does not have access to the job"}
         )
 
-WORKER_ACCESS_TO_JOB_GUARD_DETAILS = {
-    AppCode.JOB_NOT_FOUND: "Job with id={job_id} does not exist.",
-    AppCode.API_KEY_FORBIDDEN_FOR_JOB: "Worker's Key (label={key_label}) does not have access to the Job (id={job_id}).",
-    AppCode.JOB_NOT_IN_PROCESSING: "Job (id={job_id}, state={job_state}), only Job in PROCESSING state can be accessed by workers."
-}
-WORKER_ACCESS_TO_JOB_GUARD_EXAMPLES = {
-    fastapi.status.HTTP_404_NOT_FOUND: {
+WORKER_ACCESS_TO_JOB_GUARD_RESPONSES = {
+    AppCode.JOB_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified job does not exist.",
         "model": DocAPIResponseClientError,
-        "content": {
-            "application/json": {
-                "examples": {
-                    "JobNotFound": {
-                        "summary": AppCode.JOB_NOT_FOUND.value,
-                        "description": "The specified job does not exist.",
-                        "value": DocAPIResponseClientError(
-                            status=fastapi.status.HTTP_404_NOT_FOUND,
-                            code=AppCode.JOB_NOT_FOUND,
-                            detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.JOB_NOT_FOUND]).model_dump(mode="json")}}}}
+        "detail": "Job does not exist.",
     },
-    fastapi.status.HTTP_403_FORBIDDEN: {
+    AppCode.API_KEY_FORBIDDEN_FOR_JOB: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "The worker's API key does not have access to the specified job.",
         "model": DocAPIResponseClientError,
-        "content": {
-            "application/json": {
-                "examples": {
-                    "APIKeyForbiddenForJob": {
-                        "summary": AppCode.API_KEY_FORBIDDEN_FOR_JOB.value,
-                        "description": "The worker's API key does not have access to the specified job.",
-                        "value": DocAPIResponseClientError(
-                            status=fastapi.status.HTTP_403_FORBIDDEN,
-                            code=AppCode.API_KEY_FORBIDDEN_FOR_JOB,
-                            detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.API_KEY_FORBIDDEN_FOR_JOB]).model_dump(mode="json")}}}}
-        },
-    fastapi.status.HTTP_409_CONFLICT: {
+        "detail": "The worker's API key does not have access to the job.",
+    },
+    AppCode.JOB_NOT_IN_PROCESSING: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The worker's job is not in the PROCESSING state.",
         "model": DocAPIResponseClientError,
-        "content": {
-            "application/json": {
-                "examples": {
-                    "JobNotInProcessing": {
-                        "summary": AppCode.JOB_NOT_IN_PROCESSING.value,
-                        "description": "The worker's job is not in the PROCESSING state.",
-                        "value": DocAPIResponseClientError(
-                            status=fastapi.status.HTTP_409_CONFLICT,
-                            code=AppCode.JOB_NOT_IN_PROCESSING,
-                            detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.JOB_NOT_IN_PROCESSING]).model_dump(mode="json")}}}}
+        "detail": "Only jobs in PROCESSING state can be accessed by workers.",
     }
 }
+
+# this decorator must be used on route handlers that use challenge_worker_access_to_job for the documentation to be correct
+def uses_challenge_worker_access_to_job(fn):
+    setattr(fn, "__challenge_worker_access_to_job__", True)
+    return fn
+
 async def challenge_worker_access_to_job(
     *,
     db: AsyncSession,
