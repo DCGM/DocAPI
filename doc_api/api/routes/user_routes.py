@@ -16,7 +16,7 @@ from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.routes.route_guards import challenge_owner_access_to_job
+from doc_api.api.routes.route_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import worker_cruds, user_cruds
 from doc_api.api.database import get_async_session
@@ -85,7 +85,7 @@ async def create_job(job_definition: user_cruds.JobDefinition,
 async def upload_meta_json(job_id: UUID, meta_json,
                            key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                            db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_job = await user_cruds.get_job(db, job_id)
     if not db_job.meta_json_required:
         raise HTTPException(
@@ -125,7 +125,7 @@ async def upload_meta_json(job_id: UUID, meta_json,
 async def upload_image(job_id: UUID, name: str, file: UploadFile,
                        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                        db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
     if db_image.image_uploaded:
         raise HTTPException(
@@ -208,7 +208,7 @@ async def upload_alto(job_id: UUID,
         file: UploadFile,
                       key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                       db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
     db_job = await user_cruds.get_job(db, job_id)
     if not db_job.alto_required:
@@ -257,7 +257,7 @@ async def upload_alto(job_id: UUID,
 async def get_job(job_id: UUID,
                   key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                   db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_job = await user_cruds.get_job(db, job_id)
     return base_objects.Job.model_validate(db_job)
 
@@ -266,7 +266,7 @@ async def get_job(job_id: UUID,
 async def get_images(job_id: UUID,
                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                      db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_images = await user_cruds.get_job_images(db, job_id)
     return [base_objects.Image.model_validate(db_image) for db_image in db_images]
 
@@ -283,7 +283,7 @@ async def get_jobs(
 async def start_job(job_id: UUID,
                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                     db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_job = await user_cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.NEW:
         raise HTTPException(
@@ -304,7 +304,7 @@ async def start_job(job_id: UUID,
 async def cancel_job(job_id: UUID,
                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                      db: AsyncSession = Depends(get_async_session)):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
     db_job = await user_cruds.get_job(db, job_id)
     if db_job.state in {base_objects.ProcessingState.CANCELLED, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
         raise HTTPException(
@@ -321,7 +321,7 @@ async def get_result(
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session),
 ):
-    await challenge_owner_access_to_job(db, key, job_id)
+    await challenge_user_access_to_job(db, key, job_id)
 
     db_job = await user_cruds.get_job(db, job_id)
     if db_job.state != base_objects.ProcessingState.DONE:
