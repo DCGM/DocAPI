@@ -29,6 +29,7 @@ async def challenge_user_access_to_job(db: AsyncSession, key: model.Key, job_id:
             detail={"code": "KEY_FORBIDDEN_FOR_JOB", "message": f"Key '{key.id}' does not have access to the job"}
         )
 
+
 WORKER_ACCESS_TO_JOB_GUARD_RESPONSES = {
     AppCode.JOB_NOT_FOUND: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
@@ -80,7 +81,7 @@ async def challenge_worker_access_to_job(
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_404_NOT_FOUND,
                     code=AppCode.JOB_NOT_FOUND,
-                    detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.JOB_NOT_FOUND].format(job_id=job_id)
+                    detail=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"]
                 )
 
             if key.role == KeyRole.ADMIN:
@@ -90,14 +91,14 @@ async def challenge_worker_access_to_job(
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_403_FORBIDDEN,
                     code=AppCode.API_KEY_FORBIDDEN_FOR_JOB,
-                    detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.API_KEY_FORBIDDEN_FOR_JOB].format(key_label=key.label, job_id=job_id)
+                    detail=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_JOB]["detail"]
                 )
 
             if states and db_job.state not in states:
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_409_CONFLICT,
                     code=AppCode.JOB_NOT_IN_PROCESSING,
-                    detail=WORKER_ACCESS_TO_JOB_GUARD_DETAILS[AppCode.JOB_NOT_IN_PROCESSING].format(job_id=job_id, job_state=db_job.state)
+                    detail=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_IN_PROCESSING]["detail"]
                 )
 
             return

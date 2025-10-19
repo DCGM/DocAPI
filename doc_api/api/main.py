@@ -104,12 +104,32 @@ async def http_exc_handler(_: Request, exc: StarletteHTTPException):
     )
     return validate_client_error_response(payload, headers=exc.headers)
 
+VALIDATION_RESPONSE = {
+    AppCode.REQUEST_VALIDATION_ERROR : {
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "description": "Request validation failed.",
+        "model": DocAPIResponseClientError,
+        "detail": "The request parameters did not pass validation.",
+        "details": [
+            {
+                "loc": ["body", "field_name"],
+                "msg": "field required",
+                "type": "value_error.missing",
+            },
+            {
+                "loc": ["query", "limit"],
+                "msg": "value is not a valid integer",
+                "type": "type_error.integer",
+            },
+        ]
+    }
+}
 @app.exception_handler(RequestValidationError)
 async def validation_handler(_: Request, exc: RequestValidationError):
     payload = DocAPIResponseClientError(
         status=fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         code=AppCode.REQUEST_VALIDATION_ERROR,
-        detail=DETAILS_GENERAL[AppCode.REQUEST_VALIDATION_ERROR],
+        detail=VALIDATION_RESPONSE[AppCode.REQUEST_VALIDATION_ERROR]["detail"],
         details=exc.errors()
     )
     return validate_client_error_response(payload)
@@ -296,54 +316,106 @@ def custom_openapi():
                 app_json["examples"] = existing
         # === WORKER GUARD DOC END ===
 
-    # Replace ONLY the JSON schema of existing 422 responses
-    for path, ops in schema.get("paths", {}).items():
-        for method, op in ops.items():
-            # Skip non-operations block like "parameters"
-            if not isinstance(op, dict) or method.lower() not in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
-                continue
+        # === WORKER ACCESS TO JOB GUARD DOC START ===
+        _worker_access_to_job_responses = make_responses(WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, inject_schema=True)
 
-            responses = op.get("responses", {})
-            resp_422 = responses.get("422")
-            if not resp_422:
-                continue  # do not add new 422s, only replace existing ones
+        # Collect operations marked with the decorator
+        guarded_ops = set()
+        for r in app.routes:
+            if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_challenge_worker_access_to_job(r):
+                for m in (r.methods or []):
+                    guarded_ops.add((r.path, m.upper()))
 
-            content = resp_422.setdefault("content", {})
-            app_json = content.setdefault("application/json", {})
+        # Merge guard responses (preserve explicit route definitions)
+        for path, ops in schema.get("paths", {}).items():
+            for method, op in ops.items():
+                if not isinstance(op, dict) or (path, method.upper()) not in guarded_ops:
+                    continue
 
-            # Preserve an existing description if present
-            resp_422.setdefault("description", "Request validation failed.")
+                responses = op.setdefault("responses", {})
+                for status_code in (
+                        fastapi.status.HTTP_404_NOT_FOUND,
+                        fastapi.status.HTTP_403_FORBIDDEN,
+                        fastapi.status.HTTP_409_CONFLICT,
+                ):
+                    key = str(status_code)
+                    guard_src = _worker_access_to_job_responses.get(status_code)
+                    if not guard_src:
+                        continue
 
-            # Preserve other content-types (e.g., text/plain) by only touching JSON
-            existing_examples = app_json.get("examples", {})
+                    dest_resp = responses.setdefault(key, {})
 
-            # Point to the component schema
-            app_json["schema"] = {"$ref": "#/components/schemas/DocAPIResponseClientError"}
+                    # Description: only set if missing
+                    if "description" in guard_src:
+                        dest_resp.setdefault("description", guard_src["description"])
 
-            # Merge/ensure an example without overwriting existing ones
-            example_key = "default"
-            if example_key not in existing_examples:
-                existing_examples[example_key] = {
-                    "summary": AppCode.REQUEST_VALIDATION_ERROR.value,
-                    "value": DocAPIResponseClientError(
-                        status=422,
-                        code=AppCode.REQUEST_VALIDATION_ERROR,
-                        detail="Request validation failed.",
-                        details=[
-                            {
-                                "loc": ["body", "field_name"],
-                                "msg": "field required",
-                                "type": "value_error.missing",
-                            },
-                            {
-                                "loc": ["query", "limit"],
-                                "msg": "value is not a valid integer",
-                                "type": "type_error.integer",
-                            },
-                        ],
-                    ).model_dump(mode="json", exclude_none=True),
-                }
-            app_json["examples"] = existing_examples
+                    # Content: merge per content-type; keep existing, add missing
+                    dest_content = dest_resp.setdefault("content", {})
+                    for ctype, src_payload in guard_src.get("content", {}).items():
+                        dst_payload = dest_content.setdefault(ctype, {})
+
+                        # Schema: only set if route doesn't already provide one
+                        if "schema" in src_payload and "schema" not in dst_payload:
+                            dst_payload["schema"] = src_payload["schema"]
+
+                        # Examples: merge without overwriting existing keys
+                        src_examples = src_payload.get("examples", {}) or {}
+                        if src_examples:
+                            dst_examples = (dst_payload.get("examples", {}) or {}).copy()
+                            for ex_key, ex_val in src_examples.items():
+                                dst_examples.setdefault(ex_key, ex_val)
+                            if dst_examples:
+                                dst_payload["examples"] = dst_examples
+        # === WORKER GUARD DOC END ===
+
+        # === 422 VALIDATION DOC (default if none present OR if FastAPI default schema present) ===
+        _validation_responses = make_responses(VALIDATION_RESPONSE, inject_schema=True)
+        _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+        if _validation_422:
+            for path, ops in schema.get("paths", {}).items():
+                for method, op in ops.items():
+                    if not isinstance(op, dict) or method.lower() not in {
+                        "get", "post", "put", "patch", "delete", "options", "head", "trace"
+                    }:
+                        continue
+
+                    responses = op.setdefault("responses", {})
+
+                    if "422" in responses:
+                        # Replace only if the schema $ref is FastAPI's default
+                        app_json = (
+                            responses["422"]
+                            .get("content", {})
+                            .get("application/json", {})
+                        )
+                        schema_ = app_json.get("schema", {})
+
+                        # Pull a $ref if present directly or inside oneOf/anyOf/allOf (common variants)
+                        ref = None
+                        if isinstance(schema_, dict):
+                            if "$ref" in schema_:
+                                ref = schema_["$ref"]
+                            else:
+                                for kw in ("oneOf", "anyOf", "allOf"):
+                                    seq = schema_.get(kw)
+                                    if isinstance(seq, list):
+                                        for item in seq:
+                                            if isinstance(item, dict) and "$ref" in item:
+                                                ref = item["$ref"]
+                                                break
+                                        if ref:
+                                            break
+
+                        if ref in {
+                            "#/components/schemas/HTTPValidationError",
+                            "#/components/schemas/ValidationError",
+                        }:
+                            responses["422"] = dict(_validation_422)
+                    else:
+                        responses["422"] = dict(_validation_422)
+        # === 422 VALIDATION DOC END ===
+
 
     app.openapi_schema = schema
     return app.openapi_schema

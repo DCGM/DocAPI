@@ -19,7 +19,7 @@ from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.routes.route_guards import challenge_worker_access_to_job, uses_challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, validate_no_data_ok_response, \
-    DocAPIResponseClientError, DocAPIClientErrorException, DETAILS_GENERAL, make_responses
+    DocAPIResponseClientError, DocAPIClientErrorException, DETAILS_GENERAL, make_responses, GENERAL_RESPONSES
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
@@ -172,12 +172,7 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "IMAGE file has not been uploaded yet.",
     },
-    AppCode.IMAGE_NOT_FOUND_FOR_JOB: {
-        "status": fastapi.status.HTTP_404_NOT_FOUND,
-        "description": "The specified image does not exist for the given job.",
-        "model": DocAPIResponseClientError,
-        "detail": DETAILS_GENERAL[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
-    }
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
 }
 @worker_router.get(
     "/image/{job_id}/{image_id}",
@@ -187,7 +182,7 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_FOR_JOB_RESPONSES))
 @uses_challenge_worker_access_to_job
-async def get_image_for_worker(
+async def get_image_for_job(
         request: Request,
         job_id: UUID, image_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
@@ -228,12 +223,7 @@ GET_ALTO_FOR_JOB_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "The requested ALTO file has not been uploaded yet.",
     },
-    AppCode.IMAGE_NOT_FOUND_FOR_JOB: {
-        "status": fastapi.status.HTTP_404_NOT_FOUND,
-        "description": "The specified Image does not exist for the given job.",
-        "model": DocAPIResponseClientError,
-        "detail": DETAILS_GENERAL[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
-    }
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
 }
 @worker_router.get(
     "/alto/{job_id}/{image_id}",
