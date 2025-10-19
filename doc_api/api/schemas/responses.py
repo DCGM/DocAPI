@@ -60,8 +60,6 @@ class AppCode(str, enum.Enum):
 
 DETAILS_GENERAL = {
     # 4xx
-    AppCode.IMAGE_NOT_FOUND_FOR_JOB: "Image (id={image_id}) does not exist for Job (id={job_id}).",
-
     AppCode.HTTP_ERROR: "An HTTP error occurred.",
     AppCode.REQUEST_VALIDATION_ERROR: "The request could not be validated.",
 
@@ -183,8 +181,16 @@ def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONRe
         content=payload.model_dump(mode="json", exclude_none=True)
     )
 
+GENERAL_RESPONSES = {
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified image does not exist for the given job.",
+        "model": DocAPIResponseClientError,
+        "detail": "Image does not exist for the specified job.",
+    }
+}
 
-def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False) -> Dict[int, Dict[str, Any]]:
     """
     spec item format (one dict entry per AppCode):
 
@@ -207,6 +213,7 @@ def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]
     """
     grouped = defaultdict(lambda: defaultdict(lambda: {"examples": {}}))  # status -> ctype -> examples
     status_models: Dict[int, Optional[Type[Any]]] = {}
+    status_schema_refs: Dict[int, str] = {}
 
     for app_code, cfg in spec.items():
         status: int = cfg["status"]
@@ -214,6 +221,7 @@ def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]
         ctype: str = cfg.get("content_type", "application/json")
         model_cls: Optional[Type[Any]] = cfg.get("model")
         detail: str = cfg.get("detail", "")
+        details: Any = cfg.get("details")
         example_value = cfg.get("example_value")
 
         # Build example value
@@ -226,8 +234,12 @@ def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]
             if example_value is not None:
                 value = example_value
             elif model_cls is not None:
-                value = _build_json_example(model_cls=model_cls, app_code=app_code, detail=detail, status=status)
+                value = _build_json_example(model_cls=model_cls, app_code=app_code, detail=detail, status=status,
+                                            details=details)
+                # Keep FastAPI "model" behavior for non-inject path
                 status_models.setdefault(status, get_origin(model_cls) or model_cls)
+                # Precompute the $ref we’ll inject when inject_schema=True
+                status_schema_refs.setdefault(status, _schema_ref_from_model(model_cls))
             else:
                 raise ValueError(f"JSON example needs 'model' for {app_code} (generic OK or non-generic).")
 
@@ -237,15 +249,60 @@ def make_responses(spec: Dict[Any, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]
             "value": value,
         }
 
+    _HTTP_STATUS_DESCRIPTIONS = {
+        200: "OK",
+        201: "Created",
+        202: "Accepted",
+        204: "No Content",
+        400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
+        404: "Not Found",
+        405: "Method Not Allowed",
+        409: "Conflict",
+        410: "Gone",
+        415: "Unsupported Media Type",
+        422: "Unprocessable Entity",
+        429: "Too Many Requests",
+        500: "Internal Server Error",
+        502: "Bad Gateway",
+        503: "Service Unavailable",
+    }
+
     # Assemble FastAPI responses shape
-    responses: Dict[int, Dict[str, Any]] = {}
-    for status, c_map in grouped.items():
-        entry: Dict[str, Any] = {"content": {}}
-        if "application/json" in c_map and status in status_models and status_models[status] is not None:
-            entry["model"] = status_models[status]
-        for ctype, payload in c_map.items():
-            entry["content"][ctype] = {"examples": payload["examples"]}
-        responses[status] = entry
+    if not inject_schema:
+        responses: Dict[int, Dict[str, Any]] = {}
+        for status, c_map in grouped.items():
+            entry: Dict[str, Any] = {
+                "description": _HTTP_STATUS_DESCRIPTIONS.get(status, f"Response status {status}."),
+                "content": {},
+            }
+
+            if "application/json" in c_map and status in status_models and status_models[status] is not None:
+                entry["model"] = status_models[status]
+
+            for ctype, payload in c_map.items():
+                entry["content"][ctype] = {"examples": payload["examples"]}
+
+            responses[status] = entry
+    else:
+        responses = {}
+        for status, c_map in grouped.items():
+            entry: Dict[str, Any] = {
+                "description": _HTTP_STATUS_DESCRIPTIONS.get(status, f"Response status {status}."),
+                "content": {},
+            }
+
+            for ctype, payload in c_map.items():
+                content_obj: Dict[str, Any] = {"examples": payload["examples"]}
+                if ctype == "application/json":
+                    schema_ref = status_schema_refs.get(status)
+                    if schema_ref:
+                        content_obj["schema"] = {"$ref": schema_ref}
+                entry["content"][ctype] = content_obj
+
+            responses[status] = entry
+
     return responses
 
 def _extract_generic_arg(tp: Type[Any]) -> Optional[Type[Any]]:
@@ -253,7 +310,7 @@ def _extract_generic_arg(tp: Type[Any]) -> Optional[Type[Any]]:
     args = get_args(tp) or getattr(tp, "__args__", ())
     return args[0] if args else None
 
-def _build_json_example(*, model_cls: Type[Any], app_code, detail: str, status: int) -> dict:
+def _build_json_example(*, model_cls: Type[Any], app_code, detail: str, status: int, details: Any) -> dict:
     """
     Instantiate either:
       - DocAPIResponseOK[T] -> auto-generate data via model_example(T)
@@ -265,5 +322,23 @@ def _build_json_example(*, model_cls: Type[Any], app_code, detail: str, status: 
         inst = model_cls(status=status, code=app_code, detail=detail, data=data)
     else:
         # non-generic or DocAPIResponseOK[NoneType] / no data
-        inst = model_cls(status=status, code=app_code, detail=detail)
+        inst = model_cls(status=status, code=app_code, detail=detail, details=details)
     return inst.model_dump(mode="json", exclude_none=True)
+
+def _schema_ref_from_model(model_tp: Type[Any]) -> str:
+    """
+    Build a components schema $ref string from a (possibly generic) model type.
+    - Non-generic: Use model_tp.__name__
+    - Generic: Use OriginName_Arg1Name_Arg2Name ...
+      Example: DocAPIResponseOK[JobLease] -> "#/components/schemas/DocAPIResponseOK_JobLease"
+    """
+    origin = get_origin(model_tp)
+    if origin is None:
+        name = getattr(model_tp, "__name__", str(model_tp))
+    else:
+        args = [a for a in get_args(model_tp) if a is not type(None)]  # drop NoneType if present
+        arg_names = [getattr(a, "__name__", str(a)) for a in args]
+        name = getattr(origin, "__name__", str(origin))
+        if arg_names:
+            name = f"{name}_{'_'.join(arg_names)}"
+    return f"#/components/schemas/{name}"
