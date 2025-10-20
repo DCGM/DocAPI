@@ -106,7 +106,7 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tupl
         raise DBError("Failed updating Job lease.") from e
 
 
-async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
+async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
             result = await db.execute(
@@ -118,29 +118,29 @@ async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_
             if db_job.state != base_objects.ProcessingState.PROCESSING:
                 return db_job, None, None, AppCode.JOB_NOT_IN_PROCESSING
 
-            if job_update.progress is not None:
-                p = job_update.progress
+            if job_progress_update.progress is not None:
+                p = job_progress_update.progress
                 p = max(0.0, min(1.0, p))
                 db_job.progress = p
 
             lease_expire_at, server_time = get_new_lease()
             db_job.last_change = server_time
 
-            if job_update.log:
+            if job_progress_update.log:
                 if db_job.log:
                     if not db_job.log.endswith("\n"):
                         db_job.log += "\n"
-                    db_job.log += job_update.log
+                    db_job.log += job_progress_update.log
                 else:
-                    db_job.log = job_update.log
+                    db_job.log = job_progress_update.log
 
-            if job_update.log_user:
+            if job_progress_update.log_user:
                 if db_job.log_user:
                     if not db_job.log_user.endswith("\n"):
                         db_job.log_user += "\n"
-                    db_job.log_user += job_update.log_user
+                    db_job.log_user += job_progress_update.log_user
                 else:
-                    db_job.log_user = job_update.log_user
+                    db_job.log_user = job_progress_update.log_user
 
             return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
 
@@ -251,28 +251,6 @@ async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed reading image from database") from e
-
-
-async def get_job_images(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[List[model.Image]], AppCode]:
-    try:
-        async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id)
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return None, AppCode.JOB_NOT_FOUND
-
-            result = await db.scalars(
-                select(model.Image)
-                  .where(model.Image.job_id == job_id)
-                  .order_by(model.Image.order.asc())
-            )
-            job_images = list(result.all())
-            return job_images, AppCode.IMAGES_RETRIEVED
-
-    except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading images from database') from e
 
 
 async def get_keys(db: AsyncSession) -> List[model.Key]:

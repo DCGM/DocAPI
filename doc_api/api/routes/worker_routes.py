@@ -13,13 +13,15 @@ from aiofiles import os as aiofiles_os
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import worker_cruds, job_cruds
+from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
-from doc_api.api.routes.route_guards import challenge_worker_access_to_job, uses_challenge_worker_access_to_job
+from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job, \
+    uses_challenge_worker_access_to_processing_job, challenge_worker_access_to_finalizing_job, \
+    uses_challenge_worker_access_to_finalizing_job
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, validate_no_data_ok_response, \
-    DocAPIResponseClientError, DocAPIClientErrorException, DETAILS_GENERAL, make_responses, GENERAL_RESPONSES
+from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
+    DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
@@ -69,7 +71,7 @@ async def get_job(
             data=db_job
         )
     elif code == AppCode.JOB_QUEUE_EMPTY:
-        return validate_no_data_ok_response(
+        return validate_ok_response(
             DocAPIResponseOK[NoneType](
                 status=fastapi.status.HTTP_200_OK,
                 code=AppCode.JOB_QUEUE_EMPTY,
@@ -91,21 +93,21 @@ GET_IMAGES_FOR_JOB_RESPONSES = {
 }
 @worker_router.get(
     "/images/{job_id}",
-    summary="Get Images for Job",
+    summary="Get Job Images",
     response_model=List[base_objects.Image],
     tags=["Worker"],
-    description="Retrieve all images associated with a specific job.",
+    description="Retrieve all images associated for a specific job.",
     responses=make_responses(GET_IMAGES_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def get_images_for_job(
         request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     # job already challenged above, so here we are sure it exists and in PROCESSING state
-    db_images, code = await worker_cruds.get_job_images(db=db, job_id=job_id)
+    db_images, code = await general_cruds.get_job_images(db=db, job_id=job_id)
     if code == AppCode.IMAGES_RETRIEVED and db_images is not None:
         return DocAPIResponseOK[List[base_objects.Image]](
             status=fastapi.status.HTTP_200_OK,
@@ -138,15 +140,15 @@ GET_META_JSON_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the Meta JSON file associated with a specific job.",
     responses=make_responses(GET_META_JSON_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def get_meta_json_for_job(
         request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    db_job, code = await job_cruds.get_job(db=db, job_id=job_id)
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_RETRIEVED and db_job is not None and db_job.meta_json_uploaded:
         meta_json_path = os.path.join(config.JOBS_DIR, str(job_id), "meta.json")
@@ -166,7 +168,7 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Binary data of the requested IMAGE file, format not guaranteed but usually JPEG/PNG.",
         "content_type": "image/jpeg",
-        "example_value": "(binary image data)",
+        "example_value": "(binary IMAGE file content)"
     },
     AppCode.IMAGE_NOT_UPLOADED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
@@ -183,13 +185,13 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def get_image_for_job(
         request: Request,
         job_id: UUID, image_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     db_image, code = await worker_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
@@ -234,14 +236,14 @@ GET_ALTO_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Download the ALTO file associated with a specific image of a job.",
     responses=make_responses(GET_ALTO_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def get_alto_for_job(
         request: Request,
         job_id: UUID,
         image_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     db_image, code = await worker_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
@@ -280,14 +282,14 @@ POST_JOB_HEARTBEAT_RESPONSES = {
     tags=["Worker"],
     description="Confirm the worker is still processing the job and extend its lease time.",
     responses=make_responses(POST_JOB_HEARTBEAT_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def post_job_heartbeat(
     request: Request,
     job_id: UUID,
     key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
     db: AsyncSession = Depends(get_async_session),
 ):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     code, lease_expire_at, server_time = await worker_cruds.update_processing_job_lease(db=db, job_id=job_id)
 
@@ -318,17 +320,17 @@ UPDATE_JOB_RESPONSES = {
     tags=["Worker"],
     description="Update the job's progress and extend its lease time.",
     responses=make_responses(UPDATE_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def patch_job(
         request: Request,
         job_id: UUID,
-        job_update: base_objects.JobUpdate,
+        job_progress_update: base_objects.JobProgressUpdate,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     # job already challenged above, so here we are sure it exists and in PROCESSING state
-    db_job, lease_expire_at, server_time, code = await worker_cruds.update_processing_job_progress(db=db, job_id=job_id, job_update=job_update)
+    db_job, lease_expire_at, server_time, code = await worker_cruds.update_processing_job_progress(db=db, job_id=job_id, job_progress_update=job_progress_update)
     if code == AppCode.JOB_UPDATED:
         return DocAPIResponseOK[base_objects.JobLease](
             status=fastapi.status.HTTP_200_OK,
@@ -341,13 +343,13 @@ async def patch_job(
 
 
 POST_RESULT_FOR_JOB_RESPONSES = {
-    AppCode.RESULT_ZIP_UPLOADED: {
+    AppCode.JOB_RESULT_UPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The result ZIP archive for the job has been uploaded successfully.",
         "model": DocAPIResponseOK,
         "detail": "Result ZIP archive for Job uploaded successfully.",
     },
-    AppCode.RESULT_ZIP_INVALID: {
+    AppCode.JOB_RESULT_INVALID: {
         "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
         "description": "The uploaded file is not a valid ZIP archive.",
         "model": DocAPIResponseClientError,
@@ -361,14 +363,14 @@ POST_RESULT_FOR_JOB_RESPONSES = {
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
     responses=make_responses(POST_RESULT_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_processing_job
 async def post_result_for_job(
     job_id: UUID,
     result: UploadFile = File(...),
     key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
     db: AsyncSession = Depends(get_async_session),
 ):
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     await aiofiles_os.makedirs(config.RESULT_DIR, exist_ok=True)
     final_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
@@ -387,8 +389,8 @@ async def post_result_for_job(
         await aiofiles_os.remove(tmp_path)
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            code=AppCode.RESULT_ZIP_INVALID,
-            detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.RESULT_ZIP_INVALID]["detail"],
+            code=AppCode.JOB_RESULT_INVALID,
+            detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
         )
 
     # Atomically move the validated file into place
@@ -396,8 +398,8 @@ async def post_result_for_job(
 
     return DocAPIResponseOK[NoneType](
         status=fastapi.status.HTTP_200_OK,
-        code=AppCode.RESULT_ZIP_UPLOADED,
-        detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.RESULT_ZIP_UPLOADED]["detail"]
+        code=AppCode.JOB_RESULT_UPLOADED,
+        detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
     )
 
 
@@ -414,7 +416,7 @@ POST_JOB_COMPLETE_RESPONSES = {
         "model": DocAPIResponseOK,
         "detail": "Job was already marked as completed.",
     },
-    AppCode.RESULT_ZIP_MISSING: {
+    AppCode.JOB_RESULT_MISSING: {
         "status": fastapi.status.HTTP_409_CONFLICT,
         "description": "The result ZIP for the job has not been uploaded yet.",
         "model": DocAPIResponseClientError,
@@ -429,23 +431,20 @@ POST_JOB_COMPLETE_RESPONSES = {
     tags=["Worker"],
     description="Mark a specific job as completed after all results have been uploaded.",
     responses= make_responses(POST_JOB_COMPLETE_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_finalizing_job
 async def post_job_complete(
         request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    # ensure idempotency by allowing FAILED state too
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id,
-        allowed_states={base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE}
-    )
+    await challenge_worker_access_to_finalizing_job(db=db, key=key, job_id=job_id)
 
     result_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
     if not await aiofiles_os.path.exists(result_path):
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
-            code=AppCode.RESULT_ZIP_MISSING,
-            detail=POST_JOB_COMPLETE_RESPONSES[AppCode.RESULT_ZIP_MISSING]["detail"],
+            code=AppCode.JOB_RESULT_MISSING,
+            detail=POST_JOB_COMPLETE_RESPONSES[AppCode.JOB_RESULT_MISSING]["detail"],
         )
     code = await worker_cruds.complete_job(db=db, job_id=job_id)
 
@@ -486,17 +485,14 @@ POST_JOB_FAIL_RESPONSES = {
     tags=["Worker"],
     description="Mark a specific job as failed.",
     responses=make_responses(POST_JOB_FAIL_RESPONSES))
-@uses_challenge_worker_access_to_job
+@uses_challenge_worker_access_to_finalizing_job
 async def post_job_fail(
     request: Request,
     job_id: UUID,
     key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
     db: AsyncSession = Depends(get_async_session),
 ):
-    # ensure idempotency by allowing FAILED state too
-    await challenge_worker_access_to_job(db=db, key=key, job_id=job_id,
-        allowed_states={base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.FAILED}
-    )
+    await challenge_worker_access_to_finalizing_job(db=db, key=key, job_id=job_id)
 
     code = await worker_cruds.fail_job(db=db, job_id=job_id)
 

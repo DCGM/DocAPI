@@ -62,6 +62,25 @@ class Image(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
+class ImageUpdate(BaseModel):
+    image_uploaded: Optional[bool] = Field(
+        None,
+        examples=[True],
+        description="Indicates whether the image file has been successfully uploaded."
+    )
+
+    alto_uploaded: Optional[bool] = Field(
+        None,
+        examples=[False],
+        description="Indicates whether the corresponding ALTO (OCR) file has been uploaded."
+    )
+
+    imagehash: Optional[str] = Field(
+        None,
+        examples=["d41d8cd98f00b204e9800998ecf8427e"],
+        description="MD5 hash of the image file for integrity verification."
+    )
+
 
 class Job(BaseModel):
     id: UUID = Field(
@@ -72,7 +91,7 @@ class Job(BaseModel):
 
     state: ProcessingState = Field(
         ...,
-        examples=[ProcessingState.PROCESSING.value],
+        examples=[ProcessingState.QUEUED.value],
         description="Current state of the job."
     )
 
@@ -122,6 +141,14 @@ class Job(BaseModel):
 
 
 class JobUpdate(BaseModel):
+    meta_json_uploaded: Optional[bool] = Field(
+        None,
+        description="Whether the metadata JSON has been uploaded for this job.",
+        examples=[True]
+    )
+
+
+class JobProgressUpdate(BaseModel):
     """
     Partial update of an existing processing job.
     Sent periodically by the worker to report progress or append logs.

@@ -15,7 +15,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex, AUTHENTICATION_RESPONSES
-from doc_api.api.routes.route_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
+from doc_api.api.routes.user_guards import WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES, \
+    USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
+from doc_api.api.routes.worker_guards import WORKER_ACCESS_TO_FINALIZING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
 from doc_api.api.routes import user_router, worker_router, admin_router, debug_router
@@ -168,18 +170,40 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # --- worker guard ---
-    def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
-        return bool(getattr(route.endpoint, "__challenge_worker_access_to_job__", False))
+    # --- worker processing job guard ---
+    def _route_uses_challenge_worker_access_to_processing_job_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_worker_access_to_processing_job__", False))
 
     inject_docs(
         app=app,
         schema=schema,
-        route_predicate=_route_uses_challenge_worker_access_to_job,
-        route_responses=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
+        route_predicate=_route_uses_challenge_worker_access_to_processing_job_job,
+        route_responses=WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES,
     )
 
-    # --- user guard ---
+    # --- worker finalizing job guard ---
+    def _route_uses_challenge_worker_access_to_finalizing_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_worker_access_to_finalizing_job__", False))
+
+    inject_docs(
+        app=app,
+        schema=schema,
+        route_predicate=_route_uses_challenge_worker_access_to_finalizing_job,
+        route_responses=WORKER_ACCESS_TO_FINALIZING_JOB_GUARD_RESPONSES,
+    )
+
+    # --- user new job guard ---
+    def _route_uses_challenge_user_access_to_new_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_user_access_to_new_job__", False))
+
+    inject_docs(
+        app=app,
+        schema=schema,
+        route_predicate=_route_uses_challenge_user_access_to_new_job,
+        route_responses=USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES,
+    )
+
+    # --- user job guard ---
     def _route_uses_challenge_user_access_to_job(route: APIRoute) -> bool:
         return bool(getattr(route.endpoint, "__challenge_user_access_to_job__", False))
 
@@ -290,23 +314,26 @@ def _route_uses_guard(route: APIRoute, predicate) -> bool:
     except Exception:
         return False
 
+
 def inject_validation_422_docs(*, schema: dict, validation_response: dict):
     """
-    Injects standardized 422 Validation Error documentation into OpenAPI schema.
+    Inject standardized 422 Validation Error documentation into OpenAPI schema.
 
-    - Adds or replaces the default FastAPI 422 response with the given `validation_response`.
-    - Replaces only if the existing schema $ref is one of FastAPI's built-in validation models:
-      '#/components/schemas/HTTPValidationError' or '#/components/schemas/ValidationError'.
-    - `validation_response` should be a dict like VALIDATION_RESPONSE (AppCode keyed).
+    - If no 422 present → add the given validation response.
+    - If 422 exists with FastAPI's default schema (HTTPValidationError/ValidationError) → replace it.
+    - If 422 exists and is custom (non-default) → append the given validation examples/content
+      *after* existing ones, without overwriting anything.
     """
-
     _validation_responses = make_responses(validation_response, inject_schema=True)
     _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY)
-
     if not _validation_422:
-        return  # nothing to inject
+        return
 
     valid_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+    default_refs = {
+        "#/components/schemas/HTTPValidationError",
+        "#/components/schemas/ValidationError",
+    }
 
     for path, ops in schema.get("paths", {}).items():
         for method, op in ops.items():
@@ -315,38 +342,78 @@ def inject_validation_422_docs(*, schema: dict, validation_response: dict):
 
             responses = op.setdefault("responses", {})
 
-            if "422" in responses:
-                # Replace only if current schema is FastAPI's default validation model
-                app_json = (
-                    responses["422"]
-                    .get("content", {})
-                    .get("application/json", {})
-                )
-                schema_ = app_json.get("schema", {})
-
-                # Extract possible $ref (directly or inside oneOf/anyOf/allOf)
-                ref = None
-                if isinstance(schema_, dict):
-                    if "$ref" in schema_:
-                        ref = schema_["$ref"]
-                    else:
-                        for kw in ("oneOf", "anyOf", "allOf"):
-                            seq = schema_.get(kw)
-                            if isinstance(seq, list):
-                                for item in seq:
-                                    if isinstance(item, dict) and "$ref" in item:
-                                        ref = item["$ref"]
-                                        break
-                                if ref:
-                                    break
-
-                if ref in {
-                    "#/components/schemas/HTTPValidationError",
-                    "#/components/schemas/ValidationError",
-                }:
-                    responses["422"] = dict(_validation_422)
-            else:
+            if "422" not in responses:
+                # No existing 422 → add ours
                 responses["422"] = dict(_validation_422)
+                continue
+
+            existing_422 = responses["422"]
+            app_json = (
+                existing_422
+                .get("content", {})
+                .get("application/json", {})
+            )
+            schema_ = app_json.get("schema", {})
+
+            # Detect FastAPI's default $ref
+            ref = None
+            if isinstance(schema_, dict):
+                if "$ref" in schema_:
+                    ref = schema_["$ref"]
+                else:
+                    for kw in ("oneOf", "anyOf", "allOf"):
+                        seq = schema_.get(kw)
+                        if isinstance(seq, list):
+                            for item in seq:
+                                if isinstance(item, dict) and "$ref" in item:
+                                    ref = item["$ref"]
+                                    break
+                            if ref:
+                                break
+
+            if ref in default_refs:
+                # Replace FastAPI default with our standardized response
+                responses["422"] = dict(_validation_422)
+                continue
+
+            # Custom 422 present → append our examples/content
+            dest_resp = responses.setdefault("422", {})
+            dest_content = dest_resp.setdefault("content", {})
+
+            src_app_json = (
+                _validation_422
+                .get("content", {})
+                .get("application/json", {})
+            )
+
+            # Add or merge into existing application/json content
+            if "application/json" not in dest_content:
+                dest_content["application/json"] = dict(src_app_json)
+            else:
+                dst_payload = dest_content["application/json"]
+
+                # Keep existing schema; only add ours if missing
+                if "schema" not in dst_payload and "schema" in src_app_json:
+                    dst_payload["schema"] = src_app_json["schema"]
+
+                # Append examples: keep existing first, then ours (no overwrites)
+                src_examples = (src_app_json.get("examples") or {})
+                dst_examples = (dst_payload.get("examples") or {})
+
+                if src_examples or dst_examples:
+                    merged = {}
+                    # existing first
+                    for k, v in dst_examples.items():
+                        merged[k] = v
+                    # then ours (don't overwrite)
+                    for k, v in src_examples.items():
+                        if k not in merged:
+                            merged[k] = v
+                    dst_payload["examples"] = merged
+
+            # Add description if missing
+            if "description" in _validation_422:
+                dest_resp.setdefault("description", _validation_422["description"])
 
 
 def inject_roles_docs(*, app, schema: dict, ext_key: str = "x-roles-allowed"):

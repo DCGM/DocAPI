@@ -35,6 +35,30 @@ class Config:
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
 
+        self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
+        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
+
+        # Validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
+        ################################################################################################################
+        # Per-check toggles for ALTO & PAGE XML validation (all default to False)
+        # Enable by setting env vars to one of TRUE_VALUES: {"true", "1"} (case-insensitive).
+        self.ALTO_VALIDATION = {
+            "root": self._env_bool("ALTO_VALIDATE_ROOT", True),
+            "namespace": self._env_bool("ALTO_VALIDATE_NAMESPACE", False),
+            "has_layout": self._env_bool("ALTO_VALIDATE_HAS_LAYOUT", False),
+            "has_page": self._env_bool("ALTO_VALIDATE_HAS_PAGE", False),
+            "has_text": self._env_bool("ALTO_VALIDATE_HAS_TEXT", False),
+        }
+
+        self.PAGE_VALIDATION = {
+            "root": self._env_bool("PAGE_VALIDATE_ROOT", True),
+            "namespace": self._env_bool("PAGE_VALIDATE_NAMESPACE", False),
+            "has_page": self._env_bool("PAGE_VALIDATE_HAS_PAGE", False),
+            "has_text": self._env_bool("PAGE_VALIDATE_HAS_TEXT", False),
+        }
+
+        # JOB processing configuration
+        ################################################################################################################
         # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
         #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
         #         - the job is marked as QUEUED
@@ -43,9 +67,6 @@ class Config:
         self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
-
-        self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
-        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
 
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
@@ -121,6 +142,12 @@ class Config:
             }
         }
         ################################################################################################################
+
+    def _env_bool(self, key: str, default: bool = False) -> bool:
+        val = os.getenv(key)
+        if val is None:
+            return default
+        return val.strip().lower() in TRUE_VALUES
 
     def create_dirs(self):
         os.makedirs(self.JOBS_DIR, exist_ok=True)
