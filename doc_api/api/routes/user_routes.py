@@ -16,7 +16,7 @@ from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.routes.route_guards import challenge_user_access_to_job
+from doc_api.api.routes.route_guards import challenge_user_access_to_job, uses_challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import worker_cruds, user_cruds
 from doc_api.api.database import get_async_session
@@ -82,6 +82,7 @@ async def create_job(job_definition: user_cruds.JobDefinition,
 
 
 @user_router.post("/meta_json/{job_id}", tags=["User"])
+@uses_challenge_user_access_to_job
 async def upload_meta_json(job_id: UUID, meta_json,
                            key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                            db: AsyncSession = Depends(get_async_session)):
@@ -122,6 +123,7 @@ async def upload_meta_json(job_id: UUID, meta_json,
 
 
 @user_router.post("/image/{job_id}/{name}", tags=["User"])
+@uses_challenge_user_access_to_job
 async def upload_image(job_id: UUID, name: str, file: UploadFile,
                        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                        db: AsyncSession = Depends(get_async_session)):
@@ -203,6 +205,7 @@ def validate_alto_basic(xml_bytes: bytes) -> Tuple[bool, Optional[str], Optional
     return True, ns, schema_ver
 
 @user_router.post("/alto/{job_id}/{name}", tags=["User"])
+@uses_challenge_user_access_to_job
 async def upload_alto(job_id: UUID,
         name: str,
         file: UploadFile,
@@ -254,6 +257,7 @@ async def upload_alto(job_id: UUID,
 
 
 @user_router.get("/job/{job_id}", response_model=base_objects.Job, tags=["User"])
+@uses_challenge_user_access_to_job
 async def get_job(job_id: UUID,
                   key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                   db: AsyncSession = Depends(get_async_session)):
@@ -263,6 +267,7 @@ async def get_job(job_id: UUID,
 
 
 @user_router.get("/images/{job_id}", response_model=List[base_objects.Image], tags=["User"])
+@uses_challenge_user_access_to_job
 async def get_images(job_id: UUID,
                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                      db: AsyncSession = Depends(get_async_session)):
@@ -280,6 +285,7 @@ async def get_jobs(
 
 
 @user_router.put("/start_job/{job_id}/", tags=["User"])
+@uses_challenge_user_access_to_job
 async def start_job(job_id: UUID,
                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                     db: AsyncSession = Depends(get_async_session)):
@@ -301,6 +307,7 @@ async def start_job(job_id: UUID,
 
 
 @user_router.put("/cancel_job/{job_id}", tags=["User"])
+@uses_challenge_user_access_to_job
 async def cancel_job(job_id: UUID,
                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                      db: AsyncSession = Depends(get_async_session)):
@@ -316,6 +323,7 @@ async def cancel_job(job_id: UUID,
 
 
 @user_router.get("/result/{job_id}", tags=["User"])
+@uses_challenge_user_access_to_job
 async def get_result(
     job_id: UUID,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
