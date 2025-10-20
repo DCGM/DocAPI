@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.routes.route_guards import challenge_user_access_to_job, uses_challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import worker_cruds, user_cruds
+from doc_api.api.cruds import user_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode
+from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses
 from doc_api.db import model
 from doc_api.api.routes import user_router
 from doc_api.config import config
@@ -33,9 +33,30 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
-@user_router.get("/me", tags=["User"])
+ME_RESPONSES = {
+    AppCode.API_KEY_VALID: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The API key is valid.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.Key,
+        "detail": "The API key is valid.",
+    }
+}
+@user_router.get(
+    "/me",
+    summary="Who am I?",
+    response_model=DocAPIResponseOK[base_objects.Key],
+    tags=["User"],
+    description="Validate your API key and get information about it.",
+    responses=make_responses(ME_RESPONSES)
+)
 async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER))):
-    return key.label
+    return DocAPIResponseOK[base_objects.Key](
+        status=status.HTTP_200_OK,
+        code=AppCode.API_KEY_VALID,
+        detail=ME_RESPONSES[AppCode.API_KEY_VALID]["detail"],
+        data=key)
+
 
 @user_router.post(
     "/job",
