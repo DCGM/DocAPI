@@ -290,11 +290,6 @@ def _route_uses_guard(route: APIRoute, predicate) -> bool:
     except Exception:
         return False
 
-def _iter_dependants(dep: Dependant):
-    yield dep
-    for child in dep.dependencies or ():
-        yield from _iter_dependants(child)
-
 def inject_validation_422_docs(*, schema: dict, validation_response: dict):
     """
     Injects standardized 422 Validation Error documentation into OpenAPI schema.
@@ -355,98 +350,61 @@ def inject_validation_422_docs(*, schema: dict, validation_response: dict):
 
 
 def inject_roles_docs(*, app, schema: dict, ext_key: str = "x-roles-allowed"):
-    """
-    Injects role metadata into the OpenAPI schema.
-
-    - Builds a (path, METHOD) -> roles map from the actual FastAPI routes using your
-      existing `_collect_roles_from_route(route)` helper (must return Iterable[str] or None).
-    - For each matching operation in `schema["paths"]`:
-        * adds machine-readable roles under the `ext_key` (default: "x-roles-allowed"),
-        * appends a human-readable "**Allowed roles:** ..." line to the description
-          (without clobbering or duplicating existing text).
-    """
-    # Build a map (path, method) -> roles using the actual route objects
-    route_roles_map = {}
+    """Attach machine-readable roles and append a human-readable line to descriptions."""
+    route_roles = {}
     for r in app.routes:
         if isinstance(r, APIRoute) and r.include_in_schema:
-            roles = _collect_roles_from_route(r)  # established helper
-            if roles is None:
-                continue
-            for method in (r.methods or []):
-                route_roles_map[(r.path, method.upper())] = roles
+            roles = _collect_roles_from_route(r)
+            if roles:
+                for m in (r.methods or []):
+                    route_roles[(r.path, m.upper())] = roles
 
-    # Inject the roles into descriptions and as x-roles-allowed (or custom ext_key)
     for path, ops in schema.get("paths", {}).items():
         for method, op in ops.items():
             if not isinstance(op, dict):
                 continue
-
-            roles = route_roles_map.get((path, method.upper()))
+            roles = route_roles.get((path, method.upper()))
             if not roles:
                 continue
-
-            # Machine-readable extension
             op[ext_key] = roles
-
-            # Human-readable note in description (keep, don't duplicate)
             desc = op.get("description") or ""
             line = f"**Allowed roles:** {', '.join(roles)}"
             if line not in desc:
                 op["description"] = (desc + ("\n\n" if desc else "") + line)
 
-def _extract_allowed_from_callable(call) -> Optional[Set[KeyRole]]:
-    """Pull the captured `allowed` set out of the require_api_key closure."""
-    clo = getattr(call, "__closure__", None)
-    code = getattr(call, "__code__", None)
-    if not clo or not code:
-        return None
-    names = code.co_freevars
-    cells = [c.cell_contents for c in clo]
-    env = {n: v for n, v in zip(names, cells)}
-    allowed = env.get("allowed")
-    if isinstance(allowed, set):
-        return allowed
-    return None
-
-def _collect_roles_from_dependant(dependant) -> Optional[Set[KeyRole]]:
-    """Walk the dependant graph to find any require_api_key closure and return its allowed set."""
-    if dependant is None:
-        return None
-    # Check this node
-    if callable(getattr(dependant, "call", None)):
-        allowed = _extract_allowed_from_callable(dependant.call)
-        if allowed is not None:
-            return allowed
-    # Recurse into dependencies
-    for sub in getattr(dependant, "dependencies", []) or []:
-        found = _collect_roles_from_dependant(sub)
-        if found is not None:
-            return found
-    return None
-
 def _collect_roles_from_route(route: APIRoute) -> Optional[List[str]]:
     """
-    Return a list of role strings to document (always includes ADMIN).
-    - If no allowed set is found: return None (don’t inject anything).
-    - If allowed is empty: ADMIN-only endpoint.
+    Collect roles from any dependency marked with:
+      __require_api_key__ = True
+      __require_api_key_roles__ = tuple[KeyRole | str]
+    Returns a sorted list of unique role strings, or None if not guarded.
     """
-    # 1) Endpoint signature deps (covers your common case)
-    allowed = _collect_roles_from_dependant(getattr(route, "dependant", None))
+    roles: Set[str] = set()
 
-    # 2) Router-level dependencies as a fallback
-    if allowed is None:
+    # Endpoint-level dependency tree
+    dep = getattr(route, "dependant", None)
+    if dep is not None:
+        for d in _iter_dependants(dep):  # uses your existing helper
+            call = getattr(d, "call", None)
+            if call is not None and getattr(call, "__require_api_key__", False):
+                roles |= _roles_to_strings(getattr(call, "__require_api_key_roles__", ()))
+
+    # Router-level dependencies (fallback)
+    if not roles:
         for dep in getattr(route, "dependencies", []) or []:
             call = getattr(dep, "dependency", None)
-            if callable(call):
-                allowed = _extract_allowed_from_callable(call)
-                if allowed is not None:
-                    break
+            if call is not None and getattr(call, "__require_api_key__", False):
+                roles |= _roles_to_strings(getattr(call, "__require_api_key_roles__", ()))
 
-    if allowed is None:
-        return None  # no role guard found
+    return sorted(roles) if roles else None
 
-    # ADMIN always allowed
-    roles_out = [r.value if isinstance(r, KeyRole) else str(r) for r in sorted(allowed, key=lambda x: str(x))]
-    if "ADMIN" not in roles_out:
-        roles_out.append("ADMIN")
-    return roles_out
+def _roles_to_strings(items) -> Set[str]:
+    out: Set[str] = set()
+    for r in (items or ()):
+        out.add(r.value if isinstance(r, KeyRole) else str(r))
+    return out
+
+def _iter_dependants(dep: Dependant):
+    yield dep
+    for child in dep.dependencies or ():
+        yield from _iter_dependants(child)
