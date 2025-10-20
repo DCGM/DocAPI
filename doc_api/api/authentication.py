@@ -60,6 +60,7 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
     - ADMIN is always allowed.
     """
     allowed = set(roles) if roles else set()
+    allowed.add(KeyRole.ADMIN)
 
     async def _dep(
         k_hdr: Optional[str] = Security(api_key_header),
@@ -94,7 +95,7 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
                     detail=AUTHENTICATION_RESPONSES[AppCode.API_KEY_INACTIVE]["detail"],
                 )
 
-            if key.role != KeyRole.ADMIN and key.role not in allowed:
+            if key.role not in allowed:
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_403_FORBIDDEN,
                     code=AppCode.API_KEY_ROLE_FORBIDDEN,
@@ -104,7 +105,7 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
             return key
 
     _dep.__require_api_key__ = True
-    _dep.__require_api_key_roles__ = tuple(roles)
+    _dep.__require_api_key_roles__ = tuple(allowed)
     return _dep
 
 def hmac_sha256_hex(s: str) -> str:
