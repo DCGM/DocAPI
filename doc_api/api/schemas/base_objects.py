@@ -260,6 +260,18 @@ class Key(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
+class KeyNew(BaseModel):
+    label: str = Field(
+        ...,
+        description="Human-readable label for identifying the key, e.g., the client or worker name.",
+        examples=["My Application Key"],
+    )
+    role: KeyRole = Field(
+        ...,
+        description=f"Role to assign to the new key, determining access level (e.g. {', '.join(r.value for r in KeyRole)}).",
+        examples=[KeyRole.USER.value, KeyRole.WORKER.value, KeyRole.ADMIN.value],
+    )
+
 class KeyUpdate(BaseModel):
     id: UUID
 

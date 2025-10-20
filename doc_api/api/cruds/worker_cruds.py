@@ -1,13 +1,11 @@
 import logging
-import secrets
 from datetime import datetime, timezone, timedelta
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 from uuid import UUID
 
-from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update, func
+from sqlalchemy import select, exc, or_, and_, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.database import DBError
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.responses import AppCode
@@ -235,107 +233,6 @@ async def get_log_header_for_job(db: AsyncSession, job_id: UUID) -> str:
                   f"\n\n")
     return log_header
 
-
-async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -> Tuple[Optional[model.Image], AppCode]:
-    try:
-        async with db.begin():
-            result = await db.execute(
-                select(model.Image).
-                where(model.Image.id == image_id).
-                where(model.Image.job_id == job_id)
-            )
-            db_image = result.scalar_one_or_none()
-            if db_image is None:
-                return None, AppCode.IMAGE_NOT_FOUND_FOR_JOB
-            return db_image, AppCode.IMAGE_RETRIEVED
-
-    except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading image from database") from e
-
-
-async def get_keys(db: AsyncSession) -> List[model.Key]:
-    try:
-        result = await db.scalars(select(model.Key).order_by(model.Key.label))
-        return list(result.all())
-    except exc.SQLAlchemyError as e:
-        raise DBError('Failed reading keys from database', status_code=500) from e
-
-
-KEY_BYTES = 32  # 32 bytes ≈ 256-bit entropy (recommended)
-
-def generate_raw_key() -> str:
-    # URL-safe Base64 without padding-ish chars; good for headers, query, and cookies
-    return config.KEY_PREFIX + secrets.token_urlsafe(KEY_BYTES)
-
-async def new_key(db: AsyncSession, label: str) -> str:
-    """
-    Create a new API key, store HMAC(key), return the RAW key string.
-    Callers must display/return this once to the user and never log it.
-    """
-
-    try:
-        #result = await db.execute(
-        #    select(model.Key).where(model.Key.label == label)
-        #)
-        #key = result.scalar_one_or_none()
-        #if key is not None:
-        #    raise DBError(f"Key with label '{label}' already exists", status_code=409)
-
-        # Retry loop in the vanishingly unlikely case of a hash collision
-        for _ in range(3):
-            raw_key = generate_raw_key()
-            key_hash = hmac_sha256_hex(raw_key)
-
-            # ensure uniqueness before insert (cheap existence check)
-            existing = await db.execute(
-                select(model.Key.key_hash).where(model.Key.key_hash == key_hash)
-            )
-            if existing.scalar_one_or_none() is not None:
-                continue  # collision; regenerate
-
-            try:
-                db.add(model.Key(
-                    label=label,
-                    key_hash=key_hash
-                ))
-                await db.commit()
-                return raw_key
-            except exc.SQLAlchemyError:
-                await db.rollback()
-                continue
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed adding new key to database", status_code=500) from e
-    raise DBError("Failed adding new key to database", status_code=409)
-
-
-async def update_key(db: AsyncSession, key_update: base_objects.KeyUpdate) -> None:
-    try:
-        result = await db.execute(
-            select(model.Key).where(model.Key.id == key_update.id)
-        )
-        db_key = result.scalar_one_or_none()
-        if db_key is None:
-            raise DBError(f"Key '{key_update.id}' does not exist", code="KEY_NOT_FOUND", status_code=404)
-
-        result = await db.execute(
-            select(model.Key).where(model.Key.label == key_update.label)
-        )
-        key = result.scalar_one_or_none()
-        if key is not None:
-            raise DBError(f"Key label '{key_update.label}' already exists", code="KEY_LABEL_ALREADY_EXISTS", status_code=409)
-
-        if key_update.label is not None:
-            db_key.label = key_update.label
-        if key_update.active is not None:
-            db_key.active = key_update.active
-        if key_update.role is not None:
-            db_key.role = key_update.role
-
-        await db.commit()
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating key in database", status_code=500) from e
 
 
 

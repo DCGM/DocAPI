@@ -87,6 +87,25 @@ async def get_job_images(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[Li
         raise DBError('Failed reading images from database') from e
 
 
+async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -> Tuple[Optional[model.Image], AppCode]:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Image).
+                where(model.Image.id == image_id).
+                where(model.Image.job_id == job_id)
+            )
+            db_image = result.scalar_one_or_none()
+
+            if db_image is None:
+                return None, AppCode.IMAGE_NOT_FOUND_FOR_JOB
+
+            return db_image, AppCode.IMAGE_RETRIEVED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading image from database") from e
+
+
 async def update_image(*, db: AsyncSession, image_id: UUID, image_update: base_objects.ImageUpdate) -> AppCode:
     try:
         async with db.begin():
@@ -111,4 +130,5 @@ async def update_image(*, db: AsyncSession, image_id: UUID, image_update: base_o
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating image in database") from e
+
 

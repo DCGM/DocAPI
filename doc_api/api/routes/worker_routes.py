@@ -193,7 +193,7 @@ async def get_image_for_job(
         db: AsyncSession = Depends(get_async_session)):
     await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    db_image, code = await worker_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
+    db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
     if code == AppCode.IMAGE_RETRIEVED and db_image is not None and db_image.image_uploaded:
         image_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
@@ -245,7 +245,7 @@ async def get_alto_for_job(
         db: AsyncSession = Depends(get_async_session)):
     await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    db_image, code = await worker_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
+    db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
     if code == AppCode.IMAGE_RETRIEVED and db_image is not None and db_image.alto_uploaded:
         alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.xml")
