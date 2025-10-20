@@ -14,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex
-from doc_api.api.routes.route_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES
+from doc_api.api.routes.route_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
 from doc_api.api.routes import user_router, worker_router, admin_router, debug_router
@@ -153,7 +153,224 @@ async def unhandled(request: Request, exc: Exception):
         detail=DETAILS_GENERAL[AppCode.INTERNAL_ERROR]
     ))
 
-# override OpenAPI generation to include 422 response with our error envelope
+
+
+# --- OpenAPI customization --- inject guard docs, validation docs, roles docs ---
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    # --- worker guard ---
+    def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_worker_access_to_job__", False))
+
+    inject_guard_docs(
+        app=app,
+        schema=schema,
+        guard_predicate=_route_uses_challenge_worker_access_to_job,
+        guard_responses=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
+    )
+
+    # --- user guard ---
+    def _route_uses_challenge_user_access_to_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_user_access_to_job__", False))
+
+    inject_guard_docs(
+        app=app,
+        schema=schema,
+        guard_predicate=_route_uses_challenge_user_access_to_job,
+        guard_responses=USER_ACCESS_TO_JOB_GUARD_RESPONSES,
+    )
+
+    # --- validation 422 ---
+    inject_validation_422_docs(
+        schema=schema,
+        validation_response=VALIDATION_RESPONSE,
+    )
+
+    # --- roles ---
+    inject_roles_docs(app=app, schema=schema)
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+
+def inject_guard_docs(*, app, schema: dict, guard_predicate, guard_responses: dict):
+    """
+    Inject shared guard responses into Swagger (OpenAPI) for all operations
+    whose routes satisfy `guard_predicate(route)`.
+
+    - `guard_responses`: your {AppCode: {status, description, model, ...}} map.
+    - Uses make_responses(..., inject_schema=True) to produce OpenAPI shards.
+    - Merges without overwriting route-specific docs (schema/description/examples).
+    """
+    # Build fully rendered OpenAPI response fragments for the guard
+    rendered = make_responses(guard_responses, inject_schema=True)
+
+    # Determine which (path, METHOD) operations are guarded
+    guarded_ops = set()
+    for r in app.routes:
+        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_guard(r, guard_predicate):
+            for m in (r.methods or []):
+                guarded_ops.add((r.path, m.upper()))
+
+    # Status codes present in the rendered guard responses
+    status_codes = list(rendered.keys())  # ints
+
+    # Merge into the OpenAPI schema
+    for path, ops in schema.get("paths", {}).items():
+        for method, op in ops.items():
+            if not isinstance(op, dict) or (path, method.upper()) not in guarded_ops:
+                continue
+
+            responses = op.setdefault("responses", {})
+
+            for status in status_codes:
+                guard_src = rendered.get(status)
+                if not guard_src:
+                    continue
+
+                key = str(status)
+                dest_resp = responses.setdefault(key, {})
+
+                # Description: only set if missing
+                if "description" in guard_src:
+                    dest_resp.setdefault("description", guard_src["description"])
+
+                # Content: merge per content-type; keep existing, add missing
+                dest_content = dest_resp.setdefault("content", {})
+                for ctype, src_payload in (guard_src.get("content") or {}).items():
+                    dst_payload = dest_content.setdefault(ctype, {})
+
+                    # Schema: only if not already provided by the route
+                    if "schema" in src_payload and "schema" not in dst_payload:
+                        dst_payload["schema"] = src_payload["schema"]
+
+                    # Examples: merge without overwriting existing example keys
+                    src_examples = src_payload.get("examples") or {}
+                    if src_examples:
+                        dst_examples = (dst_payload.get("examples") or {}).copy()
+                        for ex_key, ex_val in src_examples.items():
+                            dst_examples.setdefault(ex_key, ex_val)
+                        if dst_examples:
+                            dst_payload["examples"] = dst_examples
+
+# --- generic helper: does this route use a given guard? ---
+def _route_uses_guard(route: APIRoute, predicate) -> bool:
+    try:
+        return bool(predicate(route))
+    except Exception:
+        return False
+
+
+def inject_validation_422_docs(*, schema: dict, validation_response: dict):
+    """
+    Injects standardized 422 Validation Error documentation into OpenAPI schema.
+
+    - Adds or replaces the default FastAPI 422 response with the given `validation_response`.
+    - Replaces only if the existing schema $ref is one of FastAPI's built-in validation models:
+      '#/components/schemas/HTTPValidationError' or '#/components/schemas/ValidationError'.
+    - `validation_response` should be a dict like VALIDATION_RESPONSE (AppCode keyed).
+    """
+
+    _validation_responses = make_responses(validation_response, inject_schema=True)
+    _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    if not _validation_422:
+        return  # nothing to inject
+
+    valid_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+
+    for path, ops in schema.get("paths", {}).items():
+        for method, op in ops.items():
+            if not isinstance(op, dict) or method.lower() not in valid_methods:
+                continue
+
+            responses = op.setdefault("responses", {})
+
+            if "422" in responses:
+                # Replace only if current schema is FastAPI's default validation model
+                app_json = (
+                    responses["422"]
+                    .get("content", {})
+                    .get("application/json", {})
+                )
+                schema_ = app_json.get("schema", {})
+
+                # Extract possible $ref (directly or inside oneOf/anyOf/allOf)
+                ref = None
+                if isinstance(schema_, dict):
+                    if "$ref" in schema_:
+                        ref = schema_["$ref"]
+                    else:
+                        for kw in ("oneOf", "anyOf", "allOf"):
+                            seq = schema_.get(kw)
+                            if isinstance(seq, list):
+                                for item in seq:
+                                    if isinstance(item, dict) and "$ref" in item:
+                                        ref = item["$ref"]
+                                        break
+                                if ref:
+                                    break
+
+                if ref in {
+                    "#/components/schemas/HTTPValidationError",
+                    "#/components/schemas/ValidationError",
+                }:
+                    responses["422"] = dict(_validation_422)
+            else:
+                responses["422"] = dict(_validation_422)
+
+
+def inject_roles_docs(*, app, schema: dict, ext_key: str = "x-roles-allowed"):
+    """
+    Injects role metadata into the OpenAPI schema.
+
+    - Builds a (path, METHOD) -> roles map from the actual FastAPI routes using your
+      existing `_collect_roles_from_route(route)` helper (must return Iterable[str] or None).
+    - For each matching operation in `schema["paths"]`:
+        * adds machine-readable roles under the `ext_key` (default: "x-roles-allowed"),
+        * appends a human-readable "**Allowed roles:** ..." line to the description
+          (without clobbering or duplicating existing text).
+    """
+    # Build a map (path, method) -> roles using the actual route objects
+    route_roles_map = {}
+    for r in app.routes:
+        if isinstance(r, APIRoute) and r.include_in_schema:
+            roles = _collect_roles_from_route(r)  # established helper
+            if roles is None:
+                continue
+            for method in (r.methods or []):
+                route_roles_map[(r.path, method.upper())] = roles
+
+    # Inject the roles into descriptions and as x-roles-allowed (or custom ext_key)
+    for path, ops in schema.get("paths", {}).items():
+        for method, op in ops.items():
+            if not isinstance(op, dict):
+                continue
+
+            roles = route_roles_map.get((path, method.upper()))
+            if not roles:
+                continue
+
+            # Machine-readable extension
+            op[ext_key] = roles
+
+            # Human-readable note in description (keep, don't duplicate)
+            desc = op.get("description") or ""
+            line = f"**Allowed roles:** {', '.join(roles)}"
+            if line not in desc:
+                op["description"] = (desc + ("\n\n" if desc else "") + line)
+
 def _extract_allowed_from_callable(call) -> Optional[Set[KeyRole]]:
     """Pull the captured `allowed` set out of the require_api_key closure."""
     clo = getattr(call, "__closure__", None)
@@ -210,214 +427,3 @@ def _collect_roles_from_route(route: APIRoute) -> Optional[List[str]]:
     if "ADMIN" not in roles_out:
         roles_out.append("ADMIN")
     return roles_out
-
-
-def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
-    if getattr(route.endpoint, "__challenge_worker_access_to_job__", False):
-        return True
-    return False
-
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-
-    # Ensure component container exists
-    components = schema.setdefault("components", {})
-    comp_schemas = components.setdefault("schemas", {})
-
-    # Register DocAPIResponseClientError + its nested defs as components
-    error_schema_full = DocAPIResponseClientError.model_json_schema(
-        ref_template="#/components/schemas/{model}"
-    )
-    for name, sub_schema in error_schema_full.get("$defs", {}).items():
-        comp_schemas.setdefault(name, sub_schema)
-
-    comp_schemas.setdefault(
-        "DocAPIResponseClientError",
-        {k: v for k, v in error_schema_full.items() if k != "$defs"}
-    )
-
-    # === ROLES DOC START ===
-    # Build a map (path, method) -> roles using the actual route objects
-    route_roles_map = {}
-    for r in app.routes:
-        if isinstance(r, APIRoute) and r.include_in_schema:
-            roles = _collect_roles_from_route(r)
-            if roles is None:
-                continue
-            for method in r.methods or []:
-                route_roles_map[(r.path, method.upper())] = roles
-
-    # Inject the roles into descriptions and as x-roles-allowed
-    for path, ops in schema.get("paths", {}).items():
-        for method, op in ops.items():
-            if not isinstance(op, dict):
-                continue
-            roles = route_roles_map.get((path, method.upper()))
-            if not roles:
-                continue
-
-            # Add machine-readable extension
-            op["x-roles-allowed"] = roles
-
-            # Append human-readable line to description (without clobbering existing text)
-            desc = op.get("description") or ""
-            line = f"**Allowed roles:** {', '.join(roles)}"
-            if line not in desc:
-                op["description"] = (desc + ("\n\n" if desc else "") + line)
-    # === ROLES DOC END ===
-
-    # === WORKER ACCESS TO JOB GUARD DOC START ===
-    _worker_access_to_job_responses = make_responses(WORKER_ACCESS_TO_JOB_GUARD_RESPONSES)
-    # Collect operations marked with the decorator
-    guarded_ops = set()
-    for r in app.routes:
-        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_challenge_worker_access_to_job(r):
-            for m in (r.methods or []):
-                guarded_ops.add((r.path, m.upper()))
-
-    # Merge guard examples into those operations' responses (do not overwrite existing examples)
-    for path, ops in schema.get("paths", {}).items():
-        for method, op in ops.items():
-            if not isinstance(op, dict) or (path, method.upper()) not in guarded_ops:
-                continue
-
-            responses = op.setdefault("responses", {})
-            for status_code in (
-                    fastapi.status.HTTP_404_NOT_FOUND,
-                    fastapi.status.HTTP_403_FORBIDDEN,
-                    fastapi.status.HTTP_409_CONFLICT,
-            ):
-                key = str(status_code)
-                guard_resp = _worker_access_to_job_responses.get(status_code)
-                if not guard_resp:
-                    continue
-
-                dest_resp = responses.setdefault(key, {})
-                content = dest_resp.setdefault("content", {})
-                app_json = content.setdefault("application/json", {})
-
-                # Ensure schema reference to your error envelope
-                app_json.setdefault("schema", {"$ref": "#/components/schemas/DocAPIResponseClientError"})
-
-                # Merge examples without clobbering route-defined ones
-                existing = app_json.get("examples", {}) or {}
-                guard_examples = guard_resp["content"]["application/json"]["examples"]
-                for ex_key, ex_val in guard_examples.items():
-                    existing.setdefault(ex_key, ex_val)
-                app_json["examples"] = existing
-        # === WORKER GUARD DOC END ===
-
-        # === WORKER ACCESS TO JOB GUARD DOC START ===
-        _worker_access_to_job_responses = make_responses(WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, inject_schema=True)
-
-        # Collect operations marked with the decorator
-        guarded_ops = set()
-        for r in app.routes:
-            if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_challenge_worker_access_to_job(r):
-                for m in (r.methods or []):
-                    guarded_ops.add((r.path, m.upper()))
-
-        # Merge guard responses (preserve explicit route definitions)
-        for path, ops in schema.get("paths", {}).items():
-            for method, op in ops.items():
-                if not isinstance(op, dict) or (path, method.upper()) not in guarded_ops:
-                    continue
-
-                responses = op.setdefault("responses", {})
-                for status_code in (
-                        fastapi.status.HTTP_404_NOT_FOUND,
-                        fastapi.status.HTTP_403_FORBIDDEN,
-                        fastapi.status.HTTP_409_CONFLICT,
-                ):
-                    key = str(status_code)
-                    guard_src = _worker_access_to_job_responses.get(status_code)
-                    if not guard_src:
-                        continue
-
-                    dest_resp = responses.setdefault(key, {})
-
-                    # Description: only set if missing
-                    if "description" in guard_src:
-                        dest_resp.setdefault("description", guard_src["description"])
-
-                    # Content: merge per content-type; keep existing, add missing
-                    dest_content = dest_resp.setdefault("content", {})
-                    for ctype, src_payload in guard_src.get("content", {}).items():
-                        dst_payload = dest_content.setdefault(ctype, {})
-
-                        # Schema: only set if route doesn't already provide one
-                        if "schema" in src_payload and "schema" not in dst_payload:
-                            dst_payload["schema"] = src_payload["schema"]
-
-                        # Examples: merge without overwriting existing keys
-                        src_examples = src_payload.get("examples", {}) or {}
-                        if src_examples:
-                            dst_examples = (dst_payload.get("examples", {}) or {}).copy()
-                            for ex_key, ex_val in src_examples.items():
-                                dst_examples.setdefault(ex_key, ex_val)
-                            if dst_examples:
-                                dst_payload["examples"] = dst_examples
-        # === WORKER GUARD DOC END ===
-
-        # === 422 VALIDATION DOC (default if none present OR if FastAPI default schema present) ===
-        _validation_responses = make_responses(VALIDATION_RESPONSE, inject_schema=True)
-        _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT)
-
-        if _validation_422:
-            for path, ops in schema.get("paths", {}).items():
-                for method, op in ops.items():
-                    if not isinstance(op, dict) or method.lower() not in {
-                        "get", "post", "put", "patch", "delete", "options", "head", "trace"
-                    }:
-                        continue
-
-                    responses = op.setdefault("responses", {})
-
-                    if "422" in responses:
-                        # Replace only if the schema $ref is FastAPI's default
-                        app_json = (
-                            responses["422"]
-                            .get("content", {})
-                            .get("application/json", {})
-                        )
-                        schema_ = app_json.get("schema", {})
-
-                        # Pull a $ref if present directly or inside oneOf/anyOf/allOf (common variants)
-                        ref = None
-                        if isinstance(schema_, dict):
-                            if "$ref" in schema_:
-                                ref = schema_["$ref"]
-                            else:
-                                for kw in ("oneOf", "anyOf", "allOf"):
-                                    seq = schema_.get(kw)
-                                    if isinstance(seq, list):
-                                        for item in seq:
-                                            if isinstance(item, dict) and "$ref" in item:
-                                                ref = item["$ref"]
-                                                break
-                                        if ref:
-                                            break
-
-                        if ref in {
-                            "#/components/schemas/HTTPValidationError",
-                            "#/components/schemas/ValidationError",
-                        }:
-                            responses["422"] = dict(_validation_422)
-                    else:
-                        responses["422"] = dict(_validation_422)
-        # === 422 VALIDATION DOC END ===
-
-
-    app.openapi_schema = schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi

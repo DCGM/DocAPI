@@ -182,6 +182,18 @@ def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONRe
     )
 
 GENERAL_RESPONSES = {
+    AppCode.JOB_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified job does not exist.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job does not exist.",
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_JOB: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "The API key does not have access to the specified job.",
+        "model": DocAPIResponseClientError,
+        "detail": "The API key does not have access to the job.",
+    },
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
         "description": "The specified image does not exist for the given job.",
