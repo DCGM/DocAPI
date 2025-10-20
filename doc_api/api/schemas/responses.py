@@ -1,6 +1,5 @@
-import enum
-from types import NoneType
-from typing import Generic, TypeVar, Optional, Any, Mapping, Dict, Type, Iterable, get_origin, get_args
+import enum, logging
+from typing import Generic, TypeVar, Optional, Any, Mapping, Dict, Type, get_origin, get_args
 
 import fastapi
 from pydantic import BaseModel, Field, model_validator, field_validator
@@ -10,9 +9,12 @@ from collections import defaultdict
 from doc_api.api.schemas.base_objects import model_example
 
 
+logger = logging.getLogger(__name__)
+
 # Naming convention for AppCode: CATEGORY_ACTION
 class AppCode(str, enum.Enum):
     # 2xx
+    API_KEY_VALID = 'API_KEY_VALID'
 
     # Worker-related
     JOB_ASSIGNED = 'JOB_ASSIGNED'
@@ -51,7 +53,7 @@ class AppCode(str, enum.Enum):
     API_KEY_MISSING = 'API_KEY_MISSING'
     API_KEY_INVALID = 'API_KEY_INVALID'
     API_KEY_INACTIVE = 'API_KEY_INACTIVE'
-    API_KEY_INSUFFICIENT_ROLE = 'API_KEY_INSUFFICIENT_ROLE'
+    API_KEY_ROLE_FORBIDDEN = 'API_KEY_ROLE_FORBIDDEN'
     API_KEY_FORBIDDEN_FOR_JOB = 'API_KEY_FORBIDDEN_FOR_JOB'
     API_KEY_NOT_FOUND = 'API_KEY_NOT_FOUND'
 
@@ -209,8 +211,9 @@ def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False)
       AppCode.SOMETHING: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "...",
-        "model": DocAPIResponseOK[JobLease],     # JSON OK with auto data (generic)
-        # OR "model": DocAPIResponseClientError  # JSON error (non-generic)
+        "model": DocAPIResponseOK,
+        "model_data": JobLease,
+        # OR "model": DocAPIResponseClientError
 
         # Optional for JSON: override example payload
         # "example_value": {...}
@@ -219,9 +222,6 @@ def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False)
         # "content_type": "image/jpeg",
         # "example_value": "(binary image data)",
       }
-
-    - Groups by HTTP status; preserves insertion order for examples.
-    - Attaches the JSON schema model once per status (first JSON example wins).
     """
     grouped = defaultdict(lambda: defaultdict(lambda: {"examples": {}}))  # status -> ctype -> examples
     status_models: Dict[int, Optional[Type[Any]]] = {}
@@ -232,6 +232,7 @@ def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False)
         desc: Optional[str] = cfg.get("description")
         ctype: str = cfg.get("content_type", "application/json")
         model_cls: Optional[Type[Any]] = cfg.get("model")
+        model_data_cls: Optional[Type[Any]] = cfg.get("model_data")
         detail: str = cfg.get("detail", "")
         details: Any = cfg.get("details")
         example_value = cfg.get("example_value")
@@ -246,8 +247,13 @@ def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False)
             if example_value is not None:
                 value = example_value
             elif model_cls is not None:
-                value = _build_json_example(model_cls=model_cls, app_code=app_code, detail=detail, status=status,
-                                            details=details)
+                value = _build_json_example(
+                    model_cls=model_cls,
+                    model_data_cls=model_data_cls,
+                    app_code=app_code,
+                    detail=detail,
+                    status=status,
+                    details=details)
                 # Keep FastAPI "model" behavior for non-inject path
                 status_models.setdefault(status, get_origin(model_cls) or model_cls)
                 # Precompute the $ref we’ll inject when inject_schema=True
@@ -317,40 +323,29 @@ def make_responses(spec: Dict[Any, Dict[str, Any]], inject_schema: bool = False)
 
     return responses
 
-def _extract_generic_arg(tp: Type[Any]) -> Optional[Type[Any]]:
-    """Return T if tp is parameterized like DocAPIResponseOK[T]; else None."""
-    args = get_args(tp) or getattr(tp, "__args__", ())
-    return args[0] if args else None
-
-def _build_json_example(*, model_cls: Type[Any], app_code, detail: str, status: int, details: Any) -> dict:
+def _build_json_example(
+    *, model_cls: Type[Any], model_data_cls: Optional[Type[Any]],
+    app_code, detail: str, status: int, details: Any
+) -> dict:
     """
-    Instantiate either:
-      - DocAPIResponseOK[T] -> auto-generate data via model_example(T)
-      - DocAPIResponseClientError (or any non-generic) -> no data needed
+    Success (generic): instantiate model_cls(status, code, detail, data=model_example(T))
+    Error (non-generic): instantiate model_cls(status, code, detail, details=...)
     """
-    T = _extract_generic_arg(model_cls)
-    if T is not None and T is not type(None):
-        data = model_example(T)
+    if model_data_cls is not None:
+        data = model_example(model_data_cls)
         inst = model_cls(status=status, code=app_code, detail=detail, data=data)
     else:
-        # non-generic or DocAPIResponseOK[NoneType] / no data
         inst = model_cls(status=status, code=app_code, detail=detail, details=details)
     return inst.model_dump(mode="json", exclude_none=True)
 
-def _schema_ref_from_model(model_tp: Type[Any]) -> str:
+def _schema_ref_from_model(model_tp: Type[Any], *, model_data_cls: Optional[Type[Any]] = None) -> str:
     """
-    Build a components schema $ref string from a (possibly generic) model type.
-    - Non-generic: Use model_tp.__name__
-    - Generic: Use OriginName_Arg1Name_Arg2Name ...
-      Example: DocAPIResponseOK[JobLease] -> "#/components/schemas/DocAPIResponseOK_JobLease"
+    Compose a stable components schema $ref:
+      - Success:  Origin_ModelData  (e.g., DocAPIResponseOK_JobLease)
+      - Error:    Origin             (e.g., DocAPIResponseClientError)
     """
-    origin = get_origin(model_tp)
-    if origin is None:
-        name = getattr(model_tp, "__name__", str(model_tp))
-    else:
-        args = [a for a in get_args(model_tp) if a is not type(None)]  # drop NoneType if present
-        arg_names = [getattr(a, "__name__", str(a)) for a in args]
-        name = getattr(origin, "__name__", str(origin))
-        if arg_names:
-            name = f"{name}_{'_'.join(arg_names)}"
-    return f"#/components/schemas/{name}"
+    base = getattr(model_tp, "__name__", str(model_tp))
+    if model_data_cls is not None:
+        arg = getattr(model_data_cls, "__name__", str(model_data_cls))
+        return f"#/components/schemas/{base}_{arg}"
+    return f"#/components/schemas/{base}"

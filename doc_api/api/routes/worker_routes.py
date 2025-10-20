@@ -34,14 +34,15 @@ GET_JOB_RESPONSES = {
     AppCode.JOB_ASSIGNED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "A job has been successfully assigned to the worker.",
-        "model": DocAPIResponseOK[base_objects.JobLease],
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
         "detail": "Job has been assigned to the worker, lease established (UTC time).",
     },
 
     AppCode.JOB_QUEUE_EMPTY: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "No jobs are currently available in the queue.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Queue is empty right now, try again shortly.",
     },
 }
@@ -83,7 +84,8 @@ GET_IMAGES_FOR_JOB_RESPONSES = {
     AppCode.IMAGES_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Images for the specified job have been retrieved successfully.",
-        "model": DocAPIResponseOK[List[base_objects.Image]],
+        "model": DocAPIResponseOK,
+        "model_data": List[base_objects.Image],
         "detail": "Images for Job retrieved successfully.",
     },
 }
@@ -266,7 +268,8 @@ POST_JOB_HEARTBEAT_RESPONSES = {
     AppCode.JOB_HEARTBEAT_ACCEPTED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job heartbeat has been accepted and the lease has been extended.",
-        "model": DocAPIResponseOK[base_objects.JobLease],
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
         "detail": "Heartbeat for Job accepted, lease extended (UTC time).",
     }
 }
@@ -303,7 +306,8 @@ UPDATE_JOB_RESPONSES = {
     AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job has been updated successfully and the lease has been extended.",
-        "model": DocAPIResponseOK[base_objects.JobLease],
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
         "detail": "Job has been updated successfully, lease extended (UTC time).",
     },
 }
@@ -340,7 +344,7 @@ POST_RESULT_FOR_JOB_RESPONSES = {
     AppCode.RESULT_ZIP_UPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The result ZIP archive for the job has been uploaded successfully.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Result ZIP archive for Job uploaded successfully.",
     },
     AppCode.RESULT_ZIP_INVALID: {
@@ -352,7 +356,7 @@ POST_RESULT_FOR_JOB_RESPONSES = {
 }
 @worker_router.post(
     "/result/{job_id}",
-    response_model=DocAPIResponseOK[NoneType],
+    response_model=DocAPIResponseOK,
     summary="Upload Job Result",
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
@@ -401,13 +405,13 @@ POST_JOB_COMPLETE_RESPONSES = {
     AppCode.JOB_COMPLETED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job has been marked as completed.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Job has been marked as completed.",
     },
     AppCode.JOB_ALREADY_COMPLETED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job was already marked as completed.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Job was already marked as completed.",
     },
     AppCode.RESULT_ZIP_MISSING: {
@@ -420,7 +424,7 @@ POST_JOB_COMPLETE_RESPONSES = {
 
 @worker_router.post(
     "/jobs/{job_id}/complete",
-    response_model=DocAPIResponseOK[NoneType],
+    response_model=DocAPIResponseOK,
     summary="Complete Job",
     tags=["Worker"],
     description="Mark a specific job as completed after all results have been uploaded.",
@@ -465,13 +469,13 @@ POST_JOB_FAIL_RESPONSES = {
     AppCode.JOB_FAILED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job has been marked as failed.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Job has been marked as failed.",
     },
     AppCode.JOB_ALREADY_FAILED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job was already marked as failed.",
-        "model": DocAPIResponseOK[NoneType],
+        "model": DocAPIResponseOK,
         "detail": "Job was already marked as failed.",
     },
 }

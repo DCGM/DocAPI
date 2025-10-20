@@ -153,6 +153,9 @@ class JobUpdate(BaseModel):
         examples=["Processing page 12 of 58."]
     )
 
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
+
+
 
 class JobLease(BaseModel):
     """
@@ -181,18 +184,53 @@ class JobLease(BaseModel):
         examples=["2025-10-18T21:30:00+00:00"]
     )
 
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
+
 
 class Key(BaseModel):
-    id: UUID
+    """
+    Represents an API key that authorizes access to the system.
+    Each key has a unique identifier, descriptive label, assigned role,
+    and timestamps for creation and last usage.
+    """
 
-    label: str
-    active: bool
-    role: KeyRole
+    id: UUID = Field(
+        ...,
+        description="Unique identifier of the API key (UUIDv4).",
+        examples=["c69bb0b5-16b8-47d4-9f78-c5a1d3f4f2d7"],
+    )
 
-    created_date: datetime
-    last_used: Optional[datetime] = None
+    label: str = Field(
+        ...,
+        description="Human-readable label for identifying the key, e.g., the client or worker name.",
+        examples=["My Application Key"],
+    )
 
-    model_config = ConfigDict(from_attributes=True, extra='ignore')
+    active: bool = Field(
+        ...,
+        description="Whether the key is currently active and permitted to access the API.",
+        examples=[True],
+    )
+
+    role: KeyRole = Field(
+        ...,
+        description="Role associated with this key, determining access level (e.g., ADMIN, USER, WORKER).",
+        examples=[KeyRole.USER.value],
+    )
+
+    created_date: datetime = Field(
+        ...,
+        description="Timestamp when the key was created (in UTC).",
+        examples=["2025-01-15T10:24:30+00:00"],
+    )
+
+    last_used: Optional[datetime] = Field(
+        None,
+        description="Timestamp of the last successful usage of this key (in UTC). May be null if unused.",
+        examples=["2025-10-20T07:55:10+00:00"],
+    )
+
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class KeyUpdate(BaseModel):

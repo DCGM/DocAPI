@@ -5,6 +5,7 @@ from typing import Optional, List, Set
 
 import fastapi
 from fastapi import FastAPI, Request
+from fastapi.dependencies.models import Dependant
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
@@ -13,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sqlalchemy import select
 
-from doc_api.api.authentication import hmac_sha256_hex
+from doc_api.api.authentication import hmac_sha256_hex, AUTHENTICATION_RESPONSES
 from doc_api.api.routes.route_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
@@ -171,22 +172,40 @@ def custom_openapi():
     def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
         return bool(getattr(route.endpoint, "__challenge_worker_access_to_job__", False))
 
-    inject_guard_docs(
+    inject_docs(
         app=app,
         schema=schema,
-        guard_predicate=_route_uses_challenge_worker_access_to_job,
-        guard_responses=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
+        route_predicate=_route_uses_challenge_worker_access_to_job,
+        route_responses=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
     )
 
     # --- user guard ---
     def _route_uses_challenge_user_access_to_job(route: APIRoute) -> bool:
         return bool(getattr(route.endpoint, "__challenge_user_access_to_job__", False))
 
-    inject_guard_docs(
+    inject_docs(
         app=app,
         schema=schema,
-        guard_predicate=_route_uses_challenge_user_access_to_job,
-        guard_responses=USER_ACCESS_TO_JOB_GUARD_RESPONSES,
+        route_predicate=_route_uses_challenge_user_access_to_job,
+        route_responses=USER_ACCESS_TO_JOB_GUARD_RESPONSES,
+    )
+
+    # --- api key authentication ---
+    def _route_uses_require_api_key(route: APIRoute) -> bool:
+        dep = getattr(route, "dependant", None)
+        if dep is None:
+            return False
+        for d in _iter_dependants(dep):
+            call = getattr(d, "call", None)
+            if call is not None and getattr(call, "__require_api_key__", False):
+                return True
+        return False
+
+    inject_docs(
+        app=app,
+        schema=schema,
+        route_predicate=_route_uses_require_api_key,
+        route_responses=AUTHENTICATION_RESPONSES,
     )
 
     # --- validation 422 ---
@@ -204,7 +223,7 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-def inject_guard_docs(*, app, schema: dict, guard_predicate, guard_responses: dict):
+def inject_docs(*, app, schema: dict, route_predicate, route_responses: dict):
     """
     Inject shared guard responses into Swagger (OpenAPI) for all operations
     whose routes satisfy `guard_predicate(route)`.
@@ -214,12 +233,12 @@ def inject_guard_docs(*, app, schema: dict, guard_predicate, guard_responses: di
     - Merges without overwriting route-specific docs (schema/description/examples).
     """
     # Build fully rendered OpenAPI response fragments for the guard
-    rendered = make_responses(guard_responses, inject_schema=True)
+    rendered = make_responses(route_responses, inject_schema=True)
 
     # Determine which (path, METHOD) operations are guarded
     guarded_ops = set()
     for r in app.routes:
-        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_guard(r, guard_predicate):
+        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_guard(r, route_predicate):
             for m in (r.methods or []):
                 guarded_ops.add((r.path, m.upper()))
 
@@ -271,6 +290,10 @@ def _route_uses_guard(route: APIRoute, predicate) -> bool:
     except Exception:
         return False
 
+def _iter_dependants(dep: Dependant):
+    yield dep
+    for child in dep.dependencies or ():
+        yield from _iter_dependants(child)
 
 def inject_validation_422_docs(*, schema: dict, validation_response: dict):
     """
