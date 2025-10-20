@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 @debug_router.get("/http_exception", response_model=List[base_objects.Key], tags=["Debug"])
-async def get_keys(
+async def http_exception(
         key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
     raise HTTPException(status_code=418, detail="This is a debug HTTP exception.")
