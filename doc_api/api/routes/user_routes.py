@@ -2,26 +2,30 @@ import hashlib
 import json
 import logging
 import os
-from xml.etree.ElementTree import ParseError
+from types import NoneType
 
 import fastapi
-from defusedxml import ElementTree as ET
 
 import cv2
 import numpy as np
-from fastapi import Depends, UploadFile, HTTPException, status
+from fastapi import Depends, UploadFile, HTTPException, status, Request
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.routes.route_guards import challenge_user_access_to_job, uses_challenge_user_access_to_job
+from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.user_guards import challenge_user_access_to_new_job, uses_challenge_user_access_to_new_job, \
+    uses_challenge_user_access_to_job, challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import user_cruds
+from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses
+from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
+    DETAILS_GENERAL, validate_ok_response, DocAPIClientErrorException, GENERAL_RESPONSES
+from doc_api.api.validators.alto_validator import validate_alto_basic
+from doc_api.api.validators.xml_validator import is_well_formed_xml
 from doc_api.db import model
 from doc_api.api.routes import user_router
 from doc_api.config import config
@@ -58,326 +62,591 @@ async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.
         data=key)
 
 
+POST_JOB_RESPONSES = {
+    AppCode.JOB_CREATED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "Job created successfully",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.Job,
+        "detail": "The job has been created successfully.",
+    },
+    AppCode.REQUEST_VALIDATION_ERROR: {
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "description": "Input validation failed",
+        "model": DocAPIResponseClientError,
+        "detail": "Validation of the job definition failed. Please see the documentation for the correct format.",
+        "details": [
+                        {
+                            "loc": ["body", "images", 0, "name"],
+                            "msg": "field required",
+                            "type": "value_error.missing",
+                        },
+                        {
+                            "loc": ["body", "images", 1, "order"],
+                            "msg": "value is not a valid integer",
+                            "type": "type_error.integer",
+                        },
+                        {
+                            "loc": ["body", "alto_required"],
+                            "msg": "value could not be parsed to a boolean",
+                            "type": "type_error.bool",
+                        },
+                    ]
+    }
+}
 @user_router.post(
     "/job",
-    response_model=base_objects.Job,
+    summary="Create Job",
     tags=["User"],
-    responses={
-        fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT: {
-            "content": {
-                "application/json": {
-                    "examples": {
-                        # replace default from main.py
-                        "default" : {
-                            "summary": AppCode.REQUEST_VALIDATION_ERROR.value,
-                            "description": "Input validation failed",
-                            "value": DocAPIResponseClientError(
-                                            status=422,
-                                            code=AppCode.REQUEST_VALIDATION_ERROR.value,
-                                            detail="Request validation failed.",
-                                            details=[
-                                                {
-                                                    "loc": ["body", "images", 0, "name"],
-                                                    "msg": "field required",
-                                                    "type": "value_error.missing",
-                                                },
-                                                {
-                                                    "loc": ["body", "images", 1, "order"],
-                                                    "msg": "value is not a valid integer",
-                                                    "type": "type_error.integer",
-                                                },
-                                                {
-                                                    "loc": ["body", "alto_required"],
-                                                    "msg": "value could not be parsed to a boolean",
-                                                    "type": "type_error.bool",
-                                                },
-                                            ],
-                                        ).model_dump(mode="json", exclude_none=True)}}}}}})
-
-async def create_job(job_definition: user_cruds.JobDefinition,
-                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                     db: AsyncSession = Depends(get_async_session)):
+    description="Create a new job with the specified images and options.",
+    responses=make_responses(POST_JOB_RESPONSES))
+async def create_job(
+        request: Request,
+        job_definition: user_cruds.JobDefinition,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
-    job = await user_cruds.create_job(db, key.id, job_definition)
-    return base_objects.Job.model_validate(job)
+    db_job, code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
+    if code == AppCode.JOB_CREATED:
+        # FastAPI automatically validates only for 200, so we need to do it manually for 201 here
+        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
+            status=status.HTTP_201_CREATED,
+            code=AppCode.JOB_CREATED,
+            detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
+            data=base_objects.Job.model_validate(db_job)))
+
+    raise RouteInvariantError(code=code, request=request)
 
 
-@user_router.post("/meta_json/{job_id}", tags=["User"])
-@uses_challenge_user_access_to_job
+POST_META_JSON_RESPONSES = {
+    AppCode.META_JSON_UPLOADED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "Meta JSON uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The Meta JSON file has been uploaded successfully.",
+    },
+    AppCode.META_JSON_REUPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Meta JSON re-uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The Meta JSON file has been re-uploaded successfully.",
+    },
+    AppCode.META_JSON_NOT_REQUIRED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Meta JSON not required for this job.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job does not require Meta JSON.",
+    }
+}
+@user_router.post(
+    "/meta_json/{job_id}",
+    response_model=DocAPIResponseOK[NoneType],
+    summary="Upload Meta JSON",
+    tags=["User"],
+    description="Upload the Meta JSON file for a job.",
+    responses=make_responses(POST_META_JSON_RESPONSES)
+)
+@uses_challenge_user_access_to_new_job
 async def upload_meta_json(job_id: UUID, meta_json,
                            key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                            db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_job(db, key, job_id)
-    db_job = await user_cruds.get_job(db, job_id)
-    if not db_job.meta_json_required:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "META_JSON_NOT_REQUIRED", "message": f"Job '{job_id}' does not require Meta JSON"},
-        )
-    if db_job.meta_json_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "META_JSON_ALREADY_UPLOADED", "message": f"Job '{job_id}' already has Meta JSON uploaded"},
-        )
-    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
-    await aiofiles_os.makedirs(batch_path, exist_ok=True)
-    meta_json_path = os.path.join(batch_path, "meta.json")
-    with open(meta_json_path, "w", encoding="utf-8") as f:
-        try:
+    await challenge_user_access_to_new_job(db, key, job_id)
+
+    db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if db_job.meta_json_required:
+        batch_path = os.path.join(config.JOBS_DIR, str(job_id))
+        await aiofiles_os.makedirs(batch_path, exist_ok=True)
+        meta_json_path = os.path.join(batch_path, "meta.json")
+        # the json should be checked/validated by FastAPI already, open and write it without extra validation
+        with open(meta_json_path, "w", encoding="utf-8") as f:
             meta_json_dict = json.loads(meta_json)
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "META_JSON_INVALID", "message": f"Failed to decode JSON"},
-            ) from e
-        json.dump(meta_json_dict, f, ensure_ascii=False, indent=4)
-    db_job.meta_json_uploaded = True
-    await db.commit()
+            json.dump(meta_json_dict, f, ensure_ascii=False, indent=4)
 
-    job_started = await user_cruds.start_job(db, job_id)
+        # TODO this can potentially lead to inconsistent state if the job start fails after Meta JSON file upload
+        job_started = await user_cruds.start_job(db=db, job_id=job_id)
 
-    msg = f"Meta JSON for job '{job_id}' uploaded successfully"
-    if job_started:
-        msg += "; job started"
-
-    return {"code": "META_JSON_UPLOADED", "message": msg}
-
-
-@user_router.post("/image/{job_id}/{name}", tags=["User"])
-@uses_challenge_user_access_to_job
-async def upload_image(job_id: UUID, name: str, file: UploadFile,
-                       key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                       db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_job(db, key, job_id)
-    db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
-    if db_image.image_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "IMAGE_ALREADY_UPLOADED", "message": f"Image '{name}' for Job '{job_id}' already uploaded"},
+        if not db_job.meta_json_uploaded:
+            update_job = base_objects.JobUpdate(meta_json_uploaded=True)
+            await general_cruds.update_job(db=db, job_id=job_id, job_update=update_job)
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=status.HTTP_201_CREATED,
+                code=AppCode.META_JSON_UPLOADED,
+                detail=POST_META_JSON_RESPONSES[AppCode.META_JSON_UPLOADED]["detail"]
+            ))
+        else:
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=status.HTTP_200_OK,
+                code=AppCode.META_JSON_REUPLOADED,
+                detail=POST_META_JSON_RESPONSES[AppCode.META_JSON_REUPLOADED]["detail"]
+            ))
+    else:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.META_JSON_NOT_REQUIRED,
+            detail=POST_META_JSON_RESPONSES[AppCode.META_JSON_NOT_REQUIRED]["detail"],
         )
-    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
-    await aiofiles_os.makedirs(batch_path, exist_ok=True)
-    image_path = os.path.join(batch_path, f'{db_image.id}.jpg')
-
-    raw_input = file.file.read()
-    contents = np.asarray(bytearray(raw_input), dtype="uint8")
-    image = cv2.imdecode(contents, cv2.IMREAD_COLOR)
-    if image is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_IMAGE", "message": f"Failed to decode image '{file.filename}' for Job '{job_id}', probably not a valid image file"}
-        )
-    imagehash = hashlib.md5(raw_input).hexdigest()
-
-    cv2.imwrite(image_path, image)
-
-    db_image.imagehash = imagehash
-    db_image.image_uploaded = True
-
-    await db.commit()
-
-    job_started = await user_cruds.start_job(db, job_id)
-
-    msg = f"Image '{name}' for Job '{job_id}' uploaded successfully"
-    if job_started:
-        msg += "; job started"
-
-    return {"code": "IMAGE_UPLOADED", "message": msg}
 
 
-ALLOWED_NS = {
-    "http://www.loc.gov/standards/alto/ns-v2#",
-    "http://www.loc.gov/standards/alto/ns-v3#",
-    "http://www.loc.gov/standards/alto/ns-v4#",  # v4.x
+POST_IMAGE_RESPONSES = {
+    AppCode.IMAGE_UPLOADED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "Image uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The image file has been uploaded successfully.",
+    },
+    AppCode.IMAGE_REUPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Image re-uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The image file has been re-uploaded successfully.",
+    },
+    AppCode.IMAGE_INVALID: {
+        "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "description": "Invalid image file.",
+        "model": DocAPIResponseClientError,
+        "detail": "Failed to decode the image file, probably not a valid image.",
+    },
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
-
-def _localname(tag: str) -> str:
-    # "{ns}alto" -> "alto", "alto" -> "alto"
-    return tag.split("}", 1)[1] if tag.startswith("{") else tag
-
-def _namespace(tag: str) -> Optional[str]:
-    # "{ns}alto" -> "ns", "alto" -> None
-    return tag[1:].split("}", 1)[0] if tag.startswith("{") else None
-
-def validate_alto_basic(xml_bytes: bytes) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Returns (ok, namespace, schema_version_attr).
-    ok = syntactically valid XML, root is <alto>, ns allowed, has <Layout>.
-    """
-    try:
-        root = ET.fromstring(xml_bytes)  # safe parse (defusedxml)
-    except ParseError:
-        return False, None, None
-
-    if _localname(root.tag) != "alto":
-        return False, None, None
-
-    ns = _namespace(root.tag)
-    if ns and ns not in ALLOWED_NS:
-        return False, ns, None
-
-    # optional but useful structural check
-    layout = root.find(".//{*}Layout")
-    if layout is None:
-        return False, ns, None
-
-    # many ALTOs have SCHEMAVERSION attribute
-    schema_ver = root.attrib.get("SCHEMAVERSION") or root.attrib.get("VERSION")
-    return True, ns, schema_ver
-
-@user_router.post("/alto/{job_id}/{name}", tags=["User"])
-@uses_challenge_user_access_to_job
-async def upload_alto(job_id: UUID,
-        name: str,
+@user_router.post(
+    "/image/{job_id}/{image_name}",
+    response_model=DocAPIResponseOK[NoneType],
+    summary="Upload IMAGE",
+    tags=["User"],
+    description="Upload an IMAGE file for a specific job and image name.",
+    responses=make_responses(POST_IMAGE_RESPONSES))
+@uses_challenge_user_access_to_new_job
+async def upload_image(
+        request: Request,
+        job_id: UUID,
+        image_name: str,
         file: UploadFile,
-                      key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                      db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_job(db, key, job_id)
-    db_image = await user_cruds.get_image_by_job_and_name(db, job_id, name)
-    db_job = await user_cruds.get_job(db, job_id)
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_user_access_to_new_job(db, key, job_id)
+
+    db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
+
+    if code == AppCode.IMAGE_RETRIEVED:
+        raw_input = file.file.read()
+        contents = np.asarray(bytearray(raw_input), dtype="uint8")
+        image = cv2.imdecode(contents, cv2.IMREAD_COLOR)
+        if image is None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                code=AppCode.IMAGE_INVALID,
+                detail=POST_IMAGE_RESPONSES[AppCode.IMAGE_INVALID]["detail"]
+            )
+
+        imagehash = hashlib.md5(raw_input).hexdigest()
+
+        batch_path = os.path.join(config.JOBS_DIR, str(job_id))
+        await aiofiles_os.makedirs(batch_path, exist_ok=True)
+        image_path = os.path.join(batch_path, f'{db_image.id}.jpg')
+        cv2.imwrite(image_path, image)
+
+        image_already_uploaded = db_image.image_uploaded
+        image_update = base_objects.ImageUpdate(image_uploaded=True, imagehash=imagehash)
+        await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
+
+        # TODO this can potentially lead to inconsistent state if the job start fails after image upload
+        job_started = await user_cruds.start_job(db=db, job_id=job_id)
+
+        if not image_already_uploaded:
+            return DocAPIResponseOK[NoneType](
+                status=status.HTTP_201_CREATED,
+                code=AppCode.IMAGE_UPLOADED,
+                detail=POST_IMAGE_RESPONSES[AppCode.IMAGE_UPLOADED]["detail"]
+            )
+        else:
+            return DocAPIResponseOK[NoneType](
+                status=status.HTTP_200_OK,
+                code=AppCode.IMAGE_REUPLOADED,
+                detail=POST_IMAGE_RESPONSES[AppCode.IMAGE_REUPLOADED]["detail"]
+            )
+
+    elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_404_NOT_FOUND,
+            code=AppCode.IMAGE_NOT_FOUND_FOR_JOB,
+            detail=POST_IMAGE_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]["detail"]
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+POST_ALTO_RESPONSES = {
+    AppCode.ALTO_UPLOADED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "ALTO XML uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The ALTO XML file has been uploaded successfully.",
+    },
+    AppCode.ALTO_REUPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "ALTO XML re-uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The ALTO XML file has been re-uploaded successfully.",
+    },
+    AppCode.ALTO_NOT_REQUIRED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "ALTO XML not required for this job.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job does not require ALTO XML.",
+    },
+    AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
+    AppCode.ALTO_SCHEMA_INVALID: {
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "description": "ALTO XML does not conform to the required schema.",
+        "model": DocAPIResponseClientError,
+        "detail": "The ALTO XML file does not conform to the required schema.",
+    },
+}
+@user_router.post(
+    "/alto/{job_id}/{name}",
+    summary="Upload ALTO XML",
+    response_model=DocAPIResponseOK[NoneType],
+    description="Upload an ALTO XML file for a specific job and image name.",
+    tags=["User"],
+responses=make_responses(POST_ALTO_RESPONSES))
+@uses_challenge_user_access_to_new_job
+async def upload_alto(
+        request: Request,
+        job_id: UUID,
+        image_name: str,
+        file: UploadFile,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_user_access_to_new_job(db, key, job_id)
+
+    db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
     if not db_job.alto_required:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "ALTO_NOT_REQUIRED", "message": f"Job '{job_id}' does not require ALTO"},
-        )
-    if db_image.alto_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "ALTO_ALREADY_UPLOADED", "message": f"ALTO for image '{name}' for Job '{job_id}' already uploaded"},
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.ALTO_NOT_REQUIRED,
+            detail=POST_ALTO_RESPONSES[AppCode.ALTO_NOT_REQUIRED]["detail"],
         )
 
-    # read once (async) and validate
-    data = await file.read()
+    db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
+    if code != AppCode.IMAGE_RETRIEVED:
+        data = await file.read()
+        if not is_well_formed_xml(data):
+            raise DocAPIClientErrorException(
+                status=status.HTTP_400_BAD_REQUEST,
+                code=AppCode.XML_PARSE_ERROR,
+                detail=POST_ALTO_RESPONSES[AppCode.XML_PARSE_ERROR]["detail"],
+            )
+        alto_checks = validate_alto_basic(data)
+        for check_type, check_val in alto_checks.items():
+            if config.ALTO_VALIDATION[check_type] and not check_val:
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    code=AppCode.ALTO_SCHEMA_INVALID,
+                    detail=POST_ALTO_RESPONSES[AppCode.ALTO_SCHEMA_INVALID]["detail"],
+                )
 
-    ok, ns, schema_ver = validate_alto_basic(data)
-    if not ok:
-        ns_info = f" (ns: {ns})" if ns else ""
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_ALTO_XML", "message": f"Not a valid ALTO XML{ns_info} or missing <Layout>"},
+        batch_path = os.path.join(config.JOBS_DIR, str(job_id))
+        await aiofiles_os.makedirs(batch_path, exist_ok=True)
+        alto_path = os.path.join(batch_path, f"{db_image.id}.xml")
+
+        with open(alto_path, "wb") as f:
+            f.write(data)
+
+        # TODO this can potentially lead to inconsistent state if the job start fails after ALTO upload
+        job_started = await user_cruds.start_job(db=db, job_id=job_id)
+
+        if not db_image.alto_uploaded:
+            image_update = base_objects.ImageUpdate(alto_uploaded=True)
+            await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=status.HTTP_201_CREATED,
+                code=AppCode.ALTO_UPLOADED,
+                detail=POST_ALTO_RESPONSES[AppCode.ALTO_UPLOADED]["detail"]
+            ))
+        else:
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=status.HTTP_200_OK,
+                code=AppCode.ALTO_REUPLOADED,
+                detail=POST_ALTO_RESPONSES[AppCode.ALTO_REUPLOADED]["detail"]
+            ))
+
+    elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_404_NOT_FOUND,
+            code=AppCode.IMAGE_NOT_FOUND_FOR_JOB,
+            detail=POST_IMAGE_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]["detail"]
         )
 
-    batch_path = os.path.join(config.JOBS_DIR, str(job_id))
-    await aiofiles_os.makedirs(batch_path, exist_ok=True)
-    alto_path = os.path.join(batch_path, f"{db_image.id}.xml")
+    raise RouteInvariantError(code=code, request=request)
 
-    with open(alto_path, "wb") as f:
-        f.write(data)
-
-    db_image.alto_uploaded = True
-    await db.commit()
-
-    job_started = await user_cruds.start_job(db, job_id)
-
-    msg = f"ALTO for image '{name}' for Job '{job_id}' uploaded successfully"
-    if schema_ver:
-        msg += f" (schema {schema_ver})"
-    if job_started:
-        msg += "; job started"
-    return {"code": "ALTO_UPLOADED", "message": msg}
-
-
-@user_router.get("/job/{job_id}", response_model=base_objects.Job, tags=["User"])
+GET_JOB_RESPONSES = {
+    AppCode.JOB_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job details retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.Job,
+        "detail": "The job details have been retrieved successfully.",
+    }
+}
+@user_router.get(
+    "/job/{job_id}",
+    summary="Get Job",
+    response_model=DocAPIResponseOK[base_objects.Job],
+    tags=["User"],
+    description="Retrieve the details of a specific job by its ID.",
+    responses=make_responses({}))
 @uses_challenge_user_access_to_job
 async def get_job(job_id: UUID,
                   key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
                   db: AsyncSession = Depends(get_async_session)):
     await challenge_user_access_to_job(db, key, job_id)
-    db_job = await user_cruds.get_job(db, job_id)
-    return base_objects.Job.model_validate(db_job)
+
+    db_job = await general_cruds.get_job(db=db, job_id=job_id)
+
+    return DocAPIResponseOK[base_objects.Job](
+        status=status.HTTP_200_OK,
+        code=AppCode.JOB_RETRIEVED,
+        detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
+        data=db_job
+    )
 
 
-@user_router.get("/images/{job_id}", response_model=List[base_objects.Image], tags=["User"])
+GET_IMAGES_FOR_JOB_RESPONSES = {
+    AppCode.IMAGES_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job images retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": List[base_objects.Image],
+        "detail": "The images for the job have been retrieved successfully.",
+    }
+}
+@user_router.get(
+    "/images/{job_id}",
+    summary="Get Job Images",
+    response_model=DocAPIResponseOK[List[base_objects.Image]],
+    tags=["User"],
+    description="Retrieve all images associated for a specific job.",
+    responses=make_responses({}))
 @uses_challenge_user_access_to_job
-async def get_images(job_id: UUID,
-                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                     db: AsyncSession = Depends(get_async_session)):
+async def get_images(
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
     await challenge_user_access_to_job(db, key, job_id)
-    db_images = await user_cruds.get_job_images(db, job_id)
-    return [base_objects.Image.model_validate(db_image) for db_image in db_images]
 
+    db_images, code = await general_cruds.get_job_images(db=db, job_id=job_id)
 
-@user_router.get("/jobs", response_model=List[base_objects.Job], tags=["User"])
+    return DocAPIResponseOK[List[base_objects.Image]](
+        status=status.HTTP_200_OK,
+        code=AppCode.IMAGES_RETRIEVED,
+        detail=GET_IMAGES_FOR_JOB_RESPONSES[AppCode.IMAGES_RETRIEVED]["detail"],
+        data=db_images,
+    )
+
+GET_JOBS_RESPONSES = {
+    AppCode.JOBS_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Jobs retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": List[base_objects.Job],
+        "detail": "The jobs have been retrieved successfully.",
+    }
+}
+@user_router.get(
+    "/jobs",
+    summary="Get Jobs",
+    response_model=DocAPIResponseOK[List[base_objects.Job]],
+    tags=["User"],
+    description="Retrieve all jobs associated with the authenticated API key.",
+    responses=make_responses(GET_JOBS_RESPONSES)
+)
 async def get_jobs(
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    db_jobs = await user_cruds.get_jobs(db, key.id)
-    return [base_objects.Job.model_validate(db_job) for db_job in db_jobs]
+
+    db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
+
+    return DocAPIResponseOK[List[base_objects.Job]](
+        status=status.HTTP_200_OK,
+        code=AppCode.JOBS_RETRIEVED,
+        detail=GET_JOBS_RESPONSES[AppCode.JOBS_RETRIEVED]["detail"],
+        data=db_jobs
+    )
 
 
-@user_router.put("/start_job/{job_id}/", tags=["User"])
+POST_JOB_START_RESPONSES = {
+    AppCode.JOB_STARTED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job started successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The job has been started successfully.",
+    },
+    AppCode.JOB_NOT_READY: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job is not ready to be started.",
+        "model": DocAPIResponseClientError,
+        "detail": "The job cannot be started because not all required files have been uploaded.",
+    },
+    AppCode.JOB_ALREADY_STARTED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job has already been started.",
+        "model": DocAPIResponseClientError,
+        "detail": "The job is not in NEW state and cannot be started manually.",
+    }
+}
+@user_router.post(
+    "/job/{job_id}/start",
+    summary="Start Job",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["User"],
+    description="Start processing a job.",
+    responses=make_responses(POST_JOB_START_RESPONSES))
 @uses_challenge_user_access_to_job
-async def start_job(job_id: UUID,
-                    key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                    db: AsyncSession = Depends(get_async_session)):
+async def start_job(
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
     await challenge_user_access_to_job(db, key, job_id)
-    db_job = await user_cruds.get_job(db, job_id)
-    if db_job.state != base_objects.ProcessingState.NEW:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_NEW", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.NEW.value}' state, current state: '{db_job.state.value}'"},
-        )
-    job_started = await user_cruds.start_job(db, job_id)
-    if job_started:
-        return {"code": "JOB_STARTED", "message": f"Job '{job_id}' started successfully"}
+
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if db_job.state == base_objects.ProcessingState.NEW:
+        job_started = await user_cruds.start_job(db=db, job_id=job_id)
+        if job_started:
+            return DocAPIResponseOK[NoneType](
+                status=status.HTTP_200_OK,
+                code=AppCode.JOB_STARTED,
+                detail=POST_JOB_START_RESPONSES[AppCode.JOB_STARTED]["detail"]
+            )
+        else:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_409_CONFLICT,
+                code=AppCode.JOB_NOT_READY,
+                detail=POST_JOB_START_RESPONSES[AppCode.JOB_NOT_READY]["detail"]
+            )
     else:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_READY", "message": f"Job '{job_id}' is not ready to start, missing required files"},
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.JOB_ALREADY_STARTED,
+            detail=POST_JOB_START_RESPONSES[AppCode.JOB_ALREADY_STARTED]["detail"]
         )
 
 
-@user_router.put("/cancel_job/{job_id}", tags=["User"])
+POST_JOB_CANCEL_RESPONSES = {
+    AppCode.JOB_CANCELLED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job cancelled successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "The job has been cancelled successfully.",
+    },
+    AppCode.JOB_FINISHED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job is already finished and cannot be cancelled.",
+        "model": DocAPIResponseClientError,
+        "detail": "The job is already finished and cannot be cancelled.",
+    }
+}
+@user_router.post(
+    "/job/{job_id}/cancel",
+    summary="Cancel Job",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["User"],
+    description="Cancel a job.",
+    responses=make_responses(POST_JOB_CANCEL_RESPONSES))
 @uses_challenge_user_access_to_job
-async def cancel_job(job_id: UUID,
-                     key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                     db: AsyncSession = Depends(get_async_session)):
+async def cancel_job(
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
     await challenge_user_access_to_job(db, key, job_id)
-    db_job = await user_cruds.get_job(db, job_id)
-    if db_job.state in {base_objects.ProcessingState.CANCELLED, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_CANCELLABLE", "message": f"Job '{job_id}' is in state '{db_job.state.value}' and cannot be cancelled"},
+
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if db_job.state not in {base_objects.ProcessingState.CANCELLED,
+                            base_objects.ProcessingState.DONE,
+                            base_objects.ProcessingState.ERROR}:
+        await user_cruds.cancel_job(db, job_id)
+        return DocAPIResponseOK[NoneType](
+            status=status.HTTP_200_OK,
+            code=AppCode.JOB_CANCELLED,
+            detail=POST_JOB_CANCEL_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
         )
-    await user_cruds.cancel_job(db, job_id)
-    return {"code": "JOB_CANCELLED", "message": f"Job '{job_id}' cancelled successfully"}
+    else:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.JOB_FINISHED,
+            detail=POST_JOB_CANCEL_RESPONSES[AppCode.JOB_FINISHED]["detail"]
+        )
 
 
-@user_router.get("/result/{job_id}", tags=["User"])
+GET_RESULT_RESPONSES = {
+    AppCode.JOB_RESULT_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job result retrieved successfully.",
+        "content_type": "application/zip",
+        "example_value": "(binary ZIP file content)"
+    },
+    AppCode.JOB_RESULT_NOT_READY: {
+        "status": fastapi.status.HTTP_425_TOO_EARLY,
+        "description": "Job result is not ready yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "The job result is not ready yet.",
+    },
+    AppCode.JOB_RESULT_GONE: {
+        "status": fastapi.status.HTTP_410_GONE,
+        "description": "Job result is no longer available.",
+        "model": DocAPIResponseClientError,
+        "detail": "The job result is no longer available.",
+    }
+}
+@user_router.get(
+    "/result/{job_id}",
+    summary="Download Job Result",
+    response_class=FileResponse,
+    tags=["User"],
+    description="Download the result ZIP file for a completed job.",
+    responses=make_responses(GET_RESULT_RESPONSES))
 @uses_challenge_user_access_to_job
 async def get_result(
-    job_id: UUID,
+        route_request: fastapi.Request,
+        job_id: UUID,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-        db: AsyncSession = Depends(get_async_session),
-):
-    await challenge_user_access_to_job(db, key, job_id)
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_user_access_to_new_job(db, key, job_id)
 
-    db_job = await user_cruds.get_job(db, job_id)
-    if db_job.state != base_objects.ProcessingState.DONE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "JOB_NOT_DONE",
-                "message": (
-                    f"Job '{job_id}' must be in "
-                    f"'{base_objects.ProcessingState.DONE.value}' state to get result, "
-                    f"current state: '{db_job.state.value}'"
-                ),
-            },
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if db_job.state in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.CANCELLED}:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_410_GONE,
+            code=AppCode.JOB_RESULT_GONE,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_GONE]["detail"]
         )
 
-    result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
-
-    if not os.path.exists(result_file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "RESULT_NOT_FOUND", "message": f"Result for job '{job_id}' not found"},
+    if db_job.state in {base_objects.ProcessingState.NEW, base_objects.ProcessingState.PROCESSING}:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_425_TOO_EARLY,
+            code=AppCode.JOB_RESULT_NOT_READY,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_NOT_READY]["detail"]
         )
 
-    return FileResponse(
-        result_file_path,
-        media_type="application/zip",
-        filename=f"{job_id}.zip",
-    )
+    if db_job.state == base_objects.ProcessingState.DONE:
+        result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+        if not os.path.exists(result_file_path):
+             raise DocAPIClientErrorException(
+                status=status.HTTP_425_TOO_EARLY,
+                code=AppCode.JOB_RESULT_NOT_READY,
+                detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_NOT_READY]["detail"]
+            )
+
+        return FileResponse(
+            result_file_path,
+            media_type="application/zip",
+            filename=f"{job_id}.zip",
+        )
+
+    raise RouteInvariantError(code=code, request=route_request)
+
 
 

@@ -13,15 +13,43 @@ logger = logging.getLogger(__name__)
 
 # Naming convention for AppCode: CATEGORY_ACTION
 class AppCode(str, enum.Enum):
-    # 2xx
     API_KEY_VALID = 'API_KEY_VALID'
+
+    # User-related
+    JOB_CREATED = 'JOB_CREATED'
+    JOB_STARTED = 'JOB_STARTED'
+    JOB_ALREADY_STARTED = 'JOB_ALREADY_STARTED'
+    JOB_NOT_READY = 'JOB_NOT_READY'
+    JOB_CANCELLED = 'JOB_CANCELLED'
+    JOB_FINISHED = 'JOB_FINISHED'
+
+    META_JSON_UPLOADED = 'META_JSON_UPLOADED'
+    META_JSON_REUPLOADED = 'META_JSON_REUPLOADED'
+    META_JSON_NOT_REQUIRED = 'META_JSON_NOT_REQUIRED'
+
+    IMAGE_UPLOADED = 'IMAGE_UPLOADED'
+    IMAGE_REUPLOADED = 'IMAGE_REUPLOADED'
+    IMAGE_INVALID = 'IMAGE_INVALID'
+    IMAGE_NOT_FOUND = 'IMAGE_NOT_FOUND'
+    IMAGE_UPDATED = 'IMAGE_UPDATED'
+
+    ALTO_UPLOADED = 'ALTO_UPLOADED'
+    ALTO_REUPLOADED = 'ALTO_REUPLOADED'
+    ALTO_NOT_REQUIRED = 'ALTO_NOT_REQUIRED'
+    XML_PARSE_ERROR = 'XML_PARSE_ERROR'
+    ALTO_SCHEMA_INVALID = 'ALTO_SCHEMA_INVALID'
 
     # Worker-related
     JOB_ASSIGNED = 'JOB_ASSIGNED'
     JOB_QUEUE_EMPTY = 'JOB_QUEUE_EMPTY'
+    JOB_NOT_FOUND = 'JOB_NOT_FOUND'
     JOB_RETRIEVED = 'JOB_RETRIEVED'
+    JOBS_RETRIEVED = 'JOBS_RETRIEVED'
+    JOB_NOT_IN_PROCESSING = 'JOB_NOT_IN_PROCESSING'
+    JOB_NOT_IN_NEW = 'JOB_NOT_IN_NEW'
     JOB_UPDATED = 'JOB_UPDATED'
     JOB_HEARTBEAT_ACCEPTED = 'JOB_HEARTBEAT_ACCEPTED'
+    JOB_INVALID_STATE = 'JOB_INVALID_STATE'
     JOB_COMPLETED = 'JOB_COMPLETED'
     JOB_ALREADY_COMPLETED = 'JOB_ALREADY_COMPLETED'
     JOB_FAILED = 'JOB_FAILED'
@@ -29,6 +57,7 @@ class AppCode(str, enum.Enum):
 
     IMAGES_RETRIEVED = 'IMAGES_RETRIEVED'
     IMAGE_RETRIEVED = 'IMAGE_RETRIEVED'
+    IMAGE_NOT_FOUND_FOR_JOB = 'IMAGE_NOT_FOUND_FOR_JOB'
 
     IMAGE_NOT_UPLOADED = 'IMAGE_NOT_UPLOADED'
     ALTO_NOT_UPLOADED = 'ALTO_NOT_UPLOADED'
@@ -38,14 +67,14 @@ class AppCode(str, enum.Enum):
     ALTO_DOWNLOADED = 'ALTO_DOWNLOADED'
     META_JSON_DOWNLOADED = 'META_JSON_DOWNLOADED'
 
-    RESULT_ZIP_INVALID = 'RESULT_ZIP_INVALID'
-    RESULT_ZIP_UPLOADED = 'RESULT_ZIP_UPLOADED'
-    RESULT_ZIP_MISSING = 'RESULT_ZIP_MISSING'
+    JOB_RESULT_RETRIEVED = 'JOB_RESULT_RETRIEVED'
+    JOB_RESULT_NOT_READY = 'JOB_RESULT_NOT_READY'
+    JOB_RESULT_GONE = 'JOB_RESULT_GONE'
 
-    # 4xx
-    JOB_NOT_FOUND = 'JOB_NOT_FOUND'
-    IMAGE_NOT_FOUND_FOR_JOB = 'IMAGE_NOT_FOUND_IN_JOB'
-    JOB_NOT_IN_PROCESSING = 'JOB_NOT_IN_PROCESSING'
+    JOB_RESULT_INVALID = 'JOB_RESULT_INVALID'
+    JOB_RESULT_UPLOADED = 'JOB_RESULT_UPLOADED'
+    JOB_RESULT_MISSING = 'JOB_RESULT_MISSING'
+
 
     HTTP_ERROR = 'HTTP_ERROR'
     REQUEST_VALIDATION_ERROR = 'REQUEST_VALIDATION_ERROR'
@@ -136,27 +165,18 @@ class DocAPIResponseServerError(DocAPIResponseBase):
 
 NO_BODY_STATUSES = {fastapi.status.HTTP_204_NO_CONTENT, fastapi.status.HTTP_205_RESET_CONTENT}
 
-def validate_no_data_ok_response(payload: DocAPIResponseOK[T]) -> Response:
+def validate_ok_response(payload: DocAPIResponseOK[T]) -> Response:
     """
-    Render a 2xx *no-data* response, for 200 with data return Pydantic model
+    Render a 2xx response, for 200 strictly prefer returning Pydantic model
     directly from route and use FastAPI response_model for validation.
     Policy:
-      - ALL 2xx through this helper must have data is None.
       - 204/205 => empty Response (no body) - RFC: 204/205 MUST NOT include a body.
-      - Other 2xx => JSON envelope with data=None.
+      - Other 2xx => DocAPIResponseOK[T] as JSONResponse
     """
-    code = int(payload.status)
-
-    if payload.data is not None:
-        raise ValueError(
-            f"validate_ok_response only permits 2xx with data=None; "
-            f"got status {code} and data={payload.data!r}"
-        )
-
     if payload.status in NO_BODY_STATUSES:
-        return Response(status_code=code)
+        return Response(status_code=payload.status)
 
-    return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
+    return JSONResponse(status_code=payload.status, content=payload.model_dump(mode="json"))
 
 
 def validate_client_error_response(payload: DocAPIResponseClientError, headers: Optional[Mapping[str, str]] = None) -> JSONResponse:
@@ -201,6 +221,12 @@ GENERAL_RESPONSES = {
         "description": "The specified image does not exist for the given job.",
         "model": DocAPIResponseClientError,
         "detail": "Image does not exist for the specified job.",
+    },
+    AppCode.XML_PARSE_ERROR: {
+        "status": fastapi.status.HTTP_400_BAD_REQUEST,
+        "description": "Invalid XML file.",
+        "model": DocAPIResponseClientError,
+        "detail": "Failed to parse the XML file.",
     }
 }
 
