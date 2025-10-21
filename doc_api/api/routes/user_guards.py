@@ -27,7 +27,12 @@ def uses_challenge_user_access_to_new_job(fn):
     setattr(fn, "__challenge_user_access_to_new_job__", True)
     return fn
 
-async def challenge_user_access_to_new_job(db: AsyncSession, key: model.Key, job_id: UUID):
+async def challenge_user_access_to_new_job(
+        *,
+        db: AsyncSession,
+        key: model.Key,
+        job_id: UUID):
+
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_NOT_FOUND:
@@ -65,7 +70,12 @@ def uses_challenge_user_access_to_job(fn):
     setattr(fn, "__challenge_user_access_to_job__", True)
     return fn
 
-async def challenge_user_access_to_job(db: AsyncSession, key: model.Key, job_id: UUID):
+async def challenge_user_access_to_job(
+        *,
+        db: AsyncSession,
+        key: model.Key,
+        job_id: UUID):
+
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_NOT_FOUND:
@@ -103,11 +113,11 @@ def uses_challenge_worker_access_to_processing_job(fn):
     return fn
 
 async def challenge_worker_access_to_processing_job(
-    *,
-    db: AsyncSession,
-    key: model.Key,
-    job_id: UUID
-):
+        *,
+        db: AsyncSession,
+        key: model.Key,
+        job_id: UUID):
+
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_NOT_FOUND:
@@ -152,11 +162,11 @@ def uses_challenge_worker_access_to_finalizing_job(fn):
     return fn
 
 async def challenge_worker_access_to_finalizing_job(
-    *,
-    db: AsyncSession,
-    key: model.Key,
-    job_id: UUID
-):
+        *,
+        db: AsyncSession,
+        key: model.Key,
+        job_id: UUID):
+
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_NOT_FOUND:

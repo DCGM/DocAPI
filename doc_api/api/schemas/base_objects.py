@@ -140,6 +140,13 @@ class Job(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
+class JobWithImages(Job):
+    images: List[Image] = Field(
+        ...,
+        description="List of images associated with this job."
+    )
+
+
 class JobUpdate(BaseModel):
     meta_json_uploaded: Optional[bool] = Field(
         None,
@@ -282,49 +289,136 @@ class KeyUpdate(BaseModel):
 
 def model_example(model_type: Any) -> Any:
     """
-    Build a simple example for either:
+    Build a simple example for:
       - a Pydantic model class
-      - List[<PydanticModel>]
+      - List[<Model>] / list[<Model>]
       - Optional[...] wrappers around the above
-    Falls back to placeholders like <field> when no examples are provided.
+    Resolves $ref/$defs, arrays, enums, and common formats.
     """
-
-    # 1) Unwrap Optional[T] / Union[T, None]
     origin = get_origin(model_type)
+
+    # Optional[T] / Union[T, None]
     if origin is Union:
         args = [a for a in get_args(model_type) if a is not type(None)]
-        # If it's Optional[T], pick T
         if len(args) == 1:
             return model_example(args[0])
 
-    # 2) Handle List[T] (or list[T]) recursively
+    # List[T]
     if origin in (list, List):
         (item_type,) = get_args(model_type) or (Any,)
         return [model_example(item_type)]
 
-    # 3) Handle direct Pydantic model classes
+    # Direct Pydantic model
     try:
         if issubclass(model_type, BaseModel):
-            schema = model_type.model_json_schema()
-            props = schema.get("properties", {}) or {}
-            return {
-                name: (field_schema.get("examples", [f"<{name}>"])[0])
-                for name, field_schema in props.items()
-            }
+            root_schema = model_type.model_json_schema()
+            # The model schema itself describes an object; reuse the same resolver
+            return _example_from_schema(root_schema, root_schema)
     except TypeError:
-        # model_type might not be a class (e.g., typing annotations)
-        pass
+        pass  # not a class
 
-    # 4) Primitive fallbacks (if you ever call with plain types)
-    primitives = {
-        str: "<string>",
-        int: 0,
-        float: 0.0,
-        bool: False,
-    }
+    # Primitive fallbacks
+    primitives = {str: "<string>", int: 0, float: 0.0, bool: False}
     if model_type in primitives:
         return primitives[model_type]
 
-    # 5) Unknown type: generic placeholder
+    return "<value>"
+
+def _get_root_defs(schema: dict) -> dict:
+    # pydantic v2 uses "$defs"; keep "definitions" fallback just in case
+    return schema.get("$defs") or schema.get("definitions") or {}
+
+def _resolve_ref(ref: str, root_schema: dict) -> dict:
+    # only supports internal refs like "#/$defs/Model"
+    if not ref.startswith("#/"):
+        return {}
+    target = root_schema
+    for part in ref[2:].split("/"):
+        if part not in target:
+            return {}
+        target = target[part]
+    return target
+
+def _first_present(d: dict, *keys: str) -> Optional[Any]:
+    for k in keys:
+        if k in d:
+            return d[k]
+    return None
+
+def _primitive_example(type_: str, fmt: Optional[str]) -> Any:
+    if type_ == "string":
+        if fmt in ("uuid", "uuid4"):
+            return "550e8400-e29b-41d4-a716-446655440000"
+        if fmt in ("date-time",):
+            return "2025-10-18T21:30:00+00:00"
+        if fmt in ("date",):
+            return "2025-10-18"
+        if fmt in ("email",):
+            return "user@example.com"
+        if fmt in ("uri", "url"):
+            return "https://example.com/resource"
+        return "<string>"
+    if type_ == "integer":
+        return 0
+    if type_ == "number":
+        return 0.0
+    if type_ == "boolean":
+        return False
+    return "<value>"
+
+def _example_from_schema(schema: dict, root_schema: dict) -> Any:
+    # 0) direct example(s)
+    if "examples" in schema and schema["examples"]:
+        return schema["examples"][0]
+    if "example" in schema:
+        return schema["example"]
+
+    # 1) $ref
+    if "$ref" in schema:
+        ref_schema = _resolve_ref(schema["$ref"], root_schema)
+        if ref_schema:
+            return _example_from_schema(ref_schema, root_schema)
+
+    # 2) combinators
+    for key in ("allOf", "oneOf", "anyOf"):
+        if key in schema and schema[key]:
+            if key == "allOf":
+                # merge object parts if possible; else take first resolvable
+                acc = None
+                for part in schema[key]:
+                    ex = _example_from_schema(part, root_schema)
+                    if isinstance(ex, dict):
+                        acc = (acc or {}) | ex
+                    elif acc is None:
+                        acc = ex
+                if acc is not None:
+                    return acc
+            else:
+                return _example_from_schema(schema[key][0], root_schema)
+
+    # 3) enum
+    if "enum" in schema and schema["enum"]:
+        return schema["enum"][0]
+
+    # 4) arrays
+    if _first_present(schema, "type") == "array" or "items" in schema:
+        items_schema = schema.get("items", {})
+        return [_example_from_schema(items_schema, root_schema)]
+
+    # 5) objects
+    if _first_present(schema, "type") == "object" or "properties" in schema:
+        props = schema.get("properties", {}) or {}
+        result = {}
+        for name, ps in props.items():
+            result[name] = _example_from_schema(ps, root_schema)
+        return result
+
+    # 6) primitives
+    typ = schema.get("type")
+    fmt = schema.get("format")
+    if typ:
+        return _primitive_example(typ, fmt)
+
+    # 7) last resort
     return "<value>"
 
