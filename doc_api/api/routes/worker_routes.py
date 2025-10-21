@@ -1,9 +1,11 @@
-import json
 import logging
 import os
+import zipfile
+from types import NoneType
 
 import aiofiles
-from fastapi import Depends, HTTPException, status, UploadFile, File
+import fastapi
+from fastapi import Depends, UploadFile, File, Request
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
@@ -11,159 +13,503 @@ from aiofiles import os as aiofiles_os
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import cruds
-from doc_api.api.cruds.cruds import update_processing_state_for_jobs
+from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
-from doc_api.api.routes.route_guards import challenge_worker_access_to_job
+from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job, \
+    uses_challenge_worker_access_to_processing_job, challenge_worker_access_to_finalizing_job, \
+    uses_challenge_worker_access_to_finalizing_job
 from doc_api.api.schemas import base_objects
+from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
+    DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
 from doc_api.db import model
 from doc_api.api.routes import worker_router
 from doc_api.config import config
 
-from typing import List, Literal
+from typing import List
 from uuid import UUID
-
 
 logger = logging.getLogger(__name__)
 
 
-require_worker_key = require_api_key(key_role=base_objects.KeyRole.WORKER)
+GET_JOB_RESPONSES = {
+    AppCode.JOB_ASSIGNED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "A job has been successfully assigned to the worker.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
+        "detail": "Job has been assigned to the worker, lease established (UTC time).",
+    },
 
+    AppCode.JOB_QUEUE_EMPTY: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "No jobs are currently available in the queue.",
+        "model": DocAPIResponseOK,
+        "detail": "Queue is empty right now, try again shortly.",
+    },
+}
 
-@worker_router.get("/job", response_model=base_objects.Job, tags=["Worker"])
+@worker_router.get(
+    "/job",
+    summary="Assign Job",
+    response_model=DocAPIResponseOK[base_objects.JobLease],
+    tags=["Worker"],
+    description=f"Assign a job to the requesting worker. "
+                f"If a job is available in the queue, it will be assigned to the worker and a lease will be established. "
+                f"If no jobs are available, a response indicating the empty queue will be returned.",
+    responses=make_responses(GET_JOB_RESPONSES))
 async def get_job(
-        key: model.Key = Depends(require_worker_key),
+        request: Request,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    db_job = await cruds.assign_job_to_worker(db, key.id)
-    return db_job
-
-
-@worker_router.get("/images/{job_id}", response_model=List[base_objects.Image], tags=["Worker"])
-async def get_images_for_job(job_id: UUID,
-        key: model.Key = Depends(require_worker_key),
-        db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
-
-    db_images = await cruds.get_images(db, job_id)
-    return [base_objects.Image.model_validate(db_image) for db_image in db_images]
-
-
-@worker_router.get("/image/{job_id}/{image_id}", response_class=FileResponse, tags=["Worker"])
-async def get_image(job_id: UUID, image_id: UUID,
-        key: model.Key = Depends(require_worker_key),
-        db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
-
-    db_image = await cruds.get_image(db, image_id)
-    if not db_image.image_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "IMAGE_NOT_UPLOADED", "message": f"Image '{db_image.name}' (ID: {image_id}) is not uploaded"},
+    db_job, code = await worker_cruds.assign_job_to_worker(db=db, worker_key_id=key.id)
+    if code == AppCode.JOB_ASSIGNED and db_job is not None:
+        return DocAPIResponseOK[base_objects.Job](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_ASSIGNED,
+            detail=GET_JOB_RESPONSES[AppCode.JOB_ASSIGNED]["detail"],
+            data=db_job
         )
-    image_path = os.path.join(config.BATCH_UPLOADED_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
-    return FileResponse(image_path, media_type="image/jpeg", filename=db_image.name)
-
-
-@worker_router.get("/alto/{job_id}/{image_id}", response_class=FileResponse, tags=["Worker"])
-async def get_alto(job_id: UUID, image_id: UUID,
-        key: model.Key = Depends(require_worker_key),
-        db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
-
-    db_image = await cruds.get_image(db, image_id)
-    if not db_image.alto_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "ALTO_NOT_UPLOADED", "message": f"ALTO for image '{db_image.name}' (ID: {image_id}) is not uploaded"},
+    elif code == AppCode.JOB_QUEUE_EMPTY:
+        return validate_ok_response(
+            DocAPIResponseOK[NoneType](
+                status=fastapi.status.HTTP_200_OK,
+                code=AppCode.JOB_QUEUE_EMPTY,
+                detail=GET_JOB_RESPONSES[AppCode.JOB_QUEUE_EMPTY]["detail"]
+            )
         )
-    alto_path = os.path.join(config.BATCH_UPLOADED_DIR, str(db_image.job_id), f"{db_image.id}.xml")
-    return FileResponse(alto_path, media_type="application/xml", filename=f"{os.path.splitext(db_image.name)[0]}.xml")
+
+    raise RouteInvariantError(code=code, request=request)
 
 
-@worker_router.get("/meta_json/{job_id}", response_class=FileResponse, tags=["Worker"])
-async def get_meta_json(job_id: UUID,
-        key: model.Key = Depends(require_worker_key),
+GET_IMAGES_FOR_JOB_RESPONSES = {
+    AppCode.IMAGES_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Images for the specified job have been retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": List[base_objects.Image],
+        "detail": "Images for Job retrieved successfully.",
+    },
+}
+@worker_router.get(
+    "/images/{job_id}",
+    summary="Get Job Images",
+    response_model=List[base_objects.Image],
+    tags=["Worker"],
+    description="Retrieve all images associated for a specific job.",
+    responses=make_responses(GET_IMAGES_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def get_images_for_job(
+        request: Request,
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    db_job = await cruds.get_job(db, job_id)
-    if not db_job.meta_json_uploaded:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "META_JSON_NOT_UPLOADED", "message": f"Meta JSON for job '{job_id}' is not uploaded"},
+    # job already challenged above, so here we are sure it exists and in PROCESSING state
+    db_images, code = await general_cruds.get_job_images(db=db, job_id=job_id)
+    if code == AppCode.IMAGES_RETRIEVED and db_images is not None:
+        return DocAPIResponseOK[List[base_objects.Image]](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.IMAGES_RETRIEVED,
+            detail=GET_IMAGES_FOR_JOB_RESPONSES[AppCode.IMAGES_RETRIEVED]["detail"],
+            data=db_images
         )
-    meta_json_path = os.path.join(config.BATCH_UPLOADED_DIR, str(job_id), "meta.json")
-    return FileResponse(meta_json_path, media_type="application/json", filename="meta.json")
+
+    raise RouteInvariantError(code=code, request=request)
 
 
-@worker_router.put("/update_job/{job_id}", tags=["Worker"])
-async def update_job(job_id: UUID,
-        job_update: base_objects.JobUpdate,
-        key: model.Key = Depends(require_worker_key),
+GET_META_JSON_FOR_JOB_RESPONSES = {
+    AppCode.META_JSON_DOWNLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "JSON data of the requested Meta JSON file.",
+        "content_type": "application/json",
+        "example_value": {"meta_key": "meta_value"},
+    },
+    AppCode.META_JSON_NOT_UPLOADED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The requested Meta JSON file has not been uploaded yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "Meta JSON file for the job has not been uploaded yet.",
+    }
+}
+@worker_router.get(
+    "/meta_json/{job_id}",
+    response_class=FileResponse,
+    summary="Download Meta JSON",
+    tags=["Worker"],
+    description="Download the Meta JSON file associated with a specific job.",
+    responses=make_responses(GET_META_JSON_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def get_meta_json_for_job(
+        request: Request,
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    db_job = await cruds.get_job(db, job_id)
-    if db_job.state not in {base_objects.ProcessingState.QUEUED, base_objects.ProcessingState.PROCESSING}:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_UPDATABLE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.QUEUED.value}' or '{base_objects.ProcessingState.PROCESSING.value}' state to be updated, current state: '{db_job.state.value}'"},
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_RETRIEVED and db_job is not None and db_job.meta_json_uploaded:
+        meta_json_path = os.path.join(config.JOBS_DIR, str(job_id), "meta.json")
+        return FileResponse(meta_json_path, media_type="application/json", filename="meta.json")
+    elif code == AppCode.JOB_RETRIEVED and db_job is not None and not db_job.meta_json_uploaded:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.META_JSON_NOT_UPLOADED,
+            detail=GET_META_JSON_FOR_JOB_RESPONSES[AppCode.META_JSON_NOT_UPLOADED]["detail"],
         )
-    await cruds.update_job(db, job_update, key.id)
-    return {"code": "JOB_UPDATED", "message": f"Job '{job_id}' updated successfully"}
+
+    raise RouteInvariantError(code=code, request=request)
 
 
-@worker_router.post("/result/{job_id}", tags=["Worker"])
-async def upload_result(
+GET_IMAGE_FOR_JOB_RESPONSES = {
+    AppCode.IMAGE_DOWNLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Binary data of the requested IMAGE file, format not guaranteed but usually JPEG/PNG.",
+        "content_type": "image/jpeg",
+        "example_value": "(binary IMAGE file content)"
+    },
+    AppCode.IMAGE_NOT_UPLOADED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The requested IMAGE file has not been uploaded yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "IMAGE file has not been uploaded yet.",
+    },
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
+}
+@worker_router.get(
+    "/image/{job_id}/{image_id}",
+    response_class=FileResponse,
+    summary="Download IMAGE",
+    tags=["Worker"],
+    description="Download the IMAGE file associated with a specific image of a job.",
+    responses=make_responses(GET_IMAGE_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def get_image_for_job(
+        request: Request,
+        job_id: UUID, image_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
+
+    db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
+
+    if code == AppCode.IMAGE_RETRIEVED and db_image is not None and db_image.image_uploaded:
+        image_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
+        return FileResponse(image_path, media_type="image/jpeg", filename=db_image.name)
+    elif code == AppCode.IMAGE_RETRIEVED and db_image is not None and not db_image.image_uploaded:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.IMAGE_NOT_UPLOADED,
+            detail=GET_IMAGE_FOR_JOB_RESPONSES[AppCode.IMAGE_NOT_UPLOADED]["detail"],
+        )
+    elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.IMAGE_NOT_FOUND_FOR_JOB,
+            detail=GET_IMAGE_FOR_JOB_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]["detail"],
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+GET_ALTO_FOR_JOB_RESPONSES = {
+    AppCode.ALTO_DOWNLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "XML data of the requested ALTO file.",
+        "content_type": "application/xml",
+        "example_value": "<alto>...</alto>",
+    },
+    AppCode.ALTO_NOT_UPLOADED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The requested ALTO file has not been uploaded yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "The requested ALTO file has not been uploaded yet.",
+    },
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
+}
+@worker_router.get(
+    "/alto/{job_id}/{image_id}",
+    response_class=FileResponse,
+    summary="Download ALTO",
+    tags=["Worker"],
+    description="Download the ALTO file associated with a specific image of a job.",
+    responses=make_responses(GET_ALTO_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def get_alto_for_job(
+        request: Request,
+        job_id: UUID,
+        image_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
+
+    db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
+
+    if code == AppCode.IMAGE_RETRIEVED and db_image is not None and db_image.alto_uploaded:
+        alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.xml")
+        return FileResponse(alto_path, media_type="application/xml", filename=f"{os.path.splitext(db_image.name)[0]}.xml")
+    elif code == AppCode.IMAGE_RETRIEVED and db_image is not None and not db_image.alto_uploaded:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ALTO_NOT_UPLOADED,
+            detail=GET_ALTO_FOR_JOB_RESPONSES[AppCode.ALTO_NOT_UPLOADED]["detail"]
+        )
+    elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.IMAGE_NOT_FOUND_FOR_JOB,
+            detail=GET_ALTO_FOR_JOB_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]["detail"]
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+POST_JOB_HEARTBEAT_RESPONSES = {
+    AppCode.JOB_HEARTBEAT_ACCEPTED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job heartbeat has been accepted and the lease has been extended.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
+        "detail": "Heartbeat for Job accepted, lease extended (UTC time).",
+    }
+}
+@worker_router.post(
+    "/job/{job_id}/heartbeat",
+    response_model=base_objects.JobLease,
+    summary="Send Job Heartbeat",
+    tags=["Worker"],
+    description="Confirm the worker is still processing the job and extend its lease time.",
+    responses=make_responses(POST_JOB_HEARTBEAT_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def post_job_heartbeat(
+    request: Request,
+    job_id: UUID,
+    key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+    db: AsyncSession = Depends(get_async_session),
+):
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
+
+    code, lease_expire_at, server_time = await worker_cruds.update_processing_job_lease(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_HEARTBEAT_ACCEPTED:
+        return DocAPIResponseOK[base_objects.JobLease](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_HEARTBEAT_ACCEPTED,
+            detail=POST_JOB_HEARTBEAT_RESPONSES[AppCode.JOB_HEARTBEAT_ACCEPTED]["detail"],
+            data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time),
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+UPDATE_JOB_RESPONSES = {
+    AppCode.JOB_UPDATED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job has been updated successfully and the lease has been extended.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobLease,
+        "detail": "Job has been updated successfully, lease extended (UTC time).",
+    },
+}
+@worker_router.patch(
+    "/job/{job_id}",
+    response_model=base_objects.JobLease,
+    summary="Update Job Progress",
+    tags=["Worker"],
+    description="Update the job's progress and extend its lease time.",
+    responses=make_responses(UPDATE_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def patch_job(
+        request: Request,
+        job_id: UUID,
+        job_progress_update: base_objects.JobProgressUpdate,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
+
+    # job already challenged above, so here we are sure it exists and in PROCESSING state
+    db_job, lease_expire_at, server_time, code = await worker_cruds.update_processing_job_progress(db=db, job_id=job_id, job_progress_update=job_progress_update)
+    if code == AppCode.JOB_UPDATED:
+        return DocAPIResponseOK[base_objects.JobLease](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_UPDATED,
+            detail=UPDATE_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
+            data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time)
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+POST_RESULT_FOR_JOB_RESPONSES = {
+    AppCode.JOB_RESULT_UPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The result ZIP archive for the job has been uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Result ZIP archive for Job uploaded successfully.",
+    },
+    AppCode.JOB_RESULT_INVALID: {
+        "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "description": "The uploaded file is not a valid ZIP archive.",
+        "model": DocAPIResponseClientError,
+        "detail": "The uploaded file is not a valid ZIP archive.",
+    },
+}
+@worker_router.post(
+    "/result/{job_id}",
+    response_model=DocAPIResponseOK,
+    summary="Upload Job Result",
+    tags=["Worker"],
+    description="Upload the result ZIP archive for a specific job.",
+    responses=make_responses(POST_RESULT_FOR_JOB_RESPONSES))
+@uses_challenge_worker_access_to_processing_job
+async def post_result_for_job(
     job_id: UUID,
     result: UploadFile = File(...),
-    key: model.Key = Depends(require_worker_key),
-    db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
-
-    db_job = await cruds.get_job(db, job_id)
-    if db_job.state != base_objects.ProcessingState.PROCESSING:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "JOB_NOT_PROCESSING",
-                "message": (
-                    f"Job '{job_id}' must be in "
-                    f"'{base_objects.ProcessingState.PROCESSING.value}' state to upload result, "
-                    f"current state: '{db_job.state.value}'"
-                ),
-            },
-        )
+    key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+    db: AsyncSession = Depends(get_async_session),
+):
+    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     await aiofiles_os.makedirs(config.RESULT_DIR, exist_ok=True)
-    result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+    final_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+    tmp_path = final_path + ".validating"
 
-    async with aiofiles.open(result_file_path, "wb") as f:
-        while chunk := await result.read(1024 * 1024):  # 1MB chunks
+    # Stream upload to a temp file
+    async with aiofiles.open(tmp_path, "wb") as f:
+        while chunk := await result.read(1024 * 1024):
             await f.write(chunk)
 
-    return {"code": "RESULT_UPLOADED", "message": f"Result for job '{job_id}' uploaded successfully"}
-
-
-@worker_router.post("/finish_job/{job_id}/{state}", tags=["Worker"])
-async def finish_job(job_id: UUID,
-        state: Literal[base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR],
-        key: model.Key = Depends(require_worker_key),
-        db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_job(db, key, job_id)
-
-    db_job = await cruds.get_job(db, job_id)
-    if db_job.state != base_objects.ProcessingState.PROCESSING:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "JOB_NOT_FINISHABLE", "message": f"Job '{job_id}' must be in '{base_objects.ProcessingState.PROCESSING.value}' state, current state: '{db_job.state.value}'"},
+    # Validate ZIP (central directory)
+    try:
+        with zipfile.ZipFile(tmp_path):
+            pass
+    except zipfile.BadZipFile:
+        await aiofiles_os.remove(tmp_path)
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            code=AppCode.JOB_RESULT_INVALID,
+            detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
         )
-    if state == base_objects.ProcessingState.DONE:
-        result_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
-        if not await aiofiles_os.path.exists(result_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "RESULT_NOT_FOUND", "message": f"Result file for job '{job_id}' not found at expected location: '{result_path}'"},
-            )
-    await cruds.finish_job(db, job_id, base_objects.ProcessingState.DONE)
-    return {"code": "JOB_FINISHED", "message": f"Job '{job_id}' finished successfully"}
+
+    # Atomically move the validated file into place
+    os.replace(tmp_path, final_path)
+
+    return DocAPIResponseOK[NoneType](
+        status=fastapi.status.HTTP_200_OK,
+        code=AppCode.JOB_RESULT_UPLOADED,
+        detail=POST_RESULT_FOR_JOB_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
+    )
+
+
+POST_JOB_COMPLETE_RESPONSES = {
+    AppCode.JOB_COMPLETED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job has been marked as completed.",
+        "model": DocAPIResponseOK,
+        "detail": "Job has been marked as completed.",
+    },
+    AppCode.JOB_ALREADY_COMPLETED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job was already marked as completed.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was already marked as completed.",
+    },
+    AppCode.JOB_RESULT_MISSING: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The result ZIP for the job has not been uploaded yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "Result ZIP for Job has not been uploaded yet.",
+    },
+}
+
+@worker_router.post(
+    "/jobs/{job_id}/complete",
+    response_model=DocAPIResponseOK,
+    summary="Complete Job",
+    tags=["Worker"],
+    description="Mark a specific job as completed after all results have been uploaded.",
+    responses= make_responses(POST_JOB_COMPLETE_RESPONSES))
+@uses_challenge_worker_access_to_finalizing_job
+async def post_job_complete(
+        request: Request,
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+    await challenge_worker_access_to_finalizing_job(db=db, key=key, job_id=job_id)
+
+    result_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+    if not await aiofiles_os.path.exists(result_path):
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.JOB_RESULT_MISSING,
+            detail=POST_JOB_COMPLETE_RESPONSES[AppCode.JOB_RESULT_MISSING]["detail"],
+        )
+    code = await worker_cruds.complete_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_COMPLETED:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_COMPLETED,
+            detail=POST_JOB_COMPLETE_RESPONSES[AppCode.JOB_COMPLETED]["detail"]
+        )
+    elif code == AppCode.JOB_ALREADY_COMPLETED:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_ALREADY_COMPLETED,
+            detail=POST_JOB_COMPLETE_RESPONSES[AppCode.JOB_ALREADY_COMPLETED]["detail"]
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+POST_JOB_FAIL_RESPONSES = {
+    AppCode.JOB_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job has been marked as failed.",
+        "model": DocAPIResponseOK,
+        "detail": "Job has been marked as failed.",
+    },
+    AppCode.JOB_ALREADY_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "The job was already marked as failed.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was already marked as failed.",
+    },
+}
+@worker_router.post(
+    "/jobs/{job_id}/fail",
+    response_model=DocAPIResponseOK[NoneType],
+    summary="Fail Job",
+    tags=["Worker"],
+    description="Mark a specific job as failed.",
+    responses=make_responses(POST_JOB_FAIL_RESPONSES))
+@uses_challenge_worker_access_to_finalizing_job
+async def post_job_fail(
+    request: Request,
+    job_id: UUID,
+    key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+    db: AsyncSession = Depends(get_async_session),
+):
+    await challenge_worker_access_to_finalizing_job(db=db, key=key, job_id=job_id)
+
+    code = await worker_cruds.fail_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_FAILED:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_FAILED,
+            detail=POST_JOB_FAIL_RESPONSES[AppCode.JOB_FAILED]["detail"]
+        )
+    elif code == AppCode.JOB_ALREADY_FAILED:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_ALREADY_FAILED,
+            detail=POST_JOB_FAIL_RESPONSES[AppCode.JOB_ALREADY_FAILED]["detail"]
+        )
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+
