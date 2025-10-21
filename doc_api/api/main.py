@@ -17,10 +17,11 @@ from sqlalchemy import select
 from doc_api.api.authentication import hmac_sha256_hex, AUTHENTICATION_RESPONSES
 from doc_api.api.routes.user_guards import WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES, \
     USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
-from doc_api.api.routes.worker_guards import WORKER_ACCESS_TO_FINALIZING_JOB_GUARD_RESPONSES
+from doc_api.api.routes.worker_guards import WORKER_ACCESS_TO_FINALIZING_JOB_GUARD_RESPONSES, \
+    WORKER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
-from doc_api.api.routes import user_router, worker_router, admin_router, debug_router
+from doc_api.api.routes import user_router, worker_router, admin_router, debug_router, router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
@@ -83,10 +84,12 @@ async def startup():
     else:
         logger.warning("ADMIN_KEY is not set! No admin API key created! (this is OK if there is another admin key in the database)")
 
+app.include_router(router)
 app.include_router(user_router, prefix="/api/user")
 app.include_router(worker_router, prefix="/api/worker")
-app.include_router(admin_router, prefix="/api/admin")
+app.include_router(admin_router, prefix="/admin")
 app.include_router(debug_router, prefix="/api/debug")
+
 
 
 @app.exception_handler(DocAPIClientErrorException)
@@ -181,6 +184,17 @@ def custom_openapi():
         route_responses=WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES,
     )
 
+    # --- user new job guard ---
+    def _route_uses_challenge_user_access_to_new_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_user_access_to_new_job__", False))
+
+    inject_docs(
+        app=app,
+        schema=schema,
+        route_predicate=_route_uses_challenge_user_access_to_new_job,
+        route_responses=USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES,
+    )
+
     # --- worker finalizing job guard ---
     def _route_uses_challenge_worker_access_to_finalizing_job(route: APIRoute) -> bool:
         return bool(getattr(route.endpoint, "__challenge_worker_access_to_finalizing_job__", False))
@@ -192,15 +206,15 @@ def custom_openapi():
         route_responses=WORKER_ACCESS_TO_FINALIZING_JOB_GUARD_RESPONSES,
     )
 
-    # --- user new job guard ---
-    def _route_uses_challenge_user_access_to_new_job(route: APIRoute) -> bool:
-        return bool(getattr(route.endpoint, "__challenge_user_access_to_new_job__", False))
+    # --- worker job guard ---
+    def _route_uses_challenge_worker_access_to_job(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_worker_access_to_job__", False))
 
     inject_docs(
         app=app,
         schema=schema,
-        route_predicate=_route_uses_challenge_user_access_to_new_job,
-        route_responses=USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES,
+        route_predicate=_route_uses_challenge_worker_access_to_job,
+        route_responses=WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
     )
 
     # --- user job guard ---

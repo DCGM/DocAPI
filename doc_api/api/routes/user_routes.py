@@ -21,13 +21,14 @@ from doc_api.api.routes.user_guards import challenge_user_access_to_new_job, use
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
+from doc_api.api.routes.worker_guards import challenge_worker_access_to_job, uses_challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
     DETAILS_GENERAL, validate_ok_response, DocAPIClientErrorException, GENERAL_RESPONSES
 from doc_api.api.validators.alto_validator import validate_alto_basic
 from doc_api.api.validators.xml_validator import is_well_formed_xml
 from doc_api.db import model
-from doc_api.api.routes import user_router
+from doc_api.api.routes import user_router, router
 from doc_api.config import config
 
 from typing import List, Optional, Tuple
@@ -46,7 +47,7 @@ ME_RESPONSES = {
         "detail": "The API key is valid.",
     }
 }
-@user_router.get(
+@router.get(
     "/me",
     summary="Who am I?",
     response_model=DocAPIResponseOK[base_objects.Key],
@@ -67,7 +68,7 @@ POST_JOB_RESPONSES = {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Job created successfully",
         "model": DocAPIResponseOK,
-        "model_data": base_objects.Job,
+        "model_data": base_objects.JobWithImages,
         "detail": "The job has been created successfully.",
     },
     AppCode.REQUEST_VALIDATION_ERROR: {
@@ -94,8 +95,8 @@ POST_JOB_RESPONSES = {
                     ]
     }
 }
-@user_router.post(
-    "/job",
+@router.post(
+    "/v1/jobs",
     summary="Create Job",
     tags=["User"],
     description="Create a new job with the specified images and options.",
@@ -106,16 +107,67 @@ async def create_job(
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
-    db_job, code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
-    if code == AppCode.JOB_CREATED:
+
+    db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
+    db_images, images_code = await general_cruds.get_job_images(db=db, job_id=db_job.id)
+
+    if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGE_RETRIEVED:
+        job = base_objects.Job.model_validate(db_job).model_dump()
+        images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
+        data = base_objects.JobWithImages(**job, images=images)
         # FastAPI automatically validates only for 200, so we need to do it manually for 201 here
         return validate_ok_response(DocAPIResponseOK[base_objects.Job](
             status=status.HTTP_201_CREATED,
             code=AppCode.JOB_CREATED,
             detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
-            data=base_objects.Job.model_validate(db_job)))
+            data=data))
 
-    raise RouteInvariantError(code=code, request=request)
+    raise RouteInvariantError(code=job_code if job_code != AppCode.JOB_CREATED else images_code, request=request)
+
+
+GET_JOB_RESPONSES = {
+    AppCode.JOB_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job details retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": base_objects.JobWithImages,
+        "detail": "The job details have been retrieved successfully.",
+    }
+}
+@router.get(
+    "/v1/jobs/{job_id}",
+    summary="Get Job",
+    response_model=DocAPIResponseOK[base_objects.JobWithImages],
+    tags=["User"],
+    description="Retrieve the details of a specific job by its ID.",
+    responses=make_responses(GET_JOB_RESPONSES))
+@uses_challenge_user_access_to_job
+@uses_challenge_worker_access_to_job
+async def get_job(
+        request: Request,
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+    if key.role == model.KeyRole.USER:
+        await challenge_user_access_to_job(db=db, key=key, job_id=job_id)
+    if key.role == model.KeyRole.WORKER:
+        await challenge_worker_access_to_job(db=db, key=key, job_id=job_id)
+
+    db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_images, images_code = await general_cruds.get_job_images(db=db, job_id=job_id)
+
+    if job_code == AppCode.JOB_RETRIEVED and images_code == AppCode.IMAGE_RETRIEVED:
+        job = base_objects.Job.model_validate(db_job).model_dump()
+        images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
+        data = base_objects.JobWithImages(**job, images=images)
+        return DocAPIResponseOK[base_objects.JobWithImages](
+            status=status.HTTP_200_OK,
+            code=AppCode.JOB_RETRIEVED,
+            detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
+            data=data
+        )
+
+    raise RouteInvariantError(code=job_code if job_code != AppCode.JOB_RETRIEVED else images_code, request=request)
 
 
 POST_META_JSON_RESPONSES = {
@@ -138,7 +190,7 @@ POST_META_JSON_RESPONSES = {
         "detail": "Job does not require Meta JSON.",
     }
 }
-@user_router.post(
+@router.post(
     "/meta_json/{job_id}",
     response_model=DocAPIResponseOK[NoneType],
     summary="Upload Meta JSON",
@@ -209,7 +261,7 @@ POST_IMAGE_RESPONSES = {
     },
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
-@user_router.post(
+@router.post(
     "/image/{job_id}/{image_name}",
     response_model=DocAPIResponseOK[NoneType],
     summary="Upload IMAGE",
@@ -303,7 +355,7 @@ POST_ALTO_RESPONSES = {
         "detail": "The ALTO XML file does not conform to the required schema.",
     },
 }
-@user_router.post(
+@router.post(
     "/alto/{job_id}/{name}",
     summary="Upload ALTO XML",
     response_model=DocAPIResponseOK[NoneType],
@@ -380,37 +432,6 @@ async def upload_alto(
 
     raise RouteInvariantError(code=code, request=request)
 
-GET_JOB_RESPONSES = {
-    AppCode.JOB_RETRIEVED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job details retrieved successfully.",
-        "model": DocAPIResponseOK,
-        "model_data": base_objects.Job,
-        "detail": "The job details have been retrieved successfully.",
-    }
-}
-@user_router.get(
-    "/job/{job_id}",
-    summary="Get Job",
-    response_model=DocAPIResponseOK[base_objects.Job],
-    tags=["User"],
-    description="Retrieve the details of a specific job by its ID.",
-    responses=make_responses({}))
-@uses_challenge_user_access_to_job
-async def get_job(job_id: UUID,
-                  key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-                  db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_job(db, key, job_id)
-
-    db_job = await general_cruds.get_job(db=db, job_id=job_id)
-
-    return DocAPIResponseOK[base_objects.Job](
-        status=status.HTTP_200_OK,
-        code=AppCode.JOB_RETRIEVED,
-        detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
-        data=db_job
-    )
-
 
 GET_IMAGES_FOR_JOB_RESPONSES = {
     AppCode.IMAGES_RETRIEVED: {
@@ -421,7 +442,7 @@ GET_IMAGES_FOR_JOB_RESPONSES = {
         "detail": "The images for the job have been retrieved successfully.",
     }
 }
-@user_router.get(
+@router.get(
     "/images/{job_id}",
     summary="Get Job Images",
     response_model=DocAPIResponseOK[List[base_objects.Image]],
@@ -453,7 +474,7 @@ GET_JOBS_RESPONSES = {
         "detail": "The jobs have been retrieved successfully.",
     }
 }
-@user_router.get(
+@router.get(
     "/jobs",
     summary="Get Jobs",
     response_model=DocAPIResponseOK[List[base_objects.Job]],
@@ -495,7 +516,7 @@ POST_JOB_START_RESPONSES = {
         "detail": "The job is not in NEW state and cannot be started manually.",
     }
 }
-@user_router.post(
+@router.post(
     "/job/{job_id}/start",
     summary="Start Job",
     response_model=DocAPIResponseOK[NoneType],
@@ -547,7 +568,7 @@ POST_JOB_CANCEL_RESPONSES = {
         "detail": "The job is already finished and cannot be cancelled.",
     }
 }
-@user_router.post(
+@router.post(
     "/job/{job_id}/cancel",
     summary="Cancel Job",
     response_model=DocAPIResponseOK[NoneType],
@@ -600,7 +621,7 @@ GET_RESULT_RESPONSES = {
         "detail": "The job result is no longer available.",
     }
 }
-@user_router.get(
+@router.get(
     "/result/{job_id}",
     summary="Download Job Result",
     response_class=FileResponse,

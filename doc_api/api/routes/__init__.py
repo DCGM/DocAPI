@@ -8,6 +8,7 @@ user_router = APIRouter()
 worker_router = APIRouter()
 admin_router = APIRouter()
 debug_router = APIRouter()
+router = APIRouter()
 
 from .user_routes import user_router
 from .worker_routes import worker_router
