@@ -53,6 +53,7 @@ ME_RESPONSES = {
     response_model=DocAPIResponseOK[base_objects.Key],
     tags=["User"],
     description="Validate your API key and get information about it.",
+    openapi_extra={"x-order": 0},
     responses=make_responses(ME_RESPONSES)
 )
 async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER))):
@@ -61,36 +62,6 @@ async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.
         code=AppCode.API_KEY_VALID,
         detail=ME_RESPONSES[AppCode.API_KEY_VALID]["detail"],
         data=key)
-
-
-GET_JOBS_RESPONSES = {
-    AppCode.JOBS_RETRIEVED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Jobs retrieved successfully.",
-        "model": DocAPIResponseOK,
-        "model_data": List[base_objects.Job],
-        "detail": "The jobs have been retrieved successfully.",
-    }
-}
-@root_router.get(
-    "/v1/jobs",
-    summary="Get Jobs",
-    response_model=DocAPIResponseOK[List[base_objects.Job]],
-    tags=["User"],
-    description="Retrieve all jobs associated with the authenticated API key.",
-    responses=make_responses(GET_JOBS_RESPONSES))
-async def get_jobs(
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
-        db: AsyncSession = Depends(get_async_session)):
-
-    db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
-
-    return DocAPIResponseOK[List[base_objects.Job]](
-        status=status.HTTP_200_OK,
-        code=AppCode.JOBS_RETRIEVED,
-        detail=GET_JOBS_RESPONSES[AppCode.JOBS_RETRIEVED]["detail"],
-        data=db_jobs
-    )
 
 
 POST_JOB_RESPONSES = {
@@ -130,6 +101,7 @@ POST_JOB_RESPONSES = {
     summary="Create Job",
     tags=["User"],
     description="Create a new job with the specified images and options.",
+    openapi_extra={"x-order": 1},
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
@@ -155,6 +127,38 @@ async def post_job(
     raise RouteInvariantError(code=job_code if job_code != AppCode.JOB_CREATED else images_code, request=request)
 
 
+GET_JOBS_RESPONSES = {
+    AppCode.JOBS_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Jobs retrieved successfully.",
+        "model": DocAPIResponseOK,
+        "model_data": List[base_objects.Job],
+        "detail": "The jobs have been retrieved successfully.",
+    }
+}
+@root_router.get(
+    "/v1/jobs",
+    summary="Get Jobs",
+    response_model=DocAPIResponseOK[List[base_objects.Job]],
+    tags=["User"],
+    description="Retrieve all jobs associated with the authenticated API key.",
+    openapi_extra={"x-order": 2},
+    responses=make_responses(GET_JOBS_RESPONSES))
+async def get_jobs(
+        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
+
+    return DocAPIResponseOK[List[base_objects.Job]](
+        status=status.HTTP_200_OK,
+        code=AppCode.JOBS_RETRIEVED,
+        detail=GET_JOBS_RESPONSES[AppCode.JOBS_RETRIEVED]["detail"],
+        data=db_jobs
+    )
+
+
+
 GET_JOB_RESPONSES = {
     AppCode.JOB_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
@@ -170,6 +174,7 @@ GET_JOB_RESPONSES = {
     response_model=DocAPIResponseOK[base_objects.JobWithImages],
     tags=["User"],
     description="Retrieve the details of a specific job by its ID.",
+    openapi_extra={"x-order": 3},
     responses=make_responses(GET_JOB_RESPONSES))
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
@@ -223,6 +228,7 @@ PUT_IMAGE_RESPONSES = {
     summary="Upload IMAGE",
     tags=["User"],
     description="Upload an IMAGE file for a specific job and image name.",
+    openapi_extra={"x-order": 4},
     responses=make_responses(PUT_IMAGE_RESPONSES))
 @challenge_user_access_to_new_job
 async def put_image(
@@ -316,6 +322,7 @@ PUT_ALTO_RESPONSES = {
     summary="Upload ALTO XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an ALTO XML file for a specific job and image name.",
+    openapi_extra={"x-order": 5},
     tags=["User"],
 responses=make_responses(PUT_ALTO_RESPONSES))
 @challenge_user_access_to_new_job
@@ -388,6 +395,7 @@ async def put_alto(
 
     raise RouteInvariantError(code=code, request=request)
 
+
 # this should mirror the ALTO route above
 PUT_PAGE_RESPONSES = {
     AppCode.PAGE_UPLOADED: {
@@ -421,6 +429,7 @@ PUT_PAGE_RESPONSES = {
     summary="Upload PAGE XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an PAGE XML file for a specific job and image name.",
+    openapi_extra={"x-order": 6},
     tags=["User"],
 responses=make_responses(PUT_PAGE_RESPONSES))
 @challenge_user_access_to_new_job
@@ -520,6 +529,7 @@ PUT_META_JSON_RESPONSES = {
     summary="Upload Meta JSON",
     tags=["User"],
     description="Upload the Meta JSON file for a job.",
+    openapi_extra={"x-order": 7},
     responses=make_responses(PUT_META_JSON_RESPONSES)
 )
 @challenge_user_access_to_new_job
@@ -652,6 +662,7 @@ PATCH_JOB_RESPONSES = {
     tags=["User"],
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
+    openapi_extra={"x-order": 8},
     responses=make_responses(PATCH_JOB_RESPONSES))
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
@@ -841,6 +852,7 @@ GET_RESULT_RESPONSES = {
     response_class=FileResponse,
     tags=["User"],
     description="Download the result ZIP file for a completed job.",
+    openapi_extra={"x-order": 9},
     responses=make_responses(GET_RESULT_RESPONSES))
 @challenge_user_access_to_job
 async def get_result(

@@ -98,7 +98,7 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tupl
             lease_expire_at, server_time = get_new_lease()
             db_job.last_change = server_time
 
-            return AppCode.JOB_HEARTBEAT_ACCEPTED, lease_expire_at, server_time
+            return AppCode.JOB_LEASE_EXTENDED, lease_expire_at, server_time
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed updating Job lease.") from e
@@ -150,6 +150,30 @@ def get_new_lease() -> Tuple[datetime, datetime]:
     server_time = datetime.now(timezone.utc)
     lease_expire_at = server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
     return lease_expire_at, server_time
+
+
+async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Job).where(model.Job.id == job_id).with_for_update()
+            )
+            db_job = result.scalar_one_or_none()
+            if db_job is None:
+                return AppCode.JOB_NOT_FOUND
+
+            if db_job.state != base_objects.ProcessingState.PROCESSING:
+                return AppCode.JOB_NOT_IN_PROCESSING
+
+            now = datetime.now(timezone.utc)
+            db_job.last_change = now
+            db_job.worker_key_id = None
+            db_job.state = base_objects.ProcessingState.QUEUED
+
+            return AppCode.JOB_LEASE_RELEASED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed releasing job lease.") from e
 
 
 async def complete_job(*, db: AsyncSession, job_id: UUID) -> AppCode:
