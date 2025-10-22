@@ -191,7 +191,7 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
                 else:
                     db_job.log_user = job_progress_update.log_user
 
-            return db_job, lease_expire_at, server_time, AppCode.JOB_PROGRESS_UPDATED
+            return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating processing job.") from e

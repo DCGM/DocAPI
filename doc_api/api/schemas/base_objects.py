@@ -72,7 +72,13 @@ class ImageUpdate(BaseModel):
     alto_uploaded: Optional[bool] = Field(
         None,
         examples=[False],
-        description="Indicates whether the corresponding ALTO (OCR) file has been uploaded."
+        description="Indicates whether the corresponding ALTO XML file has been uploaded."
+    )
+
+    page_uploaded: Optional[bool] = Field(
+        None,
+        examples=[False],
+        description="Indicates whether the corresponding PAGE XML file has been uploaded."
     )
 
     imagehash: Optional[str] = Field(
@@ -242,16 +248,22 @@ class Key(BaseModel):
         examples=["My Application Key"],
     )
 
+    role: KeyRole = Field(
+        ...,
+        description="Role associated with this key, determining access level (e.g., ADMIN, USER, WORKER).",
+        examples=[KeyRole.USER.value],
+    )
+
     active: bool = Field(
         ...,
         description="Whether the key is currently active and permitted to access the API.",
         examples=[True],
     )
 
-    role: KeyRole = Field(
+    readonly: bool = Field(
         ...,
-        description="Role associated with this key, determining access level (e.g., ADMIN, USER, WORKER).",
-        examples=[KeyRole.USER.value],
+        description="Whether the key has read-only access to the API.",
+        examples=[False],
     )
 
     created_date: datetime = Field(
@@ -282,11 +294,11 @@ class KeyNew(BaseModel):
     )
 
 class KeyUpdate(BaseModel):
-    id: UUID
-
     label: Optional[str] = None
-    active: Optional[bool] = None
     role: Optional[KeyRole] = None
+
+    active: Optional[bool] = None
+    readonly: Optional[bool] = None
 
 
 def model_example(model_type: Any) -> Any:

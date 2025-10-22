@@ -1,4 +1,3 @@
-import json
 from typing import Dict, Any
 
 from sqlalchemy.dialects.postgresql import JSONB
@@ -8,8 +7,6 @@ from sqlalchemy.types import String
 
 from datetime import datetime, timezone
 import uuid
-import numpy as np
-import math
 
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.base_objects import KeyRole
@@ -34,6 +31,7 @@ class Job(Base):
     definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
     alto_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    page_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     meta_json_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     meta_json_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
@@ -62,6 +60,7 @@ class Image(Base):
 
     image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+    page_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
 
@@ -77,36 +76,10 @@ class Key(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
 
     label: Mapped[str] = mapped_column(String(255), nullable=False, index=True, unique=True)
-    active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
     role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)
+
+    active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+    readonly: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-
-
-def json_to_points(json_points, precision=1):
-    return round_floats(json.loads(json_points), precision)
-
-def json_to_np_points(str_points, precision=1):
-    return np.asarray(json_to_points(str_points, precision))
-
-def points_to_json(points, precision=1):
-    return json.dumps(round_floats(points, precision))
-
-def round_floats(obj, precision=1):
-    if isinstance(obj, float):
-        if math.isnan(obj):
-            obj = 0
-        r = round(obj, precision)
-        int_r = int(r)
-        if r == int_r:
-            return int_r
-        else:
-            return r
-    elif isinstance(obj, dict):
-        return dict((k, round_floats(v, precision)) for k, v in obj.items())
-    elif isinstance(obj, (list, tuple)):
-        return list(map(lambda o: round_floats(o, precision), obj))
-    if isinstance(obj, np.ndarray):
-        return round_floats(obj.tolist(), precision)
-    return obj
