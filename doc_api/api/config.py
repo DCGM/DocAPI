@@ -42,6 +42,7 @@ class Config:
         ################################################################################################################
         # Per-check toggles for ALTO & PAGE XML validation (all default to False)
         # Enable by setting env vars to one of TRUE_VALUES: {"true", "1"} (case-insensitive).
+        self.RESULT_ZIP_VALIDATION = self._env_bool("RESULT_ZIP_VALIDATION", True)
         self.ALTO_VALIDATION = {
             "root": self._env_bool("ALTO_VALIDATE_ROOT", True),
             "namespace": self._env_bool("ALTO_VALIDATE_NAMESPACE", False),

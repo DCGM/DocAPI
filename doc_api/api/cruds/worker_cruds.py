@@ -7,7 +7,6 @@ from sqlalchemy import select, exc, or_, and_, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.database import DBError
-from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.responses import AppCode
 from doc_api.api.config import config
 from doc_api.db import model
@@ -17,11 +16,12 @@ from doc_api.api.schemas import base_objects
 logger = logging.getLogger(__name__)
 
 
-async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
+async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
             # 1) Retry timed-out or ERROR jobs
             now = datetime.now(timezone.utc)
+            # this has to be aligned with get_new_lease()
             timeout_threshold = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS) - timedelta(seconds=config.JOB_TIMEOUT_GRACE_SECONDS)
             max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
 
@@ -67,7 +67,7 @@ async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tupl
             )
             db_job = result.scalar_one_or_none()
             if db_job is None:
-                return None, AppCode.JOB_QUEUE_EMPTY
+                return None, None, None, AppCode.JOB_QUEUE_EMPTY
 
             db_job.state = base_objects.ProcessingState.PROCESSING
             db_job.started_date = now
@@ -75,13 +75,22 @@ async def assign_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tupl
             db_job.worker_key_id = worker_key_id
             db_job.previous_attempts = (db_job.previous_attempts or 0) + 1
 
-        return db_job, AppCode.JOB_ASSIGNED
+            lease_expire_at, server_time = get_new_lease(now)
+
+        return db_job, lease_expire_at, server_time, AppCode.JOB_LEASED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed assigning Job to worker.") from e
+        raise DBError("Failed leasing job to worker.") from e
 
 
-async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tuple[AppCode, Optional[datetime], Optional[datetime]]:
+def get_new_lease(server_time: datetime = None) -> Tuple[datetime, datetime]:
+    if server_time is None:
+        server_time = datetime.now(timezone.utc)
+    lease_expire_at = server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+    return lease_expire_at, server_time
+
+
+async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
             result = await db.execute(
@@ -91,65 +100,18 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tupl
             )
             db_job = result.scalar_one_or_none()
             if db_job is None:
-                return AppCode.JOB_NOT_FOUND, None, None
+                return None, None, AppCode.JOB_NOT_FOUND
+
             if db_job.state != base_objects.ProcessingState.PROCESSING:
-                return AppCode.JOB_NOT_IN_PROCESSING, None, None
+                return None, None, AppCode.JOB_NOT_IN_PROCESSING
 
             lease_expire_at, server_time = get_new_lease()
             db_job.last_change = server_time
 
-            return AppCode.JOB_LEASE_EXTENDED, lease_expire_at, server_time
+            return lease_expire_at, server_time, AppCode.JOB_LEASE_EXTENDED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating Job lease.") from e
-
-
-async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
-    try:
-        async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return None, None, None, AppCode.JOB_NOT_FOUND
-            if db_job.state != base_objects.ProcessingState.PROCESSING:
-                return db_job, None, None, AppCode.JOB_NOT_IN_PROCESSING
-
-            if job_progress_update.progress is not None:
-                p = job_progress_update.progress
-                p = max(0.0, min(1.0, p))
-                db_job.progress = p
-
-            lease_expire_at, server_time = get_new_lease()
-            db_job.last_change = server_time
-
-            if job_progress_update.log:
-                if db_job.log:
-                    if not db_job.log.endswith("\n"):
-                        db_job.log += "\n"
-                    db_job.log += job_progress_update.log
-                else:
-                    db_job.log = job_progress_update.log
-
-            if job_progress_update.log_user:
-                if db_job.log_user:
-                    if not db_job.log_user.endswith("\n"):
-                        db_job.log_user += "\n"
-                    db_job.log_user += job_progress_update.log_user
-                else:
-                    db_job.log_user = job_progress_update.log_user
-
-            return db_job, lease_expire_at, server_time, AppCode.JOB_PROGRESS_UPDATED
-
-    except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed updating job.") from e
-
-
-def get_new_lease() -> Tuple[datetime, datetime]:
-    server_time = datetime.now(timezone.utc)
-    lease_expire_at = server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
-    return lease_expire_at, server_time
+        raise DBError("Failed updating job lease.") from e
 
 
 async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
@@ -176,50 +138,66 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
         raise DBError("Failed releasing job lease.") from e
 
 
-async def complete_job(*, db: AsyncSession, job_id: UUID) -> AppCode:
+async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
-        async with db.begin():
+        async with ((db.begin())):
             result = await db.execute(
                 select(model.Job).where(model.Job.id == job_id).with_for_update()
             )
             db_job = result.scalar_one_or_none()
             if db_job is None:
-                return AppCode.JOB_NOT_FOUND
+                return None, None, None, AppCode.JOB_NOT_FOUND
 
-            if db_job.state == ProcessingState.DONE:
-                return AppCode.JOB_ALREADY_COMPLETED
+            # allow updating progress for PROCESSING jobs, and finalizing jobs (DONE, ERROR) once
+            if db_job.state != base_objects.ProcessingState.PROCESSING:
+                return db_job, None, None, AppCode.JOB_NOT_IN_PROCESSING
 
-            db_job.state = ProcessingState.DONE
-            db_job.progress = 1.0
+            if job_progress_update.state is None:
+                if job_progress_update.progress is not None:
+                    p = job_progress_update.progress
+                    p = max(0.0, min(1.0, p))
+                    db_job.progress = p
 
-            finished_date = datetime.now(timezone.utc)
-            db_job.finished_date = finished_date
-            db_job.last_change = finished_date
+                lease_expire_at, server_time = get_new_lease()
+                db_job.last_change = server_time
+
+            if job_progress_update.state == base_objects.ProcessingState.DONE:
+                db_job.progress = 1.0
+
+            if job_progress_update.state == base_objects.ProcessingState.ERROR or \
+                job_progress_update.state == base_objects.ProcessingState.DONE:
+                db_job.state = job_progress_update.state
+
+                finished_date = datetime.now(timezone.utc)
+                db_job.finished_date = finished_date
+                db_job.last_change = finished_date
+
+                lease_expire_at = None
+                server_time = None
+
+            if job_progress_update.log:
+                if db_job.log:
+                    if not db_job.log.endswith("\n"):
+                        db_job.log += "\n"
+                    db_job.log += job_progress_update.log
+                else:
+                    db_job.log = job_progress_update.log
+
+            if job_progress_update.log_user:
+                if db_job.log_user:
+                    if not db_job.log_user.endswith("\n"):
+                        db_job.log_user += "\n"
+                    db_job.log_user += job_progress_update.log_user
+                else:
+                    db_job.log_user = job_progress_update.log_user
+
+            return db_job, lease_expire_at, server_time, AppCode.JOB_PROGRESS_UPDATED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed finishing job in database.") from e
+        raise DBError(f"Failed updating processing job.") from e
 
 
-async def fail_job(*, db: AsyncSession, job_id: UUID) -> AppCode:
-    try:
-        async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return AppCode.JOB_NOT_FOUND
-
-            db_job.state = ProcessingState.FAILED
-
-            finished_date = datetime.now(timezone.utc)
-            db_job.finished_date = finished_date
-            db_job.last_change = finished_date
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed failing job in database.") from e
-
-
+# TODO this can probably be resued for emailing
 async def get_log_header_for_job(db: AsyncSession, job_id: UUID) -> str:
     result = await db.execute(
         select(model.Job).where(model.Job.id == job_id)

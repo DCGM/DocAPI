@@ -53,7 +53,6 @@ ME_RESPONSES = {
     response_model=DocAPIResponseOK[base_objects.Key],
     tags=["User"],
     description="Validate your API key and get information about it.",
-    openapi_extra={"x-order": 0},
     responses=make_responses(ME_RESPONSES)
 )
 async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER))):
@@ -101,7 +100,6 @@ POST_JOB_RESPONSES = {
     summary="Create Job",
     tags=["User"],
     description="Create a new job with the specified images and options.",
-    openapi_extra={"x-order": 1},
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
@@ -142,7 +140,6 @@ GET_JOBS_RESPONSES = {
     response_model=DocAPIResponseOK[List[base_objects.Job]],
     tags=["User"],
     description="Retrieve all jobs associated with the authenticated API key.",
-    openapi_extra={"x-order": 2},
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
@@ -174,7 +171,6 @@ GET_JOB_RESPONSES = {
     response_model=DocAPIResponseOK[base_objects.JobWithImages],
     tags=["User"],
     description="Retrieve the details of a specific job by its ID.",
-    openapi_extra={"x-order": 3},
     responses=make_responses(GET_JOB_RESPONSES))
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
@@ -228,7 +224,6 @@ PUT_IMAGE_RESPONSES = {
     summary="Upload IMAGE",
     tags=["User"],
     description="Upload an IMAGE file for a specific job and image name.",
-    openapi_extra={"x-order": 4},
     responses=make_responses(PUT_IMAGE_RESPONSES))
 @challenge_user_access_to_new_job
 async def put_image(
@@ -238,7 +233,6 @@ async def put_image(
         file: UploadFile,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_new_job(db=db, key=key, job_id=job_id)
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
 
@@ -322,7 +316,6 @@ PUT_ALTO_RESPONSES = {
     summary="Upload ALTO XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an ALTO XML file for a specific job and image name.",
-    openapi_extra={"x-order": 5},
     tags=["User"],
 responses=make_responses(PUT_ALTO_RESPONSES))
 @challenge_user_access_to_new_job
@@ -333,7 +326,6 @@ async def put_alto(
         file: UploadFile,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_new_job(db=db, key=key, job_id=job_id)
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
     if not db_job.alto_required:
@@ -429,7 +421,6 @@ PUT_PAGE_RESPONSES = {
     summary="Upload PAGE XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an PAGE XML file for a specific job and image name.",
-    openapi_extra={"x-order": 6},
     tags=["User"],
 responses=make_responses(PUT_PAGE_RESPONSES))
 @challenge_user_access_to_new_job
@@ -440,7 +431,6 @@ async def put_page(
         file: UploadFile,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_new_job(db=db, key=key, job_id=job_id)
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
     if not db_job.page_required:
@@ -529,7 +519,6 @@ PUT_META_JSON_RESPONSES = {
     summary="Upload Meta JSON",
     tags=["User"],
     description="Upload the Meta JSON file for a job.",
-    openapi_extra={"x-order": 7},
     responses=make_responses(PUT_META_JSON_RESPONSES)
 )
 @challenge_user_access_to_new_job
@@ -537,7 +526,6 @@ async def put_meta_json(
         job_id: UUID, meta_json,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_new_job(db=db, key=key, job_id=job_id)
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
 
@@ -647,6 +635,12 @@ PATCH_JOB_RESPONSES = {
     },
 
     # worker updating progress
+    AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS: {
+        "status": fastapi.status.HTTP_400_BAD_REQUEST,
+        "description": "No progress update fields provided.",
+        "model": DocAPIResponseClientError,
+        "detail": "At least one of `progress`, `log`, or `log_user` must be provided to update job progress.",
+    },
     AppCode.JOB_PROGRESS_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been updated successfully and the lease has been extended (UTC time).",
@@ -662,7 +656,6 @@ PATCH_JOB_RESPONSES = {
     tags=["User"],
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
-    openapi_extra={"x-order": 8},
     responses=make_responses(PATCH_JOB_RESPONSES))
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
@@ -683,26 +676,35 @@ async def patch_job(
                 },
                 "worker_done": {
                     "summary": "Worker finalizes job as done",
-                    "description": "Worker marks job as done, `progress: 1.0` is automatically set."
-                                   "\n\nOnly `state: done` will be accepted, other fields will be ignored."
+                    "description": "Worker marks job as done, `progress: 1.0` is automatically set. If given, logs are appended to existing logs."
+                                   f"\n\n`state: {base_objects.ProcessingState.DONE}` must be provided, other fields are optional."
                                    "\n\nJob must be in one of the following "
                                    f"`state: {base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.DONE}`.",
-                    "value": {"state": base_objects.ProcessingState.DONE.value},
+                    "value": {
+                        "state": base_objects.ProcessingState.DONE.value,
+                        "log": "Processed 1000/1000. Job complete.",
+                        "log_user": "Proceessed 1000 pages. Job complete.",
+                    },
                 },
                 "worker_error": {
                     "summary": "Worker finalizes job as error",
-                    "description": "Worker marks job as error."
-                                   "\n\nOnly `state: error` will be accepted, other fields will be ignored."
+                    "description": "Worker marks job as error. If given, logs are appended to existing logs."
+                                   f"\n\n`state: {base_objects.ProcessingState.ERROR}` must be provided, other fields are optional."
                                    f"\n\nJob must be in one of the following "
                                    f"`state: {base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.ERROR}`.",
-                    "value": {"state": base_objects.ProcessingState.ERROR.value},
+                    "value": {
+                        "state": base_objects.ProcessingState.ERROR.value,
+                        "progress": 0.7,
+                        "log": "Processed 700/1000. Encountered an error.",
+                        "log_user": "Processing page 700 of 1000. Encountered an error.",
+                    },
                 },
                 "worker_progress": {
                     "summary": "Worker updates job progress",
                     "description": (
-                        "Worker updates job progress and log messages. Logs are appended to existing logs."
-                        f"\n\nJob must be in `state: {base_objects.ProcessingState.PROCESSING}`."
+                        "Worker updates job progress and log messages. If given, logs are appended to existing logs."
                         "\n\nAt least one of `progress|log|log_user` must be provided."
+                        f"\n\nJob must be in `state: {base_objects.ProcessingState.PROCESSING}`."
                         "\n\nLease is renewed automatically when updating progress. "
                         "If you only want to renew the lease without updating progress "
                         f"use [`PATCH /v1/jobs/{{job_id}}/lease`]({config.APP_URL_ROOT}/docs#/Worker/patch_lease_v1_jobs__job_id__lease_patch). "
@@ -770,7 +772,11 @@ async def patch_job(
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_RESULT_MISSING]["detail"],
                 )
 
-            code_update_job = await worker_cruds.complete_job(db=db, job_id=job_id)
+            code_update_job = await worker_cruds.update_job_progress(
+                db=db,
+                job_id=job_id,
+                job_progress_update=job_progress_update
+            )
 
             if code_update_job == AppCode.JOB_COMPLETED:
                 return DocAPIResponseOK[NoneType](
@@ -788,7 +794,11 @@ async def patch_job(
         # worker marks job as error
         elif job_progress_update.state == base_objects.ProcessingState.ERROR:
 
-            code_update_job = await worker_cruds.fail_job(db=db, job_id=job_id)
+            code_update_job = await worker_cruds.update_job_progress(
+                db=db,
+                job_id=job_id,
+                job_progress_update=job_progress_update
+            )
 
             if code_update_job == AppCode.JOB_FAILED:
                 return DocAPIResponseOK[NoneType](
@@ -805,9 +815,19 @@ async def patch_job(
 
         # worker updates job progress
         elif job_progress_update.state is None:
-            db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_processing_job_progress(db=db,
-                                                                                                           job_id=job_id,
-                                                                                                           job_progress_update=job_progress_update)
+            if job_progress_update.progress is None and \
+                job_progress_update.log is None and \
+                job_progress_update.log_user is None:
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_400_BAD_REQUEST,
+                    code=AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS]["detail"]
+                )
+            db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
+                db=db,
+               job_id=job_id,
+               job_progress_update=job_progress_update
+            )
             if code_update_job == AppCode.JOB_PROGRESS_UPDATED:
                 return DocAPIResponseOK[base_objects.JobLease](
                     status=fastapi.status.HTTP_200_OK,
@@ -852,7 +872,6 @@ GET_RESULT_RESPONSES = {
     response_class=FileResponse,
     tags=["User"],
     description="Download the result ZIP file for a completed job.",
-    openapi_extra={"x-order": 9},
     responses=make_responses(GET_RESULT_RESPONSES))
 @challenge_user_access_to_job
 async def get_result(
@@ -860,7 +879,6 @@ async def get_result(
         job_id: UUID,
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_user_access_to_new_job(db=db, key=key, job_id=job_id)
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
