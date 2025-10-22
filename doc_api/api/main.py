@@ -59,7 +59,18 @@ tags_metadata = [
 app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
               version=config.SOFTWARE_VERSION,
-              root_path=config.APP_URL_ROOT)
+              root_path=config.APP_URL_ROOT,
+              swagger_ui_parameters={
+                  "tagsSorter": "(a, b) => 0",
+                  "operationsSorter": """
+                    function (a, b) {
+                      function get(o, k){ return o && (typeof o.get==='function' ? o.get(k) : o[k]); }
+                      var ida = get(get(a,'operation'),'operationId') || '';
+                      var idb = get(get(b,'operation'),'operationId') || '';
+                      return ida.localeCompare(idb);
+                    }
+                    """,
+              })
 
 
 @app.on_event("startup")
@@ -168,7 +179,7 @@ def custom_openapi():
         title=app.title,
         version=app.version,
         description=app.description,
-        routes=app.routes,
+        routes=app.routes
     )
 
     # --- worker processing job guard ---
@@ -242,8 +253,19 @@ def custom_openapi():
     # --- roles ---
     inject_roles_docs(app=app, schema=schema)
 
+    # copy x-order into operationId prefix
+    for path, item in schema.get("paths", {}).items():
+        for method, op in list(item.items()):
+            x = op.get("x-order")
+            oid = op.get("operationId")
+            if oid is not None:
+                prefix = f"{int(x):04d}-" if isinstance(x, int) else "9999-"
+                op["operationId"] = prefix + oid
+
     app.openapi_schema = schema
     return app.openapi_schema
+
+
 
 app.openapi = custom_openapi
 

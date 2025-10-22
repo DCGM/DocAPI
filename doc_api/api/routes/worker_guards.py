@@ -61,9 +61,16 @@ WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES = {
     **WORKER_ACCESS_TO_JOB_GUARD_RESPONSES,
     AppCode.JOB_NOT_IN_PROCESSING: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "The worker's job is not in the PROCESSING state.",
+        "description": f"Only jobs in `state: {base_objects.ProcessingState.PROCESSING}` can be accessed by workers for this operation. "
+                       f"Job is in one of the following `state: "
+                       f"{base_objects.ProcessingState.CANCELLED}|"
+                       f"{base_objects.ProcessingState.DONE}|"
+                       f"{base_objects.ProcessingState.ERROR}`.",
         "model": DocAPIResponseClientError,
-        "detail": "Only jobs in PROCESSING state can be accessed by workers.",
+        "detail": f"Only jobs in {base_objects.ProcessingState.PROCESSING} state can be accessed by workers for this operation.",
+        "details": {
+            "state": f"{base_objects.ProcessingState.CANCELLED}"
+        }
     }
 }
 def challenge_worker_access_to_processing_job(fn):
@@ -93,5 +100,6 @@ async def _challenge_worker_access_to_processing_job(
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.JOB_NOT_IN_PROCESSING,
-            detail=WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_IN_PROCESSING]["detail"]
+            detail=WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_IN_PROCESSING]["detail"],
+            details={"state": db_job.state.value}
         )

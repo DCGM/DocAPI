@@ -17,8 +17,7 @@ from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helper import RouteInvariantError
-from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job, \
-    challenge_worker_access_to_processing_job
+from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
     DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
@@ -31,42 +30,41 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
-GET_JOB_RESPONSES = {
+POST_LEASE_RESPONSES = {
     AppCode.JOB_ASSIGNED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "A job has been successfully assigned to the worker.",
+        "description": "Job has been assigned to the worker and the lease has been established (UTC time).",
         "model": DocAPIResponseOK,
         "model_data": base_objects.JobLease,
-        "detail": "Job has been assigned to the worker, lease established (UTC time).",
+        "detail": "Job has been assigned to the worker and the lease has been established (UTC time).",
     },
-
     AppCode.JOB_QUEUE_EMPTY: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "No jobs are currently available in the queue.",
         "model": DocAPIResponseOK,
         "detail": "Queue is empty right now, try again shortly.",
-    },
+    }
 }
-
-@root_router.get(
-    "/job",
-    summary="Assign Job",
+@root_router.post(
+    "/v1/jobs/lease",
+    summary="Request Job Lease",
     response_model=DocAPIResponseOK[base_objects.JobLease],
     tags=["Worker"],
-    description=f"Assign a job to the requesting worker. "
-                f"If a job is available in the queue, it will be assigned to the worker and a lease will be established. "
-                f"If no jobs are available, a response indicating the empty queue will be returned.",
-    responses=make_responses(GET_JOB_RESPONSES))
-async def get_job(
+    description=f"Request a job lease for processing. If a job is available, it will be assigned to the worker along with a lease time. "
+                f"If no jobs are available, a response indicating an empty queue will be returned.",
+    responses=make_responses(POST_LEASE_RESPONSES))
+async def post_lease(
         request: Request,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
+
     db_job, code = await worker_cruds.assign_job_to_worker(db=db, worker_key_id=key.id)
+
     if code == AppCode.JOB_ASSIGNED and db_job is not None:
         return DocAPIResponseOK[base_objects.Job](
             status=fastapi.status.HTTP_200_OK,
             code=AppCode.JOB_ASSIGNED,
-            detail=GET_JOB_RESPONSES[AppCode.JOB_ASSIGNED]["detail"],
+            detail=POST_LEASE_RESPONSES[AppCode.JOB_ASSIGNED]["detail"],
             data=db_job
         )
     elif code == AppCode.JOB_QUEUE_EMPTY:
@@ -74,51 +72,83 @@ async def get_job(
             DocAPIResponseOK[NoneType](
                 status=fastapi.status.HTTP_200_OK,
                 code=AppCode.JOB_QUEUE_EMPTY,
-                detail=GET_JOB_RESPONSES[AppCode.JOB_QUEUE_EMPTY]["detail"]
+                detail=POST_LEASE_RESPONSES[AppCode.JOB_QUEUE_EMPTY]["detail"]
             )
         )
 
     raise RouteInvariantError(code=code, request=request)
 
 
-GET_IMAGES_FOR_JOB_RESPONSES = {
-    AppCode.IMAGES_RETRIEVED: {
+PATCH_LEASE_RESPONSES = {
+    AppCode.JOB_LEASE_EXTENDED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "Images for the specified job have been retrieved successfully.",
+        "description": "Job lease has been successfully extended (UTC time).",
         "model": DocAPIResponseOK,
-        "model_data": List[base_objects.Image],
-        "detail": "Images for Job retrieved successfully.",
-    },
+        "model_data": base_objects.JobLease,
+        "detail": "Job lease has been successfully extended (UTC time)."
+    }
 }
-@root_router.get(
-    "/images/{job_id}",
-    summary="Get Job Images",
-    response_model=List[base_objects.Image],
+@root_router.patch(
+    "/v1/jobs/{job_id}/lease",
+    response_model=base_objects.JobLease,
+    summary="Extend Job Lease",
     tags=["Worker"],
-    description="Retrieve all images associated for a specific job.",
-    responses=make_responses(GET_IMAGES_FOR_JOB_RESPONSES))
+    description="Extend the lease time for a specific job that is currently being processed by the worker.",
+    responses=make_responses(PATCH_LEASE_RESPONSES))
 @challenge_worker_access_to_processing_job
-async def get_images_for_job(
+async def patch_lease(
         request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    # job already challenged above, so here we are sure it exists and in PROCESSING state
-    db_images, code = await general_cruds.get_job_images(db=db, job_id=job_id)
-    if code == AppCode.IMAGES_RETRIEVED and db_images is not None:
-        return DocAPIResponseOK[List[base_objects.Image]](
+    code, lease_expire_at, server_time = await worker_cruds.update_processing_job_lease(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_LEASE_EXTENDED:
+        return DocAPIResponseOK[base_objects.JobLease](
             status=fastapi.status.HTTP_200_OK,
-            code=AppCode.IMAGES_RETRIEVED,
-            detail=GET_IMAGES_FOR_JOB_RESPONSES[AppCode.IMAGES_RETRIEVED]["detail"],
-            data=db_images
+            code=AppCode.JOB_LEASE_EXTENDED,
+            detail=PATCH_LEASE_RESPONSES[AppCode.JOB_LEASE_EXTENDED]["detail"],
+            data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time),
         )
 
     raise RouteInvariantError(code=code, request=request)
 
 
-GET_META_JSON_FOR_JOB_RESPONSES = {
+DELETE_LEASE_RESPONSES = {
+    AppCode.JOB_LEASE_RELEASED: {
+        "status": fastapi.status.HTTP_204_NO_CONTENT,
+        "description": "The job lease has been successfully released.",
+        "example_value": "NO BODY"
+    }
+}
+@root_router.delete(
+    "/v1/jobs/{job_id}/lease",
+    status_code=fastapi.status.HTTP_204_NO_CONTENT,
+    summary="Release Job Lease",
+    tags=["Worker"],
+    description="Release the lease for a specific job that is currently being processed by the worker.",
+    responses=make_responses(DELETE_LEASE_RESPONSES))
+@challenge_worker_access_to_processing_job
+async def delete_lease(
+        request: Request,
+        job_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    code = await worker_cruds.release_job_lease(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_LEASE_RELEASED:
+        return validate_ok_response(DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_204_NO_CONTENT,
+            code="",
+            detail=""
+        ))
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+GET_METADATA = {
     AppCode.META_JSON_DOWNLOADED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "JSON data of the requested Meta JSON file.",
@@ -133,30 +163,35 @@ GET_META_JSON_FOR_JOB_RESPONSES = {
     }
 }
 @root_router.get(
-    "/meta_json/{job_id}",
+    "/v1/jobs/{job_id}/images/{image_id}/files/metadata",
     response_class=FileResponse,
     summary="Download Meta JSON",
     tags=["Worker"],
     description="Download the Meta JSON file associated with a specific job.",
-    responses=make_responses(GET_META_JSON_FOR_JOB_RESPONSES))
+    responses=make_responses(GET_METADATA))
 @challenge_worker_access_to_processing_job
-async def get_meta_json_for_job(
+async def get_metadata(
         request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
-    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
-    if code == AppCode.JOB_RETRIEVED and db_job is not None and db_job.meta_json_uploaded:
+    if code == AppCode.JOB_RETRIEVED and db_job.meta_json_uploaded:
         meta_json_path = os.path.join(config.JOBS_DIR, str(job_id), "meta.json")
+        if not await aiofiles_os.path.exists(meta_json_path):
+            raise DocAPIClientErrorException(
+                status=fastapi.status.HTTP_404_NOT_FOUND,
+                code=AppCode.META_JSON_NOT_UPLOADED,
+                detail=GET_METADATA[AppCode.META_JSON_NOT_UPLOADED]["detail"],
+            )
         return FileResponse(meta_json_path, media_type="application/json", filename="meta.json")
     elif code == AppCode.JOB_RETRIEVED and db_job is not None and not db_job.meta_json_uploaded:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.META_JSON_NOT_UPLOADED,
-            detail=GET_META_JSON_FOR_JOB_RESPONSES[AppCode.META_JSON_NOT_UPLOADED]["detail"],
+            detail=GET_METADATA[AppCode.META_JSON_NOT_UPLOADED]["detail"],
         )
 
     raise RouteInvariantError(code=code, request=request)
@@ -265,42 +300,7 @@ async def get_alto_for_job(
     raise RouteInvariantError(code=code, request=request)
 
 
-PATCH_LEASE_RESPONSES = {
-    AppCode.JOB_HEARTBEAT_ACCEPTED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "The job heartbeat has been accepted and the lease has been extended.",
-        "model": DocAPIResponseOK,
-        "model_data": base_objects.JobLease,
-        "detail": "Heartbeat for Job accepted, lease extended (UTC time).",
-    }
-}
-@root_router.patch(
-    "/v1/jobs/{job_id}/lease",
-    response_model=base_objects.JobLease,
-    summary="Send Job Heartbeat",
-    tags=["Worker"],
-    description="Confirm the worker is still processing the job and extend its lease time.",
-    responses=make_responses(PATCH_LEASE_RESPONSES))
-@challenge_worker_access_to_processing_job
-async def patch_lease(
-    request: Request,
-    job_id: UUID,
-    key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
-    db: AsyncSession = Depends(get_async_session),
-):
-    await challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)
 
-    code, lease_expire_at, server_time = await worker_cruds.update_processing_job_lease(db=db, job_id=job_id)
-
-    if code == AppCode.JOB_HEARTBEAT_ACCEPTED:
-        return DocAPIResponseOK[base_objects.JobLease](
-            status=fastapi.status.HTTP_200_OK,
-            code=AppCode.JOB_HEARTBEAT_ACCEPTED,
-            detail=PATCH_LEASE_RESPONSES[AppCode.JOB_HEARTBEAT_ACCEPTED]["detail"],
-            data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time),
-        )
-
-    raise RouteInvariantError(code=code, request=request)
 
 '''
 UPDATE_JOB_RESPONSES = {
