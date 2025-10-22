@@ -59,7 +59,7 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
             if job_update.meta_json_uploaded is not None:
                 db_job.meta_json_uploaded = job_update.meta_json_uploaded
 
-            return AppCode.JOB_UPDATED
+            return AppCode.JOB_PROGRESS_UPDATED
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating job in database") from e

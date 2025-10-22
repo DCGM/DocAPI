@@ -3,7 +3,6 @@ import logging
 import time
 import socket
 
-
 class DocAPIFormatter(logging.Formatter):
     converter = time.gmtime
 
@@ -17,26 +16,27 @@ TRUE_VALUES = {"true", "1"}
 
 class Config:
     def __init__(self):
-        self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "/")
-        self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
-        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
+        self.APP_HOST = os.getenv("APP_HOST", "localhost")
+        self.APP_PORT = int(os.getenv("APP_PORT", "8888"))
 
+        self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
+
+        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
         # used for 401 -> headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
-
-        self.SOFTWARE_CREATOR = os.getenv("SOFTWARE_CREATOR", "DocAPI")
+        # displayed in the web interface footer
         self.SOFTWARE_VERSION = os.getenv("SOFTWARE_VERSION", "1.0")
+
+        self.BASE_DIR = os.getenv("BASE_DIR", "../../doc_api_data")
+        self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
+        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
+
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
 
         self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
         self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
-
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
-
-        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
-
-        self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
-        self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
 
         # Validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
         ################################################################################################################

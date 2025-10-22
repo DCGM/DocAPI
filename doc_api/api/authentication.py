@@ -14,7 +14,7 @@ from doc_api.api.database import open_session
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.schemas.responses import DocAPIClientErrorException, AppCode, DocAPIResponseClientError
 from doc_api.db import model
-from doc_api.config import config
+from doc_api.api.config import config
 
 
 logger = logging.getLogger(__name__)

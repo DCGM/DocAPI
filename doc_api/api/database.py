@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from doc_api.config import config
+from doc_api.api.config import config
 import logging
 
 logger = logging.getLogger(__name__)

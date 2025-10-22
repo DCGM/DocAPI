@@ -15,16 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
+from doc_api.api.routes import root_router
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job, \
-    uses_challenge_worker_access_to_processing_job, challenge_worker_access_to_finalizing_job, \
-    uses_challenge_worker_access_to_finalizing_job
+    challenge_worker_access_to_processing_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
     DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
 from doc_api.db import model
-from doc_api.api.routes import worker_router
-from doc_api.config import config
+from doc_api.api.config import config
 
 from typing import List
 from uuid import UUID
@@ -49,7 +48,7 @@ GET_JOB_RESPONSES = {
     },
 }
 
-@worker_router.get(
+@root_router.get(
     "/job",
     summary="Assign Job",
     response_model=DocAPIResponseOK[base_objects.JobLease],
@@ -91,14 +90,14 @@ GET_IMAGES_FOR_JOB_RESPONSES = {
         "detail": "Images for Job retrieved successfully.",
     },
 }
-@worker_router.get(
+@root_router.get(
     "/images/{job_id}",
     summary="Get Job Images",
     response_model=List[base_objects.Image],
     tags=["Worker"],
     description="Retrieve all images associated for a specific job.",
     responses=make_responses(GET_IMAGES_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def get_images_for_job(
         request: Request,
         job_id: UUID,
@@ -133,14 +132,14 @@ GET_META_JSON_FOR_JOB_RESPONSES = {
         "detail": "Meta JSON file for the job has not been uploaded yet.",
     }
 }
-@worker_router.get(
+@root_router.get(
     "/meta_json/{job_id}",
     response_class=FileResponse,
     summary="Download Meta JSON",
     tags=["Worker"],
     description="Download the Meta JSON file associated with a specific job.",
     responses=make_responses(GET_META_JSON_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def get_meta_json_for_job(
         request: Request,
         job_id: UUID,
@@ -178,14 +177,14 @@ GET_IMAGE_FOR_JOB_RESPONSES = {
     },
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
 }
-@worker_router.get(
+@root_router.get(
     "/image/{job_id}/{image_id}",
     response_class=FileResponse,
     summary="Download IMAGE",
     tags=["Worker"],
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def get_image_for_job(
         request: Request,
         job_id: UUID, image_id: UUID,
@@ -229,14 +228,14 @@ GET_ALTO_FOR_JOB_RESPONSES = {
     },
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB],
 }
-@worker_router.get(
+@root_router.get(
     "/alto/{job_id}/{image_id}",
     response_class=FileResponse,
     summary="Download ALTO",
     tags=["Worker"],
     description="Download the ALTO file associated with a specific image of a job.",
     responses=make_responses(GET_ALTO_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def get_alto_for_job(
         request: Request,
         job_id: UUID,
@@ -248,7 +247,7 @@ async def get_alto_for_job(
     db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
     if code == AppCode.IMAGE_RETRIEVED and db_image is not None and db_image.alto_uploaded:
-        alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.xml")
+        alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.alto.xml")
         return FileResponse(alto_path, media_type="application/xml", filename=f"{os.path.splitext(db_image.name)[0]}.xml")
     elif code == AppCode.IMAGE_RETRIEVED and db_image is not None and not db_image.alto_uploaded:
         raise DocAPIClientErrorException(
@@ -266,7 +265,7 @@ async def get_alto_for_job(
     raise RouteInvariantError(code=code, request=request)
 
 
-POST_JOB_HEARTBEAT_RESPONSES = {
+PATCH_LEASE_RESPONSES = {
     AppCode.JOB_HEARTBEAT_ACCEPTED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The job heartbeat has been accepted and the lease has been extended.",
@@ -275,15 +274,15 @@ POST_JOB_HEARTBEAT_RESPONSES = {
         "detail": "Heartbeat for Job accepted, lease extended (UTC time).",
     }
 }
-@worker_router.post(
-    "/job/{job_id}/heartbeat",
+@root_router.patch(
+    "/v1/jobs/{job_id}/lease",
     response_model=base_objects.JobLease,
     summary="Send Job Heartbeat",
     tags=["Worker"],
     description="Confirm the worker is still processing the job and extend its lease time.",
-    responses=make_responses(POST_JOB_HEARTBEAT_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
-async def post_job_heartbeat(
+    responses=make_responses(PATCH_LEASE_RESPONSES))
+@challenge_worker_access_to_processing_job
+async def patch_lease(
     request: Request,
     job_id: UUID,
     key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
@@ -297,13 +296,13 @@ async def post_job_heartbeat(
         return DocAPIResponseOK[base_objects.JobLease](
             status=fastapi.status.HTTP_200_OK,
             code=AppCode.JOB_HEARTBEAT_ACCEPTED,
-            detail=POST_JOB_HEARTBEAT_RESPONSES[AppCode.JOB_HEARTBEAT_ACCEPTED]["detail"],
+            detail=PATCH_LEASE_RESPONSES[AppCode.JOB_HEARTBEAT_ACCEPTED]["detail"],
             data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time),
         )
 
     raise RouteInvariantError(code=code, request=request)
 
-
+'''
 UPDATE_JOB_RESPONSES = {
     AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
@@ -313,14 +312,14 @@ UPDATE_JOB_RESPONSES = {
         "detail": "Job has been updated successfully, lease extended (UTC time).",
     },
 }
-@worker_router.patch(
+@root_router.patch(
     "/job/{job_id}",
     response_model=base_objects.JobLease,
     summary="Update Job Progress",
     tags=["Worker"],
     description="Update the job's progress and extend its lease time.",
     responses=make_responses(UPDATE_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def patch_job(
         request: Request,
         job_id: UUID,
@@ -340,6 +339,7 @@ async def patch_job(
         )
 
     raise RouteInvariantError(code=code, request=request)
+'''
 
 
 POST_RESULT_FOR_JOB_RESPONSES = {
@@ -356,14 +356,14 @@ POST_RESULT_FOR_JOB_RESPONSES = {
         "detail": "The uploaded file is not a valid ZIP archive.",
     },
 }
-@worker_router.post(
+@root_router.post(
     "/result/{job_id}",
     response_model=DocAPIResponseOK,
     summary="Upload Job Result",
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
     responses=make_responses(POST_RESULT_FOR_JOB_RESPONSES))
-@uses_challenge_worker_access_to_processing_job
+@challenge_worker_access_to_processing_job
 async def post_result_for_job(
     job_id: UUID,
     result: UploadFile = File(...),
@@ -424,7 +424,8 @@ POST_JOB_COMPLETE_RESPONSES = {
     },
 }
 
-@worker_router.post(
+'''
+@root_router.post(
     "/jobs/{job_id}/complete",
     response_model=DocAPIResponseOK,
     summary="Complete Job",
@@ -478,7 +479,7 @@ POST_JOB_FAIL_RESPONSES = {
         "detail": "Job was already marked as failed.",
     },
 }
-@worker_router.post(
+@root_router.post(
     "/jobs/{job_id}/fail",
     response_model=DocAPIResponseOK[NoneType],
     summary="Fail Job",
@@ -510,6 +511,5 @@ async def post_job_fail(
         )
 
     raise RouteInvariantError(code=code, request=request)
-
-
+'''
 
