@@ -39,6 +39,11 @@ class AppCode(str, enum.Enum):
     XML_PARSE_ERROR = 'XML_PARSE_ERROR'
     ALTO_SCHEMA_INVALID = 'ALTO_SCHEMA_INVALID'
 
+    PAGE_UPLOADED = 'PAGE_UPLOADED'
+    PAGE_REUPLOADED = 'PAGE_REUPLOADED'
+    PAGE_NOT_REQUIRED = 'PAGE_NOT_REQUIRED'
+    PAGE_SCHEMA_INVALID = 'PAGE_SCHEMA_INVALID'
+
     # Worker-related
     JOB_ASSIGNED = 'JOB_ASSIGNED'
     JOB_QUEUE_EMPTY = 'JOB_QUEUE_EMPTY'
@@ -47,9 +52,9 @@ class AppCode(str, enum.Enum):
     JOBS_RETRIEVED = 'JOBS_RETRIEVED'
     JOB_NOT_IN_PROCESSING = 'JOB_NOT_IN_PROCESSING'
     JOB_NOT_IN_NEW = 'JOB_NOT_IN_NEW'
-    JOB_UPDATED = 'JOB_UPDATED'
+    JOB_PROGRESS_UPDATED = 'JOB_PROGRESS_UPDATED'
     JOB_HEARTBEAT_ACCEPTED = 'JOB_HEARTBEAT_ACCEPTED'
-    JOB_INVALID_STATE = 'JOB_INVALID_STATE'
+    JOB_UNFINISHABLE = 'JOB_UNFINISHABLE'
     JOB_COMPLETED = 'JOB_COMPLETED'
     JOB_ALREADY_COMPLETED = 'JOB_ALREADY_COMPLETED'
     JOB_FAILED = 'JOB_FAILED'
@@ -83,6 +88,8 @@ class AppCode(str, enum.Enum):
     API_KEY_INVALID = 'API_KEY_INVALID'
     API_KEY_INACTIVE = 'API_KEY_INACTIVE'
     API_KEY_ROLE_FORBIDDEN = 'API_KEY_ROLE_FORBIDDEN'
+    API_KEY_USER_FORBIDDEN = 'API_KEY_USER_FORBIDDEN'
+    API_KEY_WORKER_FORBIDDEN = 'API_KEY_WORKER_FORBIDDEN'
     API_KEY_FORBIDDEN_FOR_JOB = 'API_KEY_FORBIDDEN_FOR_JOB'
     API_KEY_NOT_FOUND = 'API_KEY_NOT_FOUND'
 
@@ -149,10 +156,11 @@ class DocAPIResponseClientError(DocAPIResponseBase):
         return self
 
 class DocAPIClientErrorException(Exception):
-    def __init__(self, *, status: int, code: AppCode, detail: str, headers: Optional[Mapping[str, str]] = None):
+    def __init__(self, *, status: int, code: AppCode, detail: str, details: Any, headers: Optional[Mapping[str, str]] = None):
         self.status = status
         self.code = code
         self.detail = detail
+        self.details = details
         self.headers = headers
         super().__init__(detail)
 

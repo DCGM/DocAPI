@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.database import DBError
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.responses import AppCode
-from doc_api.config import config
+from doc_api.api.config import config
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
 
@@ -140,7 +140,7 @@ async def update_processing_job_progress(*, db: AsyncSession, job_id: UUID, job_
                 else:
                     db_job.log_user = job_progress_update.log_user
 
-            return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
+            return db_job, lease_expire_at, server_time, AppCode.JOB_PROGRESS_UPDATED
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating job.") from e

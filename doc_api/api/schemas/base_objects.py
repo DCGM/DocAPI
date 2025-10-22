@@ -7,19 +7,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProcessingState(str, enum.Enum):
-    NEW = 'NEW'
-    QUEUED = 'QUEUED'
-    PROCESSING = 'PROCESSING'
-    ERROR = 'ERROR'
-    DONE = 'DONE'
-    CANCELLED = 'CANCELLED'
-    FAILED = 'FAILED'
+    NEW = 'new'
+    QUEUED = 'queued'
+    PROCESSING = 'processing'
+    ERROR = 'error'
+    DONE = 'done'
+    CANCELLED = 'cancelled'
+    FAILED = 'failed'
 
 
 class KeyRole(str, enum.Enum):
-    USER = 'USER'
-    WORKER = 'WORKER'
-    ADMIN = 'ADMIN'
+    USER = 'user'
+    WORKER = 'worker'
+    ADMIN = 'admin'
 
 
 class Image(BaseModel):
@@ -156,17 +156,19 @@ class JobUpdate(BaseModel):
 
 
 class JobProgressUpdate(BaseModel):
-    """
-    Partial update of an existing processing job.
-    Sent periodically by the worker to report progress or append logs.
-    """
+    state: Optional[ProcessingState] = Field(
+        None,
+        description="New state of the job.",
+        examples=[ProcessingState.PROCESSING.value]
+    )
+
     progress: Optional[float] = Field(
         None,
         description=(
             "Current completion percentage of the job (0.0–100.0). "
             "Omit if progress has not changed since the last update."
         ),
-        examples=[42.5]
+        examples=[0.5]
     )
 
     log: Optional[str] = Field(
