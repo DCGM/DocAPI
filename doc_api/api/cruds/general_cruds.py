@@ -59,7 +59,7 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
             if job_update.meta_json_uploaded is not None:
                 db_job.meta_json_uploaded = job_update.meta_json_uploaded
 
-            return AppCode.JOB_PROGRESS_UPDATED
+            return AppCode.JOB_UPDATED
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating job in database") from e
@@ -122,6 +122,9 @@ async def update_image(*, db: AsyncSession, image_id: UUID, image_update: base_o
 
             if image_update.alto_uploaded is not None:
                 db_image.alto_uploaded = image_update.alto_uploaded
+
+            if image_update.page_uploaded is not None:
+                db_image.page_uploaded = image_update.page_uploaded
 
             if image_update.imagehash is not None:
                 db_image.imagehash = image_update.imagehash

@@ -407,7 +407,7 @@ POST_RESULT_RESPONSES = {
 @root_router.post(
     "/v1/jobs/{job_id}/result/",
     response_model=DocAPIResponseOK,
-    summary="Upload Job Result",
+    summary="Upload Result",
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
     responses=make_responses(POST_RESULT_RESPONSES))

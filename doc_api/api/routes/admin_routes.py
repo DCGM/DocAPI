@@ -7,7 +7,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import general_cruds, admin_cruds
+from doc_api.api.cruds import admin_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.schemas import base_objects
@@ -55,7 +55,7 @@ POST_KEY_RESPONSES = {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "A new API key was created successfully.",
         "model": DocAPIResponseOK,
-        "detail": "API key created successfully: {key_str}",
+        "detail": "API key created successfully, secret: {key_str}",
     },
     AppCode.KEY_ALREADY_EXISTS: {
         "status": fastapi.status.HTTP_409_CONFLICT,
@@ -95,59 +95,129 @@ async def post_key(
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.KEY_ALREADY_EXISTS,
-            detail="An API key with the specified label already exists."
+            detail=POST_KEY_RESPONSES[AppCode.KEY_ALREADY_EXISTS]["detail"]
         )
     elif code == AppCode.KEY_CREATION_FAILED:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.KEY_CREATION_FAILED,
-            detail="Failed to create a new API key due to hash collision after multiple attempts."
+            detail=POST_KEY_RESPONSES[AppCode.KEY_CREATION_FAILED]["detail"]
         )
 
     raise RouteInvariantError(request=request, code=code)
 
 
-POST_DEACTIVATE_KEY_RESPONSES = {
-    AppCode.KEY_DEACTIVATED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "The API key was deactivated successfully.",
+POST_KEY_SECRET_RESPONSES = {
+    AppCode.KEY_SECRET_CREATED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "New secret for the API key were created successfully.",
         "model": DocAPIResponseOK,
-        "detail": "API key deactivated successfully.",
+        "detail": "New API key secret created successfully: {key_str}",
     },
-    AppCode.KEY_ALREADY_INACTIVE: {
-        "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "The API key is already inactive.",
+    AppCode.KEY_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified API key was not found.",
         "model": DocAPIResponseClientError,
-        "detail": "The API key is already inactive.",
+        "detail": "The specified API key was not found.",
+    },
+    AppCode.KEY_SECRET_CREATION_FAILED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Failed to create a new secret for the API key due to hash collision after multiple attempts.",
+        "model": DocAPIResponseClientError,
+        "detail": "Failed to create a new secret for the API key due to hash collision after multiple attempts.",
     }
 }
 @admin_router.post(
-    "/keys/{label}/deactivate",
-    summary="Deactivate Key",
-    response_model=DocAPIResponseOK[NoneType],
+    "/keys/{label}/secret",
+    summary="Create Key Secret",
     tags=["Admin"],
-    description="Deactivate an existing API key identified by its label.",
-    responses=make_responses(POST_DEACTIVATE_KEY_RESPONSES))
-async def update_key(
+    description="Create new secrets for an existing API key. The old secrets will be invalidated.",
+    status_code=fastapi.status.HTTP_201_CREATED,
+    responses=make_responses(POST_KEY_RESPONSES))
+async def post_key_secrets(
         request: Request,
         label: str,
         key: model.Key = Depends(require_api_key()),
         db: AsyncSession = Depends(get_async_session)):
 
+    key_str, code = await admin_cruds.new_secret(db=db, label=label)
 
-    code = await admin_cruds.deactivate_key(db=db, key_label=label)
-
-    if code == AppCode.KEY_DEACTIVATED:
+    if code == AppCode.KEY_SECRET_CREATED:
         return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=fastapi.status.HTTP_200_OK,
-            code=AppCode.KEY_DEACTIVATED,
-            detail=POST_DEACTIVATE_KEY_RESPONSES[AppCode.KEY_DEACTIVATED]["detail"],
+            status=fastapi.status.HTTP_201_CREATED,
+            code=AppCode.KEY_SECRET_CREATED,
+            detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_SECRET_CREATED]["detail"].format(key_str=key_str),
         ))
-    elif code == AppCode.KEY_ALREADY_INACTIVE:
+    elif code == AppCode.KEY_SECRET_CREATION_FAILED:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
-            code=AppCode.KEY_ALREADY_INACTIVE,
-            detail=POST_DEACTIVATE_KEY_RESPONSES[AppCode.KEY_ALREADY_INACTIVE]["detail"]
+            code=AppCode.KEY_NOT_FOUND,
+            detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_SECRET_CREATION_FAILED]["detail"]
+        )
+    elif code == AppCode.KEY_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.KEY_NOT_FOUND,
+            detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_NOT_FOUND]["detail"]
+        )
+
+
+PATCH_KEY_RESPONSES = {
+    AppCode.KEY_UPDATED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "API key was updated successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "API key was updated successfully.",
+    },
+    AppCode.KEY_UPDATE_NO_FIELDS: {
+        "status": fastapi.status.HTTP_400_BAD_REQUEST,
+        "description": "No fields were provided to update the API key.",
+        "model": DocAPIResponseClientError,
+        "detail": "At least one field must be provided to update the API key.",
+    },
+    AppCode.KEY_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified API key was not found.",
+        "model": DocAPIResponseClientError,
+        "detail": "The specified API key was not found.",
+    }
+}
+@admin_router.patch(
+    "/keys/{label}",
+    summary="Update Key",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["Admin"],
+    description="",
+    responses=make_responses(PATCH_KEY_RESPONSES))
+async def patch_key(
+        request: Request,
+        key_update: base_objects.KeyUpdate,
+        key: model.Key = Depends(require_api_key()),
+        db: AsyncSession = Depends(get_async_session)):
+
+    if key_update.label is None and \
+         key_update.role is None and \
+            key_update.active is None and \
+                key_update.readonly is None:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_400_BAD_REQUEST,
+            code=AppCode.KEY_UPDATE_NO_FIELDS,
+            detail=PATCH_KEY_RESPONSES[AppCode.KEY_UPDATE_NO_FIELDS]["detail"]
+        )
+
+    code = await admin_cruds.update_key(db=db, key_update=key_update)
+
+    if code == AppCode.KEY_UPDATED:
+        return validate_ok_response(DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.KEY_UPDATED,
+            detail=PATCH_KEY_RESPONSES[AppCode.KEY_UPDATED]["detail"],
+        ))
+    elif code == AppCode.KEY_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.KEY_NOT_FOUND,
+            detail=PATCH_KEY_RESPONSES[AppCode.KEY_NOT_FOUND]["detail"]
         )
 
     raise RouteInvariantError(request=request, code=code)

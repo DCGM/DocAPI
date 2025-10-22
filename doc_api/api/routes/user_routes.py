@@ -41,14 +41,14 @@ logger = logging.getLogger(__name__)
 ME_RESPONSES = {
     AppCode.API_KEY_VALID: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "The API key is valid.",
+        "description": "API key is valid.",
         "model": DocAPIResponseOK,
         "model_data": base_objects.Key,
-        "detail": "The API key is valid.",
+        "detail": "API key is valid.",
     }
 }
 @root_router.get(
-    "/me",
+    "/v1/me",
     summary="Who am I?",
     response_model=DocAPIResponseOK[base_objects.Key],
     tags=["User"],
@@ -66,10 +66,10 @@ async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.
 POST_JOB_RESPONSES = {
     AppCode.JOB_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "Job created successfully",
+        "description": "Job created successfully.",
         "model": DocAPIResponseOK,
         "model_data": base_objects.JobWithImages,
-        "detail": "The job has been created successfully.",
+        "detail": "Job created successfully.",
     },
     AppCode.REQUEST_VALIDATION_ERROR: {
         "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -131,7 +131,7 @@ GET_JOBS_RESPONSES = {
         "description": "Jobs retrieved successfully.",
         "model": DocAPIResponseOK,
         "model_data": List[base_objects.Job],
-        "detail": "The jobs have been retrieved successfully.",
+        "detail": "Jobs retrieved successfully.",
     }
 }
 @root_router.get(
@@ -169,7 +169,7 @@ GET_JOB_RESPONSES = {
     "/v1/jobs/{job_id}",
     summary="Get Job",
     response_model=DocAPIResponseOK[base_objects.JobWithImages],
-    tags=["User"],
+    tags=["User", "Worker"],
     description="Retrieve the details of a specific job by its ID.",
     responses=make_responses(GET_JOB_RESPONSES))
 @challenge_user_access_to_job
@@ -200,21 +200,21 @@ async def get_job(
 PUT_IMAGE_RESPONSES = {
     AppCode.IMAGE_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "Image uploaded successfully.",
+        "description": "IMAGE file uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The image file has been uploaded successfully.",
+        "detail": "IMAGE file uploaded successfully.",
     },
     AppCode.IMAGE_REUPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "Image re-uploaded successfully.",
+        "description": "IMAGE file re-uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The image file has been re-uploaded successfully.",
+        "detail": "IMAGE file re-uploaded successfully.",
     },
     AppCode.IMAGE_INVALID: {
         "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-        "description": "Invalid image file.",
+        "description": "Invalid IMAGE file.",
         "model": DocAPIResponseClientError,
-        "detail": "Failed to decode the image file, probably not a valid image.",
+        "detail": "Failed to decode the IMAGE file, probably not a valid image.",
     },
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
@@ -287,28 +287,28 @@ async def put_image(
 PUT_ALTO_RESPONSES = {
     AppCode.ALTO_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "ALTO XML uploaded successfully.",
+        "description": "ALTO XML file uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The ALTO XML file has been uploaded successfully.",
+        "detail": "ALTO XML file uploaded successfully.",
     },
     AppCode.ALTO_REUPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "ALTO XML re-uploaded successfully.",
+        "description": "ALTO XML file re-uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The ALTO XML file has been re-uploaded successfully.",
+        "detail": "ALTO XML file re-uploaded successfully.",
     },
     AppCode.ALTO_NOT_REQUIRED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "ALTO XML not required for this job.",
+        "description": "ALTO XML file is not required for this job.",
         "model": DocAPIResponseClientError,
-        "detail": "Job does not require ALTO XML.",
+        "detail": "ALTO XML file is not required for this job.",
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.ALTO_SCHEMA_INVALID: {
         "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
-        "description": "ALTO XML does not conform to the required schema.",
+        "description": "ALTO XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
-        "detail": "The ALTO XML file does not conform to the required schema.",
+        "detail": "ALTO XML file does not conform to the required schema.",
     },
 }
 @root_router.put(
@@ -392,28 +392,28 @@ async def put_alto(
 PUT_PAGE_RESPONSES = {
     AppCode.PAGE_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "PAGE XML uploaded successfully.",
+        "description": "PAGE XML file uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The PAGE XML file has been uploaded successfully.",
+        "detail": "PAGE XML file uploaded successfully.",
     },
     AppCode.PAGE_REUPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "PAGE XML re-uploaded successfully.",
+        "description": "PAGE XML file re-uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The PAGE XML file has been re-uploaded successfully.",
+        "detail": "PAGE XML file re-uploaded successfully.",
     },
     AppCode.PAGE_NOT_REQUIRED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "PAGE XML not required for this job.",
+        "description": "PAGE XML file is not required for this job.",
         "model": DocAPIResponseClientError,
-        "detail": "Job does not require PAGE XML.",
+        "detail": "PAGE XML file is not required for this job.",
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.PAGE_SCHEMA_INVALID: {
         "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
-        "description": "PAGE XML does not conform to the required schema.",
+        "description": "PAGE XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
-        "detail": "The PAGE XML file does not conform to the required schema.",
+        "detail": "PAGE XML file does not conform to the required schema.",
     },
 }
 @root_router.put(
@@ -468,8 +468,8 @@ async def put_page(
         # TODO this can potentially lead to inconsistent state if the job start fails after PAGE upload
         job_started = await user_cruds.start_job(db=db, job_id=job_id)
 
-        if not db_image.alto_uploaded:
-            image_update = base_objects.ImageUpdate(alto_uploaded=True)
+        if not db_image.page_uploaded:
+            image_update = base_objects.ImageUpdate(page_uploaded=True)
             await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
             return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=status.HTTP_201_CREATED,
@@ -496,21 +496,21 @@ async def put_page(
 PUT_META_JSON_RESPONSES = {
     AppCode.META_JSON_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "Meta JSON uploaded successfully.",
+        "description": "Meta JSON file uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The Meta JSON file has been uploaded successfully.",
+        "detail": "Meta JSON file uploaded successfully.",
     },
     AppCode.META_JSON_REUPLOADED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "Meta JSON re-uploaded successfully.",
+        "description": "Meta JSON file re-uploaded successfully.",
         "model": DocAPIResponseOK,
-        "detail": "The Meta JSON file has been re-uploaded successfully.",
+        "detail": "Meta JSON file re-uploaded successfully.",
     },
     AppCode.META_JSON_NOT_REQUIRED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "Meta JSON not required for this job.",
+        "description": "Meta JSON file is not required for this job.",
         "model": DocAPIResponseClientError,
-        "detail": "Job does not require Meta JSON.",
+        "detail": "Meta JSON file is not required for this job.",
     }
 }
 @root_router.put(
@@ -635,13 +635,13 @@ PATCH_JOB_RESPONSES = {
     },
 
     # worker updating progress
-    AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS: {
+    AppCode.JOB_UPDATE_NO_FIELDS: {
         "status": fastapi.status.HTTP_400_BAD_REQUEST,
         "description": "No progress update fields provided.",
         "model": DocAPIResponseClientError,
         "detail": "At least one of `progress`, `log`, or `log_user` must be provided to update job progress.",
     },
-    AppCode.JOB_PROGRESS_UPDATED: {
+    AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been updated successfully and the lease has been extended (UTC time).",
         "model": DocAPIResponseOK,
@@ -653,7 +653,7 @@ PATCH_JOB_RESPONSES = {
     "/v1/jobs/{job_id}",
     summary="Update Job",
     response_model=DocAPIResponseOK[NoneType],
-    tags=["User"],
+    tags=["User", "Worker"],
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
     responses=make_responses(PATCH_JOB_RESPONSES))
@@ -705,6 +705,7 @@ async def patch_job(
                         "Worker updates job progress and log messages. If given, logs are appended to existing logs."
                         "\n\nAt least one of `progress|log|log_user` must be provided."
                         f"\n\nJob must be in `state: {base_objects.ProcessingState.PROCESSING}`."
+                        f"\n\n`progress` is clipped to range `[0.0, 1.0]`."
                         "\n\nLease is renewed automatically when updating progress. "
                         "If you only want to renew the lease without updating progress "
                         f"use [`PATCH /v1/jobs/{{job_id}}/lease`]({config.APP_URL_ROOT}/docs#/Worker/patch_lease_v1_jobs__job_id__lease_patch). "
@@ -820,19 +821,19 @@ async def patch_job(
                 job_progress_update.log_user is None:
                 raise DocAPIClientErrorException(
                     status=status.HTTP_400_BAD_REQUEST,
-                    code=AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_PROGRESS_NO_UPDATE_FIELDS]["detail"]
+                    code=AppCode.JOB_UPDATE_NO_FIELDS,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATE_NO_FIELDS]["detail"]
                 )
             db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
                 db=db,
                job_id=job_id,
                job_progress_update=job_progress_update
             )
-            if code_update_job == AppCode.JOB_PROGRESS_UPDATED:
+            if code_update_job == AppCode.JOB_UPDATED:
                 return DocAPIResponseOK[base_objects.JobLease](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_PROGRESS_UPDATED,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_PROGRESS_UPDATED]["detail"],
+                    code=AppCode.JOB_UPDATED,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
                     data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time)
                 )
 
@@ -868,7 +869,7 @@ GET_RESULT_RESPONSES = {
 }
 @root_router.get(
     "/v1/jobs/{job_id}/result",
-    summary="Download Job Result",
+    summary="Download Result",
     response_class=FileResponse,
     tags=["User"],
     description="Download the result ZIP file for a completed job.",

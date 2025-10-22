@@ -51,7 +51,7 @@ tags_metadata = [
     },
     {
         "name": "Debug",
-        "description": "Debugging endpoints (admin only).",
+        "description": "",
     },
 ]
 
@@ -59,18 +59,7 @@ tags_metadata = [
 app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
               version=config.SOFTWARE_VERSION,
-              root_path=config.APP_URL_ROOT,
-              swagger_ui_parameters={
-                  "tagsSorter": "(a, b) => 0",
-                  "operationsSorter": """
-                    function (a, b) {
-                      function get(o, k){ return o && (typeof o.get==='function' ? o.get(k) : o[k]); }
-                      var ida = get(get(a,'operation'),'operationId') || '';
-                      var idb = get(get(b,'operation'),'operationId') || '';
-                      return ida.localeCompare(idb);
-                    }
-                    """,
-              })
+              root_path=config.APP_URL_ROOT)
 
 
 @app.on_event("startup")
@@ -95,9 +84,8 @@ async def startup():
 
 
 app.include_router(root_router)
-app.include_router(admin_router, prefix="/admin")
+app.include_router(admin_router, prefix="/v1/admin")
 app.include_router(debug_router, prefix="/debug")
-
 
 
 @app.exception_handler(DocAPIClientErrorException)

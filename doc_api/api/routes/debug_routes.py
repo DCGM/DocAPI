@@ -43,8 +43,8 @@ POST_JOB_START_RESPONSES = {
         "detail": "The job is not in NEW state and cannot be started manually.",
     }
 }
-@root_router.put(
-    "/v1/jobs/{job_id}/start",
+@debug_router.put(
+    "/jobs/{job_id}/start",
     summary="Start Job",
     response_model=DocAPIResponseOK[NoneType],
     tags=["Debug"],
@@ -81,8 +81,8 @@ async def start_job(
         )
 
 
-@debug_router.get("/http_exception", response_model=List[base_objects.Key], tags=["Debug"])
-async def http_exception(
-        key: model.Key = Depends(require_api_key()),
-        db: AsyncSession = Depends(get_async_session)):
-    raise HTTPException(status_code=418, detail="This is a debug HTTP exception.")
+# @debug_router.get("/http_exception", tags=["Debug"])
+# async def http_exception(
+#         key: model.Key = Depends(require_api_key()),
+#         db: AsyncSession = Depends(get_async_session)):
+#     raise HTTPException(status_code=418, detail="This is a debug HTTP exception.")
