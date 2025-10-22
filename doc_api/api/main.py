@@ -96,7 +96,7 @@ async def startup():
 
 app.include_router(root_router)
 app.include_router(admin_router, prefix="/admin")
-app.include_router(debug_router, prefix="/api/debug")
+app.include_router(debug_router, prefix="/debug")
 
 
 
