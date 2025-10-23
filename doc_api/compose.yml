@@ -12,7 +12,6 @@ services:
       db:
         condition: service_healthy
     networks: [ doc_api_network ]
-    command: "python -m run.py"
 
 
   db:
