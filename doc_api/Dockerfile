@@ -21,9 +21,12 @@ RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Default runtime envs
-ENV APP_HOST=0.0.0.0 \
-    APP_PORT=8888 \
-    PRODUCTION=true
+ENV APP_HOST=0.0.0.0
+ENV APP_PORT=8888
+ENV PRODUCTION=true
+
+ENV BASE_DIR=/app/doc_api_data
+ENV PRODUCTION=true
 
 EXPOSE 8888
 

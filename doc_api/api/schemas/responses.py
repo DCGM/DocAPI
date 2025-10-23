@@ -167,7 +167,7 @@ class DocAPIResponseClientError(DocAPIResponseBase):
         return self
 
 class DocAPIClientErrorException(Exception):
-    def __init__(self, *, status: int, code: AppCode, detail: str, details: Any, headers: Optional[Mapping[str, str]] = None):
+    def __init__(self, *, status: int, code: AppCode, detail: str, details: Optional[Any] = None, headers: Optional[Mapping[str, str]] = None):
         self.status = status
         self.code = code
         self.detail = detail

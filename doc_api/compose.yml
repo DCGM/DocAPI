@@ -1,0 +1,66 @@
+services:
+  doc_api:
+    image: ghcr.io/dcgm/docapi/doc_api:latest
+    ports:
+      - "8888:8888"
+    volumes:
+      - /mnt/zfs1/doc_api/doc_api_data:/app/doc_api_data
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [ doc_api_network ]
+    command: "python -m run.py"
+
+
+  db:
+    image: postgres:alpine
+    volumes:
+      # sudo chown -R 999:999 /mnt/ssd/doc_api/db before first use
+      - /mnt/ssd/doc_api/db:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d ${POSTGRES_DB:-postgres} -U ${POSTGRES_USER:-postgres}"]
+      timeout: 45s
+      interval: 5s
+      retries: 20
+    shm_size: 1g
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    networks: [ doc_api_network ]
+
+
+  db_backup:
+    image: prodrigestivill/postgres-backup-local
+    volumes:
+      - /mnt/zfs1/doc_api/db_backup:/backups
+    expose:
+      - 8001
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SCHEDULE: "0 0 * * *"   # daily 00:00
+      BACKUP_KEEP_DAYS: "7"
+      BACKUP_KEEP_WEEKS: "4"
+      BACKUP_KEEP_MONTHS: "6"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [doc_api_network]
+
+
+networks:
+  doc_api_network: {}
+
