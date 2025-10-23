@@ -14,7 +14,7 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip && pip install -r /app/requirements.txt
 
 # Copy your app source code
-COPY . /app
+COPY . /app/doc_api
 
 # Create a non-root user and fix permissions
 RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /app
