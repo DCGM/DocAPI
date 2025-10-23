@@ -1,8 +1,8 @@
 """init
 
-Revision ID: c828bb3b2213
+Revision ID: 459bb9344774
 Revises: 
-Create Date: 2025-10-23 08:48:18.861111
+Create Date: 2025-10-23 09:27:34.945405
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'c828bb3b2213'
+revision: str = '459bb9344774'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -82,13 +82,11 @@ def upgrade() -> None:
     sa.Column('image_uploaded', sa.Boolean(), nullable=False),
     sa.Column('alto_uploaded', sa.Boolean(), nullable=False),
     sa.Column('page_uploaded', sa.Boolean(), nullable=False),
-    sa.Column('created_date', sa.DateTime(timezone=True), nullable=False),
     sa.Column('job_id', sa.Uuid(), nullable=False),
     sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_images_alto_uploaded'), 'images', ['alto_uploaded'], unique=False)
-    op.create_index(op.f('ix_images_created_date'), 'images', ['created_date'], unique=False)
     op.create_index(op.f('ix_images_image_uploaded'), 'images', ['image_uploaded'], unique=False)
     op.create_index(op.f('ix_images_imagehash'), 'images', ['imagehash'], unique=False)
     op.create_index(op.f('ix_images_job_id'), 'images', ['job_id'], unique=False)
@@ -107,7 +105,6 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_images_job_id'), table_name='images')
     op.drop_index(op.f('ix_images_imagehash'), table_name='images')
     op.drop_index(op.f('ix_images_image_uploaded'), table_name='images')
-    op.drop_index(op.f('ix_images_created_date'), table_name='images')
     op.drop_index(op.f('ix_images_alto_uploaded'), table_name='images')
     op.drop_table('images')
     op.drop_index(op.f('ix_jobs_worker_key_id'), table_name='jobs')

@@ -62,8 +62,6 @@ class Image(Base):
     alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     page_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
 
-    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
-
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('jobs.id'), index=True, nullable=False)
     job: Mapped['Job'] = relationship(back_populates="images", foreign_keys='Image.job_id')
 

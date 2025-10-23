@@ -59,12 +59,6 @@ class Image(BaseModel):
         description="Indicates whether the corresponding PAGE XML file has been uploaded."
     )
 
-    created_date: datetime = Field(
-        ...,
-        examples=["2025-10-17T09:00:00Z"],
-        description="UTC timestamp when the image record was created."
-    )
-
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 

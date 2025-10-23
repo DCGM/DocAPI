@@ -23,8 +23,9 @@ class ImageForJobDefinition(BaseModel):
 
 class JobDefinition(BaseModel):
     images: List[ImageForJobDefinition]
-    alto_required: bool = False
     meta_json_required: bool = False
+    alto_required: bool = False
+    page_required: bool = False
 
 
 async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefinition) -> Tuple[Optional[model.Job], AppCode]:
