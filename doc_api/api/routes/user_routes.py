@@ -571,7 +571,7 @@ PATCH_JOB_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "User can only cancel jobs.",
     },
-    AppCode.JOB_FINISHED: {
+    AppCode.JOB_UNCANCELLABLE: {
         "status": fastapi.status.HTTP_409_CONFLICT,
         "description": f"Job is already finished and cannot be cancelled. Job is in one of the following `state: {base_objects.ProcessingState.CANCELLED}|{base_objects.ProcessingState.DONE}|{base_objects.ProcessingState.ERROR}`",
         "model": DocAPIResponseClientError,
@@ -583,55 +583,6 @@ PATCH_JOB_RESPONSES = {
         "description": "Job cancelled successfully.",
         "model": DocAPIResponseOK,
         "detail": "Job cancelled successfully.",
-    },
-
-    # worker finishing job
-    AppCode.API_KEY_WORKER_FORBIDDEN: {
-        "status": fastapi.status.HTTP_403_FORBIDDEN,
-        "description": "Worker can only mark job as done or error, and update progress.",
-        "model": DocAPIResponseClientError,
-        "detail": "Worker can only mark job as done or error, and update progress.",
-    },
-    AppCode.JOB_UNFINISHABLE: {
-        "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": f"Job cannot be finished. Job is in one of the following `state: {base_objects.ProcessingState.CANCELLED}`",
-        "model": DocAPIResponseClientError,
-        "detail": "Job cannot be finished.",
-        "details" : {"state": f"{base_objects.ProcessingState.CANCELLED.value}"}
-    },
-
-    # worker marking job done
-    AppCode.JOB_RESULT_MISSING: {
-        "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "Result ZIP file has not been uploaded yet.",
-        "model": DocAPIResponseClientError,
-        "detail": "Result ZIP file has not been uploaded yet.",
-    },
-    AppCode.JOB_COMPLETED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job has been marked as done.",
-        "model": DocAPIResponseOK,
-        "detail": "Job has been marked as done.",
-    },
-    AppCode.JOB_ALREADY_COMPLETED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job was already marked as done.",
-        "model": DocAPIResponseOK,
-        "detail": "Job was already marked as done.",
-    },
-
-    # worker marking job failed
-    AppCode.JOB_FAILED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job has been marked as error.",
-        "model": DocAPIResponseOK,
-        "detail": "Job has been marked as error.",
-    },
-    AppCode.JOB_ALREADY_FAILED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job was already marked as error.",
-        "model": DocAPIResponseOK,
-        "detail": "Job was already marked as error.",
     },
 
     # worker updating progress
@@ -648,6 +599,51 @@ PATCH_JOB_RESPONSES = {
         "model_data": base_objects.JobLease,
         "detail": "Job has been updated successfully and the lease has been extended (UTC time).",
     },
+
+    # worker finishing job
+    AppCode.API_KEY_WORKER_FORBIDDEN: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Worker can only mark job as done or error, and update progress.",
+        "model": DocAPIResponseClientError,
+        "detail": "Worker can only mark job as done or error, and update progress.",
+    },
+    AppCode.JOB_UNFINISHABLE: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": f"Job cannot be finished. Job is in one of the following `state: {base_objects.ProcessingState.CANCELLED}`",
+        "model": DocAPIResponseClientError,
+        "detail": "Job cannot be finished.",
+        "details" : {"state": f"{base_objects.ProcessingState.CANCELLED.value}"}
+    },
+    AppCode.JOB_RESULT_MISSING: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job cannot be marked as done. Result ZIP file has not been uploaded yet.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job cannot be marked as done. Result ZIP file has not been uploaded yet.",
+    },
+    AppCode.JOB_COMPLETED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job has been marked as done.",
+        "model": DocAPIResponseOK,
+        "detail": "Job has been marked as done.",
+    },
+    AppCode.JOB_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job has been marked as error.",
+        "model": DocAPIResponseOK,
+        "detail": "Job has been marked as error.",
+    },
+    AppCode.JOB_ALREADY_COMPLETED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job was already marked as done.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was already marked as done.",
+    },
+    AppCode.JOB_ALREADY_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job was already marked as error.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was already marked as error.",
+    }
 }
 @root_router.patch(
     "/v1/jobs/{job_id}",
@@ -736,8 +732,8 @@ async def patch_job(
                             base_objects.ProcessingState.ERROR}:
             raise DocAPIClientErrorException(
                 status=status.HTTP_409_CONFLICT,
-                code=AppCode.JOB_FINISHED,
-                detail=PATCH_JOB_RESPONSES[AppCode.JOB_FINISHED]["detail"],
+                code=AppCode.JOB_UNCANCELLABLE,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UNCANCELLABLE]["detail"],
                 details={"state": f"{db_job.state.value}"}
             )
 

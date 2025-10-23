@@ -53,6 +53,12 @@ class Image(BaseModel):
         description="Indicates whether the corresponding ALTO (OCR) file has been uploaded."
     )
 
+    page_uploaded: bool = Field(
+        ...,
+        examples=[False],
+        description="Indicates whether the corresponding PAGE XML file has been uploaded."
+    )
+
     created_date: datetime = Field(
         ...,
         examples=["2025-10-17T09:00:00Z"],
@@ -111,6 +117,30 @@ class Job(BaseModel):
         None,
         examples=[1],
         description="Number of previous attempts if the job was retried."
+    )
+
+    meta_json_uploaded :  bool = Field(
+        ...,
+        examples=[False],
+        description="Whether Meta JSON file has been uploaded for this job."
+    )
+
+    meta_json_required : bool = Field(
+        ...,
+        examples=[True],
+        description="Whether Meta JSON file is required for this job."
+    )
+
+    alto_required : bool = Field(
+        ...,
+        examples=[True],
+        description="Whether ALTO XML file is required for this job."
+    )
+
+    page_required : bool = Field(
+        ...,
+        examples=[False],
+        description="Whether PAGE XML file is required for this job."
     )
 
     created_date: datetime = Field(

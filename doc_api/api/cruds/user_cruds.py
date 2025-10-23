@@ -154,7 +154,7 @@ async def cancel_job(db: AsyncSession, job_id: UUID) -> AppCode:
             if db_job.state in (base_objects.ProcessingState.DONE,
                                 base_objects.ProcessingState.ERROR,
                                 base_objects.ProcessingState.CANCELLED):
-                return AppCode.JOB_FINISHED
+                return AppCode.JOB_UNCANCELLABLE
 
             db_job.state = base_objects.ProcessingState.CANCELLED
             db_job.finished_date = datetime.now(timezone.utc)
