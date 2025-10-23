@@ -6,7 +6,7 @@ import asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.exc import ProgrammingError
-from doc_api.api.config import config
+from doc_api.config import config
 
 logger = logging.getLogger(__name__)
 

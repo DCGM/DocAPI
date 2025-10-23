@@ -28,7 +28,7 @@ from doc_api.api.validators.alto_validator import validate_alto_basic
 from doc_api.api.validators.page_validator import validate_page_basic
 from doc_api.api.validators.xml_validator import is_well_formed_xml
 from doc_api.db import model
-from doc_api.api.config import config
+from doc_api.config import config
 
 from typing import List
 from uuid import UUID

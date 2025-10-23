@@ -23,7 +23,7 @@ from doc_api.api.routes import admin_router, debug_router, root_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
-from doc_api.api.config import config
+from doc_api.config import config
 from doc_api.tools.mail.mail_logger import get_internal_mail_logger
 from doc_api.db import model
 

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.authentication import hmac_sha256_hex
 from doc_api.api.database import DBError
 from doc_api.api.schemas.responses import AppCode
-from doc_api.api.config import config
+from doc_api.config import config
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
 
