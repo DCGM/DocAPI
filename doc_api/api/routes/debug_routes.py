@@ -2,12 +2,12 @@ import logging
 from types import NoneType
 
 import fastapi
-from fastapi import Depends, status, HTTPException
+from fastapi import Depends, status
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.routes import root_router, debug_router
-from doc_api.api.routes.user_guards import challenge_user_access_to_job, challenge_user_access_to_job
+from doc_api.api.routes import debug_router
+from doc_api.api.guards.user_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
@@ -16,7 +16,6 @@ from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, Do
      DocAPIClientErrorException
 from doc_api.db import model
 
-from typing import List
 from uuid import UUID
 
 

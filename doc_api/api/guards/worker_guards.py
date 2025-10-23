@@ -5,7 +5,7 @@ import fastapi
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.cruds import general_cruds
-from doc_api.api.routes.user_guards import _get_job_access_params
+from doc_api.api.guards.user_guards import _get_job_access_params
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.base_objects import KeyRole, ProcessingState
 from doc_api.api.schemas.responses import DocAPIClientErrorException, AppCode, \

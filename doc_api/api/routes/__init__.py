@@ -7,4 +7,4 @@ root_router = APIRouter()
 admin_router = APIRouter()
 debug_router = APIRouter()
 
-from . import user_routes, worker_routes, admin_routes, debug_routes
+from . import general_routes, user_routes, worker_routes, admin_routes, debug_routes

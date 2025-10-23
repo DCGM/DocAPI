@@ -15,8 +15,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 
 from doc_api.api.authentication import hmac_sha256_hex, AUTHENTICATION_RESPONSES
-from doc_api.api.routes.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
-from doc_api.api.routes.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
+from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
+from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
 from doc_api.api.routes import admin_router, debug_router, root_router
@@ -43,6 +43,10 @@ tags_metadata = [
     },
     {
         "name": "Worker",
+        "description": "",
+    },
+    {
+        "name": "General",
         "description": "",
     },
     {

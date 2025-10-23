@@ -111,15 +111,13 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
 def hmac_sha256_hex(s: str) -> str:
     return hmac.new(config.HMAC_SECRET.encode(), s.encode(), hashlib.sha256).hexdigest()
 
-async def lookup_key(db: AsyncSession, provided_key: str) -> model.Key | None | bool:
+async def lookup_key(db: AsyncSession, provided_key: str) -> Optional[model.Key]:
     digest = hmac_sha256_hex(provided_key)
 
     result = await db.execute(select(model.Key).where(model.Key.key_hash == digest))
     key = result.scalar_one_or_none()
     if key is None:
         return None
-    if not key.active:
-        return False
 
     # Best-effort touch; failure must not block auth
     try:
@@ -131,6 +129,7 @@ async def lookup_key(db: AsyncSession, provided_key: str) -> model.Key | None | 
         )
         await db.commit()
         key.last_used = now  # reflect locally
+
     except Exception:
         await db.rollback()
 

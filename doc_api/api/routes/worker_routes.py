@@ -17,7 +17,7 @@ from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helper import RouteInvariantError
-from doc_api.api.routes.worker_guards import challenge_worker_access_to_processing_job
+from doc_api.api.guards.worker_guards import challenge_worker_access_to_processing_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
     DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
