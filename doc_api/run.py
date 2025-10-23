@@ -1,9 +1,9 @@
 if __name__ == "__main__":
     import uvicorn
-    from doc_api.api.config import config
+    from doc_api.config import config
 
     uvicorn.run("api.main:app",
                 host=config.APP_HOST,
                 port=config.APP_PORT,
-                reload=True,
+                reload=not config.PRODUCTION,
                 log_config=config.LOGGING_CONFIG)

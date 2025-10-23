@@ -21,7 +21,7 @@ from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, Do
     DocAPIClientErrorException
 
 from doc_api.db import model
-from doc_api.api.config import config
+from doc_api.config import config
 from uuid import UUID
 
 

@@ -16,8 +16,9 @@ TRUE_VALUES = {"true", "1"}
 
 class Config:
     def __init__(self):
-        self.APP_HOST = os.getenv("APP_HOST", "localhost")
+        self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
         self.APP_PORT = int(os.getenv("APP_PORT", "8888"))
+        self.PRODUCTION = self._env_bool("PRODUCTION", False)
 
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
 

@@ -22,7 +22,7 @@ from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
     DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
 from doc_api.db import model
-from doc_api.api.config import config
+from doc_api.config import config
 
 from uuid import UUID
 
