@@ -20,26 +20,51 @@ class Config:
         self.APP_PORT = int(os.getenv("APP_PORT", "8888"))
         self.PRODUCTION = self._env_bool("PRODUCTION", False)
 
+        # if the app is hosted ${APP_BASE_URL}/subpath, set this to "/subpath"
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
+        # where the app is hosted
+        self.APP_BASE_URL = os.getenv("APP_BASE_URL", os.path.join(f"http://{self.APP_HOST}:{self.APP_PORT}", self.APP_URL_ROOT))
 
+
+        # sender name for emails sent by the app t admins
         self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
+
+        # THIS MUST BE CHANGED IN PRODUCTION
+        self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
+        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
+
+        # prefix for API keys da_cIOkx8RI2A5RO1GIuhhMvcZux94d8NlsFiMF_HOQCrE
+        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
+
+        # displayed in the web interface footer
+        # return in detail on unsuccessful authentication
         # used for 401 -> headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
+
         # displayed in the web interface footer
         self.SOFTWARE_VERSION = os.getenv("SOFTWARE_VERSION", "1.0")
 
-        self.BASE_DIR = os.getenv("BASE_DIR", "../../doc_api_data")
+        # return in detail on unsuccessful authentication
+        self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
+
+        self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
         self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
 
-        self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
-        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
-        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
-        self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
+        # job processing configuration
+        ################################################################################################################
+        # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
+        #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
+        #         - the job is marked as QUEUED
+        #     else
+        #         - the job is marked as ERROR
+        self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
+        self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
+        self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
 
-        # Validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
+        # validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
         ################################################################################################################
         # Per-check toggles for ALTO & PAGE XML validation (all default to False)
         # Enable by setting env vars to one of TRUE_VALUES: {"true", "1"} (case-insensitive).
@@ -59,21 +84,10 @@ class Config:
             "has_text": self._env_bool("PAGE_VALIDATE_HAS_TEXT", False),
         }
 
-        # JOB processing configuration
-        ################################################################################################################
-        # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
-        #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
-        #         - the job is marked as QUEUED
-        #     else
-        #         - the job is marked as FAILED
-        self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
-        self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
-        self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
-
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
 
-        # Internal mailing setting for doc_api.internal_mail_logger
+        # internal mailing setting for doc_api.internal_mail_logger
         self.INTERNAL_MAIL_SERVER = os.getenv("INTERNAL_MAIL_SERVER", None)
         self.INTERNAL_MAIL_PORT = os.getenv("INTERNAL_MAIL_PORT", 25)
         self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
@@ -86,7 +100,7 @@ class Config:
             self.INTERNAL_MAIL_RECEIVER_MAILS = ['user@mail.server.cz']
         self.INTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("INTERNAL_MAIL_FLOOD_LEVEL", 10))
 
-        # External mailing setting for doc_api.external_mail_logger
+        # external mailing setting for doc_api.external_mail_logger
         self.EXTERNAL_MAIL_SERVER = os.getenv("EXTERNAL_MAIL_SERVER", None)
         self.EXTERNAL_MAIL_PORT = os.getenv("EXTERNAL_MAIL_PORT", 25)
         self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)

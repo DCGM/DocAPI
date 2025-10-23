@@ -210,7 +210,7 @@ async def patch_job(
                         f"\n\n`progress` is clipped to range `[0.0, 1.0]`."
                         "\n\nLease is renewed automatically when updating progress. "
                         "If you only want to renew the lease without updating progress "
-                        f"use [`PATCH /v1/jobs/{{job_id}}/lease`]({config.APP_URL_ROOT}/docs#/Worker/patch_lease_v1_jobs__job_id__lease_patch). "
+                        f"use [`PATCH /v1/jobs/{{job_id}}/lease`]({config.APP_BASE_URL}/docs#/Worker/9999-patch_job_v1_jobs__job_id__patch). "
                     ),
                     "value": {
                         "progress": 0.7,
