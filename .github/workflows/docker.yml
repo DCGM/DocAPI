@@ -10,13 +10,14 @@ permissions:
   packages: write            # to push to GHCR
 
 jobs:
-  release:
+  precheck:
     runs-on: ubuntu-latest
-
+    outputs:
+      on_main: ${{ steps.onmain.outputs.on_main }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0     # needed for ancestry check and retagging
+          fetch-depth: 0     # needed for ancestry check
 
       # Proceed only if the tagged commit is reachable from main
       - name: Check if tag commit is on main
@@ -29,11 +30,15 @@ jobs:
             echo "on_main=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Stop if not on main
-        if: steps.onmain.outputs.on_main == 'false'
-        run: |
-          echo "Tag commit not on 'main' yet — skipping publish & retag."
-          exit 0
+  release:
+    needs: precheck
+    if: needs.precheck.outputs.on_main == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # needed for ancestry check and retagging
 
       # Parse tag components (you always use the 'v' prefix)
       - name: Parse version components
