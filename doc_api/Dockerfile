@@ -7,8 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
-
 # Copy and install dependencies
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip && pip install -r /app/requirements.txt
@@ -25,5 +23,7 @@ ENV PRODUCTION=true
 ENV PYTHONPATH=/app
 
 EXPOSE 8888
+
+WORKDIR /app/doc_api
 
 CMD ["python", "-m", "doc_api.run"]
