@@ -151,7 +151,7 @@ PUT_IMAGE_RESPONSES = {
     AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
 @root_router.put(
-    " /v1/jobs/{job_id}/images/{image_name}/files/image",
+    "/v1/jobs/{job_id}/images/{image_name}/files/image",
     response_model=DocAPIResponseOK[NoneType],
     summary="Upload IMAGE",
     tags=["User"],
