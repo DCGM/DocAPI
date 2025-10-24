@@ -72,47 +72,38 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      # Build/push all images defined below (extendable matrix)
-      - name: Build & push images
+      - name: Build & push image
         run: |
           set -euo pipefail
-
+          
           OWNER="${{ steps.meta.outputs.owner_lc }}"
           VERSION="${{ steps.ver.outputs.version }}"
           MINOR="${{ steps.ver.outputs.minor }}"
           MAJOR="${{ steps.ver.outputs.major }}"
           BUILD_DATE="${{ steps.meta.outputs.build_date }}"
           COMMIT_SHA="${GITHUB_SHA}"
-
-          # -------- matrix emulation: add rows here as you add subprojects --------
-          # name|context|dockerfile|image_name
-          rows=(
-            "doc_api|./doc_api|./doc_api/Dockerfile|doc-api"
-            # "doc_client|./doc_client|./doc_client/Dockerfile|doc-client"   # uncomment when ready
-          )
-
-          for row in "${rows[@]}"; do
-            IFS='|' read -r NAME CONTEXT DOCKERFILE IMAGE_NAME <<< "$row"
-            IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}"
-
-            echo "==> Building ${NAME} -> ${IMAGE}:${VERSION}"
-
-            docker build \
-              -f "${DOCKERFILE}" \
-              -t "${IMAGE}:${VERSION}" \
-              --build-arg VERSION="${VERSION}" \
-              --build-arg COMMIT_SHA="${COMMIT_SHA}" \
-              --build-arg BUILD_DATE="${BUILD_DATE}" \
-              "${CONTEXT}"
-
-            docker push "${IMAGE}:${VERSION}"
-
-            # Floating tags + latest
-            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MINOR}"
-            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MAJOR}"
-            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:latest"
-
-            docker push "${IMAGE}:${MINOR}"
-            docker push "${IMAGE}:${MAJOR}"
-            docker push "${IMAGE}:latest"
-          done
+          
+          IMAGE="ghcr.io/${OWNER}/doc-api"
+          CONTEXT="./doc_api"
+          DOCKERFILE="./doc_api/Dockerfile"
+          
+          echo "==> Building doc-api -> ${IMAGE}:${VERSION}"
+          
+          docker build \
+            -f "${DOCKERFILE}" \
+            -t "${IMAGE}:${VERSION}" \
+            --build-arg VERSION="${VERSION}" \
+            --build-arg COMMIT_SHA="${COMMIT_SHA}" \
+            --build-arg BUILD_DATE="${BUILD_DATE}" \
+            "${CONTEXT}"
+          
+          docker push "${IMAGE}:${VERSION}"
+          
+          # Floating tags + latest
+          docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MINOR}"
+          docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MAJOR}"
+          docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:latest"
+          
+          docker push "${IMAGE}:${MINOR}"
+          docker push "${IMAGE}:${MAJOR}"
+          docker push "${IMAGE}:latest"
