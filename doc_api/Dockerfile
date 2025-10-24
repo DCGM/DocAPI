@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.revision=$COMMIT_SHA
 LABEL org.opencontainers.image.created=$BUILD_DATE
 LABEL org.opencontainers.image.authors="Jan Kohút"
 
-ENV APP_VERSION=$VERSION
+ENV APP_VERSION=${VERSION:-custom}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
