@@ -110,8 +110,6 @@ async def update_key(*, db: AsyncSession, key_update: base_objects.KeyUpdate) ->
                 key.role = key_update.role
             if key_update.active is not None:
                 key.active = key_update.active
-            if key_update.readonly is not None:
-                key.readonly = key_update.readonly
 
             return AppCode.KEY_UPDATED
 

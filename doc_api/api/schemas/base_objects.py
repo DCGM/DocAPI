@@ -284,12 +284,6 @@ class Key(BaseModel):
         examples=[True],
     )
 
-    readonly: bool = Field(
-        ...,
-        description="Whether the key has read-only access to the API.",
-        examples=[False],
-    )
-
     created_date: datetime = Field(
         ...,
         description="Timestamp when the key was created (in UTC).",
@@ -322,7 +316,6 @@ class KeyUpdate(BaseModel):
     role: Optional[KeyRole] = None
 
     active: Optional[bool] = None
-    readonly: Optional[bool] = None
 
 
 def model_example(model_type: Any) -> Any:

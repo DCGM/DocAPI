@@ -31,9 +31,10 @@ from doc_api.db import model
 exception_logger = logging.getLogger('doc_api.exception_logger')
 exception_logger.propagate = False
 
+internal_mail_logger = get_internal_mail_logger().logger
+
 
 logger = logging.getLogger(__name__)
-internal_mail_logger = get_internal_mail_logger().logger
 
 
 tags_metadata = [
@@ -68,7 +69,6 @@ app = FastAPI(openapi_tags=tags_metadata,
 
 @app.on_event("startup")
 async def startup():
-    logging.config.dictConfig(config.LOGGING_CONFIG)
     if getattr(config, "ADMIN_KEY", None):
         digest = hmac_sha256_hex(config.ADMIN_KEY)
         async with open_session() as db:
