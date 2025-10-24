@@ -41,16 +41,14 @@ def init_and_update_db():
 async def get_db_state() -> Tuple[str, Optional[str]]:
     engine = create_async_engine(config.DATABASE_URL, poolclass=NullPool)
     async with engine.connect() as conn:
-        # how many user tables in public? (adjust schema if needed)
-        total_tables = (
-            await conn.execute(text("""
-                SELECT COUNT(*) 
-                FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            """))
-        ).scalar_one()
-
-        if total_tables == 0:
+        rows = (await conn.execute(text("""
+                        SELECT tablename
+                        FROM pg_catalog.pg_tables
+                        WHERE schemaname = 'public'
+                        ORDER BY tablename
+                    """))).fetchall()
+        tables = [r[0] for r in rows]
+        if len(tables) == 0:
             await engine.dispose()
             return "empty", None
 
