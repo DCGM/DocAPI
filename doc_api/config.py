@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import time
@@ -56,6 +57,34 @@ class Config:
         self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
         # if True, skip creating DB and alembic upgrade, simply assume the DB is ready
         self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
+
+        # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+        self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps({
+                    "IMAGE job": {
+                        "summary": "Default",
+                        "description": "If job requires ALTO XML, PAGE XML or Meta JSON files, the respective flags must be set to true.",
+                        "value": {
+                            "images": [
+                                {
+                                  "name": "image0.jpg",
+                                  "order": 0
+                                },
+                                {
+                                  "name": "image1.jpg",
+                                  "order": 1
+                                }
+                            ],
+                            "meta_json_required": False,
+                            "alto_required": False,
+                            "page_required": False
+                        }}})))
+
+        # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES", json.dumps({
+                    "object": {"summary": "JSON object", "value": {"engine": "ocr", "version": 2}},
+                    "array": {"summary": "JSON array", "value": ["step1", "step2", "step3"]},
+                    "primitive": {"summary": "Primitive value", "value": True},
+                })))
 
         # job processing configuration
         ################################################################################################################

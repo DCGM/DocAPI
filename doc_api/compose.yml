@@ -8,6 +8,31 @@ services:
       - /mnt/zfs1/doc_api/doc_api_data:/app/doc_api_data
     env_file:
       - .env
+    environment:
+      # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+      JOB_DEFINITION_EXAMPLES: |
+        {
+          "IMAGE job": {
+            "summary": "Default",
+            "description": "If job requires ALTO XML, PAGE XML or Meta JSON files, the respective flags must be set to true.",
+            "value": {
+              "images": [
+                { "name": "image0.jpg", "order": 0 },
+                { "name": "image1.jpg", "order": 1 }
+              ],
+              "meta_json_required": false,
+              "alto_required": false,
+              "page_required": false
+            }
+          }
+        }
+      # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+      META_JSON_EXAMPLES: |
+        {
+          "object": {"summary": "JSON object", "value": {"engine": "ocr", "version": 2}},
+          "array": {"summary": "JSON array", "value": ["step1", "step2", "step3"]},
+          "primitive": {"summary": "Primitive value", "value": true}
+        }
     restart: unless-stopped
     # if using traefik, comment out the ports section above and uncomment the labels section below (add traefik network)
     # labels:
