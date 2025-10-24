@@ -51,8 +51,8 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -fa ${{ steps.ver.outputs.major }} -m "Move ${{ steps.ver.outputs.major }} -> ${{ steps.ver.outputs.version }}"
-          git tag -fa ${{ steps.ver.outputs.minor }} -m "Move ${{ steps.ver.outputs.minor }} -> ${{ steps.ver.outputs.version }}"
+          git tag -fa ${{ steps.ver.outputs.major }} -m "${{ steps.ver.outputs.major }} -> ${{ steps.ver.outputs.version }}"
+          git tag -fa ${{ steps.ver.outputs.minor }} -m "${{ steps.ver.outputs.minor }} -> ${{ steps.ver.outputs.version }}"
           git push origin ${{ steps.ver.outputs.major }} --force
           git push origin ${{ steps.ver.outputs.minor }} --force
 
@@ -82,8 +82,8 @@ jobs:
           # -------- matrix emulation: add rows here as you add subprojects --------
           # name|context|dockerfile|image_name
           rows=(
-            "doc_api|./doc_api|./doc_api/Dockerfile|docapi"
-            # "doc_client|./doc_client|./doc_client/Dockerfile|docclient"   # uncomment when ready
+            "doc_api|./doc_api|./doc_api/Dockerfile|doc-api"
+            # "doc_client|./doc_client|./doc_client/Dockerfile|doc-client"   # uncomment when ready
           )
 
           for row in "${rows[@]}"; do
