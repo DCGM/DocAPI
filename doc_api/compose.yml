@@ -14,7 +14,7 @@ services:
         {
           "IMAGE job": {
             "summary": "Default",
-            "description": "If job requires ALTO XML, PAGE XML or Meta JSON files, the respective flags must be set to true.",
+            "description": "Simple job with two images.",
             "value": {
               "images": [
                 { "name": "image0.jpg", "order": 0 },

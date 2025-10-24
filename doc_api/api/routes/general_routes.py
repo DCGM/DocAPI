@@ -160,7 +160,7 @@ PATCH_JOB_RESPONSES = {
 @root_router.patch(
     "/v1/jobs/{job_id}",
     summary="Update Job",
-    response_model=DocAPIResponseOK[NoneType],
+    response_model=DocAPIResponseOK[NoneType] | DocAPIResponseOK[base_objects.JobLease],
     tags=["User", "Worker"],
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",

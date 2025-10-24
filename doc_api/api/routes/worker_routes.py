@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 import os
 import zipfile
 from types import NoneType
@@ -61,14 +62,11 @@ async def post_lease(
     db_job, lease_expire_at, server_time, code = await worker_cruds.lease_job_to_worker(db=db, worker_key_id=key.id)
 
     if code == AppCode.JOB_LEASED:
-        return DocAPIResponseOK[base_objects.Job](
+        return DocAPIResponseOK[base_objects.JobLease](
             status=fastapi.status.HTTP_200_OK,
             code=AppCode.JOB_LEASED,
             detail=POST_LEASE_RESPONSES[AppCode.JOB_LEASED]["detail"],
-            data=base_objects.JobLease(
-                id=db_job.id,
-                lease_expire_at=lease_expire_at,
-                server_time=server_time),
+            data=base_objects.JobLease(id=db_job.id, lease_expire_at=lease_expire_at, server_time=server_time),
         )
     elif code == AppCode.JOB_QUEUE_EMPTY:
         return validate_ok_response(
@@ -93,7 +91,7 @@ PATCH_LEASE_RESPONSES = {
 }
 @root_router.patch(
     "/v1/jobs/{job_id}/lease",
-    response_model=base_objects.JobLease,
+    response_model=DocAPIResponseOK[base_objects.JobLease],
     summary="Extend Lease",
     tags=["Worker"],
     description="Extend the lease time for a specific job that is currently being processed by the worker.",
@@ -155,7 +153,7 @@ GET_IMAGE_RESPONSES = {
     AppCode.IMAGE_DOWNLOADED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Binary data of the requested IMAGE file, format not guaranteed but usually JPEG/PNG.",
-        "content_type": "image/jpeg",
+        "content_type": "image/*",
         "example_value": "(binary IMAGE file content)"
     },
     AppCode.IMAGE_GONE: {
@@ -190,7 +188,8 @@ async def get_image(
                 code=AppCode.IMAGE_GONE,
                 detail=GET_IMAGE_RESPONSES[AppCode.IMAGE_GONE]["detail"],
             )
-        return FileResponse(image_path, media_type="image/jpeg", filename=db_image.name)
+        media_type = mimetypes.guess_type(image_path)[0] or "image/*"
+        return FileResponse(image_path, media_type=media_type, filename=db_image.name)
 
     elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
         raise DocAPIClientErrorException(
@@ -355,7 +354,7 @@ GET_METADATA = {
     }
 }
 @root_router.get(
-    "/v1/jobs/{job_id}/images/{image_id}/files/metadata",
+    "/v1/jobs/{job_id}/files/metadata",
     response_class=FileResponse,
     summary="Download Meta JSON",
     tags=["Worker"],
@@ -392,10 +391,16 @@ async def get_metadata(
 
 POST_RESULT_RESPONSES = {
     AppCode.JOB_RESULT_UPLOADED: {
-        "status": fastapi.status.HTTP_200_OK,
+        "status": fastapi.status.HTTP_201_CREATED,
         "description": "Result ZIP archive uploaded successfully.",
         "model": DocAPIResponseOK,
         "detail": "Result ZIP archive uploaded successfully.",
+    },
+    AppCode.JOB_RESULT_REUPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Result ZIP archive re-uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Result ZIP archive re-uploaded successfully.",
     },
     AppCode.JOB_RESULT_INVALID: {
         "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -439,11 +444,19 @@ async def post_result(
                 detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
             )
 
+    already_exists = await aiofiles_os.path.exists(final_path)
     os.replace(tmp_path, final_path)
 
-    return DocAPIResponseOK[NoneType](
-        status=fastapi.status.HTTP_200_OK,
-        code=AppCode.JOB_RESULT_UPLOADED,
-        detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
-    )
+    if already_exists:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_RESULT_REUPLOADED,
+            detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_REUPLOADED]["detail"]
+        )
+    else:
+        return DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_201_CREATED,
+            code=AppCode.JOB_RESULT_UPLOADED,
+            detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
+        )
 
