@@ -1,13 +1,19 @@
 services:
-  doc_api:
+  doc-api:
     image: ghcr.io/dcgm/docapi/doc_api:latest
     ports:
-      - "8888:8888"
+      - "9999:9999"
     volumes:
       - /mnt/zfs1/doc_api/doc_api_data:/app/doc_api_data
     env_file:
       - .env
     restart: unless-stopped
+    # if using traefik, comment out the ports section above and uncomment the labels section below (add traefik network)
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.doc-api.rule=Host(`doc-api.com`)
+    #   - traefik.http.routers.doc-api.entrypoints=websecure
+    #   - traefik.http.services.doc-api.loadbalancer.server.port=9999
     depends_on:
       db:
         condition: service_healthy
@@ -37,7 +43,7 @@ services:
     networks: [ doc_api_network ]
 
 
-  db_backup:
+  db-backup:
     image: prodrigestivill/postgres-backup-local
     volumes:
       - /mnt/zfs1/doc_api/db_backup:/backups
