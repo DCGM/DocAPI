@@ -85,7 +85,7 @@ async def post_job(
     db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
     db_images, images_code = await general_cruds.get_job_images(db=db, job_id=db_job.id)
 
-    if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGE_RETRIEVED:
+    if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGES_RETRIEVED:
         job = base_objects.Job.model_validate(db_job).model_dump()
         images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
         data = base_objects.JobWithImages(**job, images=images)
