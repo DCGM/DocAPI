@@ -90,7 +90,7 @@ async def post_job(
         images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
         data = base_objects.JobWithImages(**job, images=images)
         # FastAPI automatically validates only for 200, so we need to do it manually for 201 here
-        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
+        return validate_ok_response(DocAPIResponseOK[base_objects.JobWithImages](
             status=status.HTTP_201_CREATED,
             code=AppCode.JOB_CREATED,
             detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
