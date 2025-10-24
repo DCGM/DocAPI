@@ -1,7 +1,24 @@
 # doc_api/Dockerfile
 FROM python:3.10-slim-bookworm
 
+# this is for GitHub Actions to inject build metadata
+ARG VERSION
+ARG COMMIT_SHA
+ARG BUILD_DATE
+
 ARG DEBIAN_FRONTEND=noninteractive
+
+LABEL org.opencontainers.image.title="DocAPI"
+LABEL org.opencontainers.image.description="API for document processing."
+LABEL org.opencontainers.image.version=$VERSION
+LABEL org.opencontainers.image.url="https://github.com/DCGM/DocAPI"
+LABEL org.opencontainers.image.source="https://github.com/DCGM/DocAPI.git"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
+LABEL org.opencontainers.image.created=$BUILD_DATE
+LABEL org.opencontainers.image.authors="Jan Kohút"
+
+ENV APP_VERSION=$VERSION
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,15 +31,29 @@ RUN python -m pip install --upgrade pip && pip install -r /app/requirements.txt
 # Copy your app source code
 COPY . /app/doc_api
 
-# Default runtime envs
-ENV APP_HOST=0.0.0.0
-ENV APP_PORT=8888
-ENV PRODUCTION=true
-ENV BASE_DIR=/app/doc_api_data
-ENV PRODUCTION=true
 ENV PYTHONPATH=/app
 
-EXPOSE 8888
+# Default runtime envs
+ENV APP_HOST=0.0.0.0
+ENV APP_PORT=9999
+EXPOSE 9999
+
+ENV PRODUCTION=true
+
+# bind this to a volume in your docker-compose or docker run command
+ENV BASE_DIR=/app/doc_api_data
+
+# if the database does not exist, it will be created on startup
+# replace with the actual user, password, host and port of postgres
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=postgres
+ENV POSTGRES_HOST=localhost
+ENV POSTGRES_PORT=5432
+ENV DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/doc_api_db
+# if true, allow alembic to upgrade existing DB (upgrading to new image versions wit old DB)
+ENV DATABASE_ALLOW_UPGRADE=false
+# if true, skip creating DB and alembic upgrade, simply assume the DB is ready
+ENV DATABASE_FORCE=false
 
 WORKDIR /app/doc_api
 

@@ -4,6 +4,7 @@ from types import NoneType
 
 import fastapi
 from fastapi import Depends, status, Request, Body
+from fastapi.responses import RedirectResponse
 
 from aiofiles import os as aiofiles_os
 
@@ -26,6 +27,11 @@ from uuid import UUID
 
 
 logger = logging.getLogger(__name__)
+
+
+@root_router.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/docs")
 
 
 GET_JOB_RESPONSES = {

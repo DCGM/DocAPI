@@ -17,7 +17,7 @@ TRUE_VALUES = {"true", "1"}
 class Config:
     def __init__(self):
         self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
-        self.APP_PORT = int(os.getenv("APP_PORT", "8888"))
+        self.APP_PORT = int(os.getenv("APP_PORT", "9999"))
         self.PRODUCTION = self._env_bool("PRODUCTION", False)
 
         # if the app is hosted ${APP_BASE_URL}/subpath, set this to "/subpath"
@@ -52,10 +52,10 @@ class Config:
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
+        # if True, allow alembic to upgrade existing DB
+        self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
         # if True, skip creating DB and alembic upgrade, simply assume the DB is ready
         self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
-        # if True, allow alembic to upgrade existing DB, in production manually run alembic might be preferred
-        self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
 
         # job processing configuration
         ################################################################################################################

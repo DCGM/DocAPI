@@ -36,6 +36,8 @@ def init_and_update_db():
             else:
                 raise RuntimeError("Database schema is out of date and DATABASE_ALLOW_UPDATE=False. "
                                    "Please update the database schema manually or set DATABASE_ALLOW_UPDATE=True.")
+        else:
+            logger.info("Database schema is up to date.")
 
 
 async def get_db_state() -> Tuple[str, Optional[str]]:

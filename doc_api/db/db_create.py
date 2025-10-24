@@ -52,6 +52,8 @@ async def create_database_if_does_not_exist():
                 # Quote the identifier safely (double any double-quotes)
                 safe = db_name.replace('"', '""')
                 await conn.execute(text(f'CREATE DATABASE "{safe}"'))
+            else:
+                logger.info(f"Database '{db_name}' exists.")
     finally:
         # Ensure everything is torn down before the loop ends
         await engine.dispose()

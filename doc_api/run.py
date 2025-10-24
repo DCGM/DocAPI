@@ -14,7 +14,7 @@ if __name__ == "__main__":
     from alembic.script import ScriptDirectory
 
     from doc_api.db.db_create import create_database_if_does_not_exist
-    from doc_api.db.db_update import get_db_state, init_and_update_db
+    from doc_api.db.db_update import init_and_update_db
 
 
     def run_alembic_upgrade(db_url: str):
@@ -33,6 +33,8 @@ if __name__ == "__main__":
     else:
         logger.warning("Skipping creating DB and alembic upgrade due to DB_FORCE=True. "
                        "Assuming the database exist and the schema is up to date.")
+
+    logger.info(f"Running DocAPI on {config.APP_HOST}:{config.APP_PORT} (production={config.PRODUCTION})")
 
     uvicorn.run("api.main:app",
                 host=config.APP_HOST,
