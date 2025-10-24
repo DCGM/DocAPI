@@ -197,8 +197,7 @@ async def patch_key(
 
     if key_update.label is None and \
          key_update.role is None and \
-            key_update.active is None and \
-                key_update.readonly is None:
+            key_update.active is None:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_400_BAD_REQUEST,
             code=AppCode.KEY_UPDATE_NO_FIELDS,

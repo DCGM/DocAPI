@@ -77,7 +77,6 @@ class Key(Base):
     role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)
 
     active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
-    readonly: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

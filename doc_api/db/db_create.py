@@ -3,9 +3,8 @@ import logging
 import sys
 import asyncio
 
-from sqlalchemy import text
+from sqlalchemy import text, NullPool, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.exc import ProgrammingError
 from doc_api.config import config
 
 logger = logging.getLogger(__name__)
@@ -29,26 +28,34 @@ def main():
 
     logger.info(' '.join(sys.argv))
 
-    asyncio.run(create_database_async())
+    asyncio.run(create_database_if_does_not_exist())
 
-async def create_database_async():
 
-    # Extract database name and create an engine for the default database
-    db_url = config.DATABASE_URL
-    db_name = db_url.rsplit("/", 1)[-1]  # Extracts the database name
-    db_url_root = db_url.rsplit("/", 1)[0] + "/postgres"  # Connect to default DB (PostgreSQL)
+async def create_database_if_does_not_exist():
+    url = make_url(config.DATABASE_URL)
+    db_name = url.database or "postgres"
+    root_url = url.set(database="postgres").render_as_string(hide_password=False)
 
-    engine = create_async_engine(db_url_root)
+    # Use a short-lived engine with NO pooling
+    engine = create_async_engine(root_url, poolclass=NullPool)
 
-    async with engine.begin() as conn:
-        try:
-            await conn.execute(text("COMMIT"))
-            await conn.execute(text(f"CREATE DATABASE {db_name}"))
-            logger.info(f"Database '{db_name}' created successfully!")
-        except ProgrammingError:
-            logger.info(f"Database '{db_name}' already exists or cannot be created")
+    try:
+        async with engine.connect() as conn:
+            # CREATE DATABASE must be outside of any transaction
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
 
-    await engine.dispose()
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": db_name},
+            )
+            if not exists:
+                # Quote the identifier safely (double any double-quotes)
+                safe = db_name.replace('"', '""')
+                await conn.execute(text(f'CREATE DATABASE "{safe}"'))
+    finally:
+        # Ensure everything is torn down before the loop ends
+        await engine.dispose()
+
 
 if __name__ == "__main__":
     main()
