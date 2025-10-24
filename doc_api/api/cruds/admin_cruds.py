@@ -105,6 +105,14 @@ async def update_key(*, db: AsyncSession, key_update: base_objects.KeyUpdate) ->
                 return AppCode.KEY_NOT_FOUND
 
             if key_update.label is not None:
+                already_exists = await db.execute(
+                    select(model.Key).where(
+                        model.Key.label == key_update.label,
+                        model.Key.id != key.id
+                    )
+                )
+                if already_exists.scalar_one_or_none() is not None:
+                    return AppCode.KEY_ALREADY_EXISTS
                 key.label = key_update.label
             if key_update.role is not None:
                 key.role = key_update.role

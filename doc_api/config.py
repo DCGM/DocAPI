@@ -62,7 +62,7 @@ class Config:
         self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps({
                     "IMAGE job": {
                         "summary": "Default",
-                        "description": "If job requires ALTO XML, PAGE XML or Meta JSON files, the respective flags must be set to true.",
+                        "description": "Simple job with two images.",
                         "value": {
                             "images": [
                                 {

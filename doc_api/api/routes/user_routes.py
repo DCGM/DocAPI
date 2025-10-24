@@ -73,7 +73,12 @@ POST_JOB_RESPONSES = {
     "/v1/jobs",
     summary="Create Job",
     tags=["User"],
-    description="Create a new job with the specified images and options.",
+    description="Create a new job with the specified images and options.\n\n"
+                "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
+                "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
+                "`page_required`, `meta_json_required` must be set to `true`.\n\n"
+                "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
+                "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.",
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
@@ -450,7 +455,7 @@ PUT_META_JSON_RESPONSES = {
     }
 }
 @root_router.put(
-    "/v1/jobs/{job_id}/images/{image_name}/files/metadata",
+    "/v1/jobs/{job_id}/files/metadata",
     response_model=DocAPIResponseOK[NoneType],
     summary="Upload Meta JSON",
     tags=["User"],

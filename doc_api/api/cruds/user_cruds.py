@@ -42,6 +42,7 @@ async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefin
                 owner_key_id=key_id,
                 definition=job_definition.model_dump(mode="json"),
                 alto_required=job_definition.alto_required,
+                page_required=job_definition.page_required,
                 meta_json_required=job_definition.meta_json_required)
 
             db.add(db_job)

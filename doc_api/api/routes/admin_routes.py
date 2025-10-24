@@ -133,7 +133,7 @@ POST_KEY_SECRET_RESPONSES = {
     tags=["Admin"],
     description="Create new secrets for an existing API key. The old secrets will be invalidated.",
     status_code=fastapi.status.HTTP_201_CREATED,
-    responses=make_responses(POST_KEY_RESPONSES))
+    responses=make_responses(POST_KEY_SECRET_RESPONSES))
 async def post_key_secrets(
         request: Request,
         label: str,
@@ -151,7 +151,7 @@ async def post_key_secrets(
     elif code == AppCode.KEY_SECRET_CREATION_FAILED:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
-            code=AppCode.KEY_NOT_FOUND,
+            code=AppCode.KEY_SECRET_CREATION_FAILED,
             detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_SECRET_CREATION_FAILED]["detail"]
         )
     elif code == AppCode.KEY_NOT_FOUND:
@@ -160,6 +160,8 @@ async def post_key_secrets(
             code=AppCode.KEY_NOT_FOUND,
             detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_NOT_FOUND]["detail"]
         )
+
+    raise RouteInvariantError(request=request, code=code)
 
 
 PATCH_KEY_RESPONSES = {
@@ -175,6 +177,12 @@ PATCH_KEY_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "At least one field must be provided to update the API key.",
     },
+    AppCode.KEY_ALREADY_EXISTS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "An API key with the specified label already exists.",
+        "model": DocAPIResponseClientError,
+        "detail": "An API key with the specified label already exists.",
+    },
     AppCode.KEY_NOT_FOUND: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
         "description": "The specified API key was not found.",
@@ -187,7 +195,7 @@ PATCH_KEY_RESPONSES = {
     summary="Update Key",
     response_model=DocAPIResponseOK[NoneType],
     tags=["Admin"],
-    description="",
+    description="Update the label, role, or active status of an existing API key.",
     responses=make_responses(PATCH_KEY_RESPONSES))
 async def patch_key(
         request: Request,
@@ -212,6 +220,12 @@ async def patch_key(
             code=AppCode.KEY_UPDATED,
             detail=PATCH_KEY_RESPONSES[AppCode.KEY_UPDATED]["detail"],
         ))
+    elif code == AppCode.KEY_ALREADY_EXISTS:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.KEY_ALREADY_EXISTS,
+            detail=PATCH_KEY_RESPONSES[AppCode.KEY_ALREADY_EXISTS]["detail"]
+        )
     elif code == AppCode.KEY_NOT_FOUND:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_404_NOT_FOUND,
