@@ -8,7 +8,7 @@ import fastapi
 
 import cv2
 import numpy as np
-from fastapi import Depends, UploadFile, status, Request
+from fastapi import Depends, UploadFile, status, Request, Body
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
@@ -30,7 +30,7 @@ from doc_api.api.validators.xml_validator import is_well_formed_xml
 from doc_api.db import model
 from doc_api.config import config
 
-from typing import List
+from typing import List, Union, Annotated
 from uuid import UUID
 
 
@@ -77,7 +77,7 @@ POST_JOB_RESPONSES = {
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
-        job_definition: user_cruds.JobDefinition,
+        job_definition: user_cruds.JobDefinition = Body(..., openapi_examples=config.JOB_DEFINITION_EXAMPLES),
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
@@ -237,11 +237,12 @@ PUT_ALTO_RESPONSES = {
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.ALTO_SCHEMA_INVALID: {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
         "description": "ALTO XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
         "detail": "ALTO XML file does not conform to the required schema.",
     },
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
 @root_router.put(
     "/v1/jobs/{job_id}/images/{image_name}/files/alto",
@@ -268,7 +269,7 @@ async def put_alto(
         )
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
-    if code != AppCode.IMAGE_RETRIEVED:
+    if code == AppCode.IMAGE_RETRIEVED:
         data = await file.read()
         if not is_well_formed_xml(data):
             raise DocAPIClientErrorException(
@@ -280,7 +281,7 @@ async def put_alto(
         for check_type, check_val in alto_checks.items():
             if config.ALTO_VALIDATION[check_type] and not check_val:
                 raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     code=AppCode.ALTO_SCHEMA_INVALID,
                     detail=PUT_ALTO_RESPONSES[AppCode.ALTO_SCHEMA_INVALID]["detail"],
                 )
@@ -342,11 +343,12 @@ PUT_PAGE_RESPONSES = {
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.PAGE_SCHEMA_INVALID: {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
         "description": "PAGE XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
         "detail": "PAGE XML file does not conform to the required schema.",
     },
+    AppCode.IMAGE_NOT_FOUND_FOR_JOB: GENERAL_RESPONSES[AppCode.IMAGE_NOT_FOUND_FOR_JOB]
 }
 @root_router.put(
     "/v1/jobs/{job_id}/images/{image_name}/files/page",
@@ -373,7 +375,7 @@ async def put_page(
         )
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
-    if code != AppCode.IMAGE_RETRIEVED:
+    if code == AppCode.IMAGE_RETRIEVED:
         data = await file.read()
         if not is_well_formed_xml(data):
             raise DocAPIClientErrorException(
@@ -385,7 +387,7 @@ async def put_page(
         for check_type, check_val in page_checks.items():
             if config.PAGE_VALIDATION[check_type] and not check_val:
                 raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     code=AppCode.PAGE_SCHEMA_INVALID,
                     detail=PUT_PAGE_RESPONSES[AppCode.PAGE_SCHEMA_INVALID]["detail"],
                 )
@@ -425,6 +427,8 @@ async def put_page(
     raise RouteInvariantError(code=code, request=request)
 
 
+JSONValue = Union[dict, list, str, int, float, bool, None]
+
 PUT_META_JSON_RESPONSES = {
     AppCode.META_JSON_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
@@ -455,7 +459,8 @@ PUT_META_JSON_RESPONSES = {
 )
 @challenge_user_access_to_new_job
 async def put_meta_json(
-        job_id: UUID, meta_json,
+        job_id: UUID,
+        meta_json: Annotated[JSONValue, Body(..., openapi_examples=config.META_JSON_EXAMPLES)],
         key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
@@ -506,13 +511,19 @@ GET_RESULT_RESPONSES = {
         "status": fastapi.status.HTTP_425_TOO_EARLY,
         "description": "Job result is not ready yet.",
         "model": DocAPIResponseClientError,
-        "detail": "The job result is not ready yet.",
+        "detail": "Job result is not ready yet.",
+    },
+    AppCode.JOB_FAILED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job has failed and result is not available.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job has failed and result is not available.",
     },
     AppCode.JOB_RESULT_GONE: {
         "status": fastapi.status.HTTP_410_GONE,
         "description": "Job result is no longer available.",
         "model": DocAPIResponseClientError,
-        "detail": "The job result is no longer available.",
+        "detail": "Job result is no longer available.",
     }
 }
 @root_router.get(
@@ -533,9 +544,9 @@ async def get_result(
 
     if db_job.state in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.CANCELLED}:
         raise DocAPIClientErrorException(
-            status=status.HTTP_410_GONE,
-            code=AppCode.JOB_RESULT_GONE,
-            detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_GONE]["detail"]
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.JOB_FAILED,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_FAILED]["detail"]
         )
 
     if db_job.state in {base_objects.ProcessingState.NEW, base_objects.ProcessingState.PROCESSING}:
@@ -549,9 +560,9 @@ async def get_result(
         result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
         if not os.path.exists(result_file_path):
              raise DocAPIClientErrorException(
-                status=status.HTTP_425_TOO_EARLY,
-                code=AppCode.JOB_RESULT_NOT_READY,
-                detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_NOT_READY]["detail"]
+                status=status.HTTP_410_GONE,
+                code=AppCode.JOB_RESULT_GONE,
+                detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_GONE]["detail"]
             )
 
         return FileResponse(

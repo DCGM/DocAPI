@@ -172,7 +172,7 @@ async def patch_job(
         *,
         job_id: UUID,
         job_progress_update: base_objects.JobProgressUpdate =
-        Body(
+        Body(...,
             openapi_examples={
                 "user_cancelled": {
                     "summary": f"User cancels job",

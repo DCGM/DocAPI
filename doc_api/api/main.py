@@ -113,7 +113,7 @@ async def http_exc_handler(_: Request, exc: StarletteHTTPException):
 
 VALIDATION_RESPONSE = {
     AppCode.REQUEST_VALIDATION_ERROR : {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
         "description": "Request validation failed.",
         "model": DocAPIResponseClientError,
         "detail": "The request parameters did not pass validation.",
@@ -134,7 +134,7 @@ VALIDATION_RESPONSE = {
 @app.exception_handler(RequestValidationError)
 async def validation_handler(_: Request, exc: RequestValidationError):
     payload = DocAPIResponseClientError(
-        status=fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status=fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
         code=AppCode.REQUEST_VALIDATION_ERROR,
         detail=VALIDATION_RESPONSE[AppCode.REQUEST_VALIDATION_ERROR]["detail"],
         details=exc.errors()
