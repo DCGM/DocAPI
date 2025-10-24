@@ -1,6 +1,7 @@
 services:
   doc-api:
-    image: ghcr.io/dcgm/docapi/doc_api:latest
+    # see https://github.com/DCGM/DocAPI/pkgs/container/doc-api and choose your version
+    image: ghcr.io/dcgm/doc-api:latest
     ports:
       - "9999:9999"
     volumes:
