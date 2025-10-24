@@ -17,6 +17,7 @@ class ProcessingState(str, enum.Enum):
 
 
 class KeyRole(str, enum.Enum):
+    READONLY = 'readonly'
     USER = 'user'
     WORKER = 'worker'
     ADMIN = 'admin'

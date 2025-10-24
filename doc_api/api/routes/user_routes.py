@@ -116,7 +116,7 @@ GET_JOBS_RESPONSES = {
     description="Retrieve all jobs associated with the authenticated API key.",
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
@@ -526,7 +526,7 @@ GET_RESULT_RESPONSES = {
 async def get_result(
         route_request: fastapi.Request,
         job_id: UUID,
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)

@@ -55,7 +55,7 @@ GET_JOB_RESPONSES = {
 async def get_job(
         request: Request,
         job_id: UUID,
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER)),
+        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER, model.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
