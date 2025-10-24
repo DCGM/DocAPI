@@ -82,38 +82,41 @@ async def get_image_by_job_and_name(*, db: AsyncSession, job_id: UUID, image_nam
 async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
     try:
         async with db.begin():
-            # EXISTS: is there any image not uploaded?
             img_missing = exists(
                 select(literal(1))
-                  .select_from(model.Image)
-                  .where(
-                      model.Image.job_id == job_id,
-                      model.Image.image_uploaded.is_(False),
-                  )
+                .select_from(model.Image)
+                .where(
+                    model.Image.job_id == job_id,
+                    model.Image.image_uploaded.is_(False),
+                )
             )
-
-            # EXISTS: is there any ALTO not uploaded?
             alto_missing = exists(
                 select(literal(1))
-                  .select_from(model.Image)
-                  .where(
-                      model.Image.job_id == job_id,
-                      model.Image.alto_uploaded.is_(False),
-                  )
+                .select_from(model.Image)
+                .where(
+                    model.Image.job_id == job_id,
+                    model.Image.alto_uploaded.is_(False),
+                )
+            )
+            page_missing = exists(
+                select(literal(1))
+                .select_from(model.Image)
+                .where(
+                    model.Image.job_id == job_id,
+                    model.Image.page_uploaded.is_(False),
+                )
             )
 
-            # meta condition: either not required OR (required AND already uploaded)
+            # Implication forms
             meta_ok = or_(
                 model.Job.meta_json_required.is_(False),
-                and_(
-                    model.Job.meta_json_required.is_(True),
-                    model.Job.meta_json_uploaded.is_(True),
-                ),
+                model.Job.meta_json_uploaded.is_(True),
             )
 
-            ready = or_(
-                and_(model.Job.alto_required.is_(False), not_(img_missing)),
-                and_(model.Job.alto_required.is_(True),  not_(img_missing), not_(alto_missing)),
+            images_ok = and_(
+                not_(img_missing),
+                or_(model.Job.alto_required.is_(False), not_(alto_missing)),
+                or_(model.Job.page_required.is_(False), not_(page_missing)),
             )
 
             stmt = (
@@ -122,23 +125,21 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                     model.Job.id == job_id,
                     model.Job.state == base_objects.ProcessingState.NEW,
                     meta_ok,
-                    ready,
+                    images_ok,
                 )
                 .values(
                     state=base_objects.ProcessingState.QUEUED,
                     last_change=datetime.now(timezone.utc),
                 )
-                .returning(model.Job.id)   # tells us if an update happened
+                .returning(model.Job.id)
             )
 
             res = await db.execute(stmt)
-            updated = res.scalar_one_or_none() is not None
-            if updated:
-                return True
-            return False
+            return res.scalar_one_or_none() is not None
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed updating job state in database") from e
+
 
 
 async def cancel_job(db: AsyncSession, job_id: UUID) -> AppCode:
