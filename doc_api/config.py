@@ -42,7 +42,7 @@ class Config:
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
         # displayed in the web interface footer
-        self.SOFTWARE_VERSION = os.getenv("SOFTWARE_VERSION", "1.0")
+        self.APP_VERSION = os.getenv("APP_VERSION", "1.0")
 
         # return in detail on unsuccessful authentication
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")

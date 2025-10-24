@@ -1,52 +1,113 @@
-name: Build and Publish Docker Images
+name: Release (only when tag is on main)
 
 on:
   push:
-    branches: [ main, 5-docker ]
-    tags: [ 'v*.*.*' ]
+    tags:
+      - 'v*.*.*'             # e.g. v1.2.3
 
 permissions:
-  contents: read
-  packages: write
+  contents: write            # to move git tags v1 / v1.2
+  packages: write            # to push to GHCR
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        component: [ doc_api ]
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0     # needed for ancestry check and retagging
 
-      - name: Extract Docker metadata
+      # Proceed only if the tagged commit is reachable from main
+      - name: Check if tag commit is on main
+        id: onmain
+        run: |
+          git fetch origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "on_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on_main=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if not on main
+        if: steps.onmain.outputs.on_main == 'false'
+        run: |
+          echo "Tag commit not on 'main' yet — skipping publish & retag."
+          exit 0
+
+      # Parse tag components (you always use the 'v' prefix)
+      - name: Parse version components
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME}"     # v1.2.4
+          MAJOR="${VERSION%%.*}"           # v1
+          MINOR="${VERSION%.*}"            # v1.2
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "major=${MAJOR}"   >> "$GITHUB_OUTPUT"
+          echo "minor=${MINOR}"   >> "$GITHUB_OUTPUT"
+
+      # Move floating Git tags (v1, v1.2) now that it's on main
+      - name: Move floating git tags
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa ${{ steps.ver.outputs.major }} -m "Move ${{ steps.ver.outputs.major }} -> ${{ steps.ver.outputs.version }}"
+          git tag -fa ${{ steps.ver.outputs.minor }} -m "Move ${{ steps.ver.outputs.minor }} -> ${{ steps.ver.outputs.version }}"
+          git push origin ${{ steps.ver.outputs.major }} --force
+          git push origin ${{ steps.ver.outputs.minor }} --force
+
+      # Prepare meta for GHCR (owner lowercased, build date)
+      - name: Prepare meta
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}/${{ matrix.component }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}},disable={{is_tag}}
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern=v{{version}}
-            type=sha,format=short
+        shell: bash
+        run: |
+          echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./${{ matrix.component }}
-          file: ./${{ matrix.component }}/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Build/push all images defined below (extendable matrix)
+      - name: Build & push images
+        run: |
+          set -euo pipefail
+
+          OWNER="${{ steps.meta.outputs.owner_lc }}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          MINOR="${{ steps.ver.outputs.minor }}"
+          MAJOR="${{ steps.ver.outputs.major }}"
+          BUILD_DATE="${{ steps.meta.outputs.build_date }}"
+          COMMIT_SHA="${GITHUB_SHA}"
+
+          # -------- matrix emulation: add rows here as you add subprojects --------
+          # name|context|dockerfile|image_name
+          rows=(
+            "doc_api|./doc_api|./doc_api/Dockerfile|docapi"
+            # "doc_client|./doc_client|./doc_client/Dockerfile|docclient"   # uncomment when ready
+          )
+
+          for row in "${rows[@]}"; do
+            IFS='|' read -r NAME CONTEXT DOCKERFILE IMAGE_NAME <<< "$row"
+            IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}"
+
+            echo "==> Building ${NAME} -> ${IMAGE}:${VERSION}"
+
+            docker build \
+              -f "${DOCKERFILE}" \
+              -t "${IMAGE}:${VERSION}" \
+              --build-arg VERSION="${VERSION}" \
+              --build-arg COMMIT_SHA="${COMMIT_SHA}" \
+              --build-arg BUILD_DATE="${BUILD_DATE}" \
+              "${CONTEXT}"
+
+            docker push "${IMAGE}:${VERSION}"
+
+            # Floating tags + latest
+            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MINOR}"
+            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:${MAJOR}"
+            docker tag  "${IMAGE}:${VERSION}" "${IMAGE}:latest"
+
+            docker push "${IMAGE}:${MINOR}"
+            docker push "${IMAGE}:${MAJOR}"
+            docker push "${IMAGE}:latest"
+          done

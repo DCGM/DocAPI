@@ -63,7 +63,7 @@ tags_metadata = [
 
 app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
-              version=config.SOFTWARE_VERSION,
+              version=config.APP_VERSION,
               root_path=config.APP_URL_ROOT)
 
 
