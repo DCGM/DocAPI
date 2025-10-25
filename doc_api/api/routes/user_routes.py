@@ -46,7 +46,7 @@ POST_JOB_RESPONSES = {
         "detail": "Job created successfully.",
     },
     AppCode.REQUEST_VALIDATION_ERROR: {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         "description": "Input validation failed",
         "model": DocAPIResponseClientError,
         "detail": "Validation of the job definition failed. Please see the documentation for the correct format.",
@@ -242,7 +242,7 @@ PUT_ALTO_RESPONSES = {
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.ALTO_SCHEMA_INVALID: {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         "description": "ALTO XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
         "detail": "ALTO XML file does not conform to the required schema.",
@@ -286,7 +286,7 @@ async def put_alto(
         for check_type, check_val in alto_checks.items():
             if config.ALTO_VALIDATION[check_type] and not check_val:
                 raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     code=AppCode.ALTO_SCHEMA_INVALID,
                     detail=PUT_ALTO_RESPONSES[AppCode.ALTO_SCHEMA_INVALID]["detail"],
                 )
@@ -348,7 +348,7 @@ PUT_PAGE_RESPONSES = {
     },
     AppCode.XML_PARSE_ERROR: GENERAL_RESPONSES[AppCode.XML_PARSE_ERROR],
     AppCode.PAGE_SCHEMA_INVALID: {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         "description": "PAGE XML file does not conform to the required schema.",
         "model": DocAPIResponseClientError,
         "detail": "PAGE XML file does not conform to the required schema.",
@@ -392,7 +392,7 @@ async def put_page(
         for check_type, check_val in page_checks.items():
             if config.PAGE_VALIDATION[check_type] and not check_val:
                 raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     code=AppCode.PAGE_SCHEMA_INVALID,
                     detail=PUT_PAGE_RESPONSES[AppCode.PAGE_SCHEMA_INVALID]["detail"],
                 )
