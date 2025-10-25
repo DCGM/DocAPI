@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional, Tuple
 
 from alembic import command
@@ -79,15 +80,19 @@ async def get_db_state() -> Tuple[str, Optional[str]]:
 
 
 def run_alembic_upgrade(db_url: str):
-    cfg = Config("alembic.ini")
+    cfg = get_alembic_cfg()
     cfg.set_main_option("sqlalchemy.url", db_url)
     command.upgrade(cfg, "head")
 
 
 def get_latest_alembic_revision() -> str:
-    cfg = Config("alembic.ini")
-    script = ScriptDirectory.from_config(cfg)
+    script = ScriptDirectory.from_config(get_alembic_cfg())
     return script.get_current_head()
+
+def get_alembic_cfg():
+    root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(root / "alembic.ini"))
+    return cfg
 
 
 

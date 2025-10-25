@@ -9,23 +9,8 @@ if __name__ == "__main__":
     import asyncio
     import uvicorn
 
-    from alembic import command
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
     from doc_api.db.db_create import create_database_if_does_not_exist
     from doc_api.db.db_update import init_and_update_db
-
-
-    def run_alembic_upgrade(db_url: str):
-        cfg = Config("alembic.ini")
-        cfg.set_main_option("sqlalchemy.url", db_url)
-        command.upgrade(cfg, "head")
-
-    def get_latest_alembic_revision() -> str:
-        cfg = Config("alembic.ini")
-        script = ScriptDirectory.from_config(cfg)
-        return script.get_current_head()
 
     if not config.DATABASE_FORCE:
         asyncio.run(create_database_if_does_not_exist())

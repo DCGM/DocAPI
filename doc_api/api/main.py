@@ -1,6 +1,7 @@
 import logging
 import logging.config
 import traceback
+from contextlib import asynccontextmanager
 from typing import Optional, List, Set
 
 import fastapi
@@ -61,30 +62,41 @@ tags_metadata = [
 ]
 
 
+@asynccontextmanager
+async def lifespan():
+    if getattr(config, "ADMIN_KEY", None):
+        digest = hmac_sha256_hex(config.ADMIN_KEY)
+        async with open_session() as db:
+            result = await db.execute(
+                select(model.Key).where(model.Key.key_hash == digest)
+            )
+            key = result.scalar_one_or_none()
+            if key is None:
+                db.add(
+                    model.Key(
+                        key_hash=digest,
+                        label="admin",
+                        active=True,
+                        role=KeyRole.ADMIN,
+                    )
+                )
+                await db.commit()
+                logger.info("Admin API key created!")
+    else:
+        logger.warning(
+            "ADMIN_KEY is not set! No admin API key created! "
+            "(this is OK if there is another admin key in the database)"
+        )
+
+    yield
+
+    logger.info("Application shutdown complete.")
+
+
 app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
               version=config.APP_VERSION,
               root_path=config.APP_URL_ROOT)
-
-
-@app.on_event("startup")
-async def startup():
-    if getattr(config, "ADMIN_KEY", None):
-        digest = hmac_sha256_hex(config.ADMIN_KEY)
-        async with open_session() as db:
-            result = await db.execute(select(model.Key).where(model.Key.key_hash == digest))
-            key = result.scalar_one_or_none()
-            if key is None:
-                db.add(model.Key(
-                    key_hash=digest,
-                    label="admin",
-                    active=True,
-                    role=KeyRole.ADMIN
-                ))
-                await db.commit()
-                logger.info("Admin API key created!")
-    else:
-        logger.warning("ADMIN_KEY is not set! No admin API key created! (this is OK if there is another admin key in the database)")
 
 
 app.include_router(root_router)
@@ -113,7 +125,7 @@ async def http_exc_handler(_: Request, exc: StarletteHTTPException):
 
 VALIDATION_RESPONSE = {
     AppCode.REQUEST_VALIDATION_ERROR : {
-        "status": fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         "description": "Request validation failed.",
         "model": DocAPIResponseClientError,
         "detail": "The request parameters did not pass validation.",
@@ -134,7 +146,7 @@ VALIDATION_RESPONSE = {
 @app.exception_handler(RequestValidationError)
 async def validation_handler(_: Request, exc: RequestValidationError):
     payload = DocAPIResponseClientError(
-        status=fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status=fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         code=AppCode.REQUEST_VALIDATION_ERROR,
         detail=VALIDATION_RESPONSE[AppCode.REQUEST_VALIDATION_ERROR]["detail"],
         details=exc.errors()
@@ -340,7 +352,7 @@ def inject_validation_422_docs(*, schema: dict, validation_response: dict):
       *after* existing ones, without overwriting anything.
     """
     _validation_responses = make_responses(validation_response, inject_schema=True)
-    _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY)
+    _validation_422 = _validation_responses.get(fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT)
     if not _validation_422:
         return
 
