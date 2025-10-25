@@ -161,6 +161,7 @@ PUT_IMAGE_RESPONSES = {
     summary="Upload IMAGE",
     tags=["User"],
     description="Upload an IMAGE file for a specific job and image name.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(PUT_IMAGE_RESPONSES))
 @challenge_user_access_to_new_job
 async def put_image(
@@ -195,21 +196,20 @@ async def put_image(
         image_update = base_objects.ImageUpdate(image_uploaded=True, imagehash=imagehash)
         await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
 
-        # TODO this can potentially lead to inconsistent state if the job start fails after image upload
-        job_started = await user_cruds.start_job(db=db, job_id=job_id)
-
         if not image_already_uploaded:
-            return DocAPIResponseOK[NoneType](
+            # TODO this can potentially lead to inconsistent state if the job start fails after image upload
+            job_started = await user_cruds.start_job(db=db, job_id=job_id)
+            return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=status.HTTP_201_CREATED,
                 code=AppCode.IMAGE_UPLOADED,
                 detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_UPLOADED]["detail"]
-            )
+            ))
         else:
-            return DocAPIResponseOK[NoneType](
+            return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=status.HTTP_200_OK,
                 code=AppCode.IMAGE_REUPLOADED,
                 detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_REUPLOADED]["detail"]
-            )
+            ))
 
     elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
         raise DocAPIClientErrorException(
@@ -254,6 +254,7 @@ PUT_ALTO_RESPONSES = {
     summary="Upload ALTO XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an ALTO XML file for a specific job and image name.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     tags=["User"],
 responses=make_responses(PUT_ALTO_RESPONSES))
 @challenge_user_access_to_new_job
@@ -298,12 +299,11 @@ async def put_alto(
         with open(alto_path, "wb") as f:
             f.write(data)
 
-        # TODO this can potentially lead to inconsistent state if the job start fails after ALTO upload
-        job_started = await user_cruds.start_job(db=db, job_id=job_id)
-
         if not db_image.alto_uploaded:
             image_update = base_objects.ImageUpdate(alto_uploaded=True)
             await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
+            # TODO this can potentially lead to inconsistent state if the job start fails after ALTO upload
+            job_started = await user_cruds.start_job(db=db, job_id=job_id)
             return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=status.HTTP_201_CREATED,
                 code=AppCode.ALTO_UPLOADED,
@@ -360,6 +360,7 @@ PUT_PAGE_RESPONSES = {
     summary="Upload PAGE XML",
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an PAGE XML file for a specific job and image name.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     tags=["User"],
 responses=make_responses(PUT_PAGE_RESPONSES))
 @challenge_user_access_to_new_job
@@ -404,12 +405,11 @@ async def put_page(
         with open(page_path, "wb") as f:
             f.write(data)
 
-        # TODO this can potentially lead to inconsistent state if the job start fails after PAGE upload
-        job_started = await user_cruds.start_job(db=db, job_id=job_id)
-
         if not db_image.page_uploaded:
             image_update = base_objects.ImageUpdate(page_uploaded=True)
             await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
+            # TODO this can potentially lead to inconsistent state if the job start fails after PAGE upload
+            job_started = await user_cruds.start_job(db=db, job_id=job_id)
             return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=status.HTTP_201_CREATED,
                 code=AppCode.PAGE_UPLOADED,
@@ -483,15 +483,13 @@ async def put_meta_json(
     meta_json_path = os.path.join(batch_path, "meta.json")
     # the json should be checked/validated by FastAPI already, open and write it without extra validation
     with open(meta_json_path, "w", encoding="utf-8") as f:
-        meta_json_dict = json.loads(meta_json)
-        json.dump(meta_json_dict, f, ensure_ascii=False, indent=4)
-
-    # TODO this can potentially lead to inconsistent state if the job start fails after Meta JSON file upload
-    job_started = await user_cruds.start_job(db=db, job_id=job_id)
+        json.dump(meta_json, f, ensure_ascii=False, indent=4)
 
     if not db_job.meta_json_uploaded:
         update_job = base_objects.JobUpdate(meta_json_uploaded=True)
         await general_cruds.update_job(db=db, job_id=job_id, job_update=update_job)
+        # TODO this can potentially lead to inconsistent state if the job start fails after Meta JSON file upload
+        job_started = await user_cruds.start_job(db=db, job_id=job_id)
         return validate_ok_response(DocAPIResponseOK[NoneType](
             status=status.HTTP_201_CREATED,
             code=AppCode.META_JSON_UPLOADED,

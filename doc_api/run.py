@@ -19,6 +19,8 @@ if __name__ == "__main__":
         logger.warning("Skipping creating DB and alembic upgrade due to DB_FORCE=True. "
                        "Assuming the database exist and the schema is up to date.")
 
+    config.create_dirs()
+
     logger.info(f"Running DocAPI on {config.APP_HOST}:{config.APP_PORT} (production={config.PRODUCTION})")
 
     uvicorn.run("api.main:app",

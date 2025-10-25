@@ -1,125 +1,101 @@
-# conftest.py
 import os
-
 import asyncio
-import hmac
-import hashlib
+from typing import Optional
 
 import httpx
 import pytest
 import pytest_asyncio
-from asgi_lifespan import LifespanManager
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
-from sqlalchemy import select
-
-# ---------- Test DB and base dir setup ----------
-TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db_test",
-)
-
-TEST_BASE_DIR = os.getenv(
-    "TEST_BASE_DIR",
-    "/tmp/doc_api_test_data",
-)
-
-os.environ["TESTING"] = "1"
-os.environ["DATABASE_URL"] = TEST_DB_URL
-os.environ["BASE_DIR"] = TEST_BASE_DIR
-
-TEST_SECRETS = {
-    "READONLY": "readonly-secret",
-    "USER":   "user-secret",
-    "WORKER": "worker-secret",
-    "ADMIN":  "admin-secret"
-}
 
 from doc_api.config import config
-from doc_api.db import model
-from doc_api.db.db_create import create_database_if_does_not_exist
-from doc_api.db.db_update import init_and_update_db
 
-# ---------- Single event loop for the whole test session ----------
+# -----------------------------------------------------------------------------
+# CLI options & env fallbacks
+# -----------------------------------------------------------------------------
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--base-url",
+        action="store",
+        default=os.getenv("APP_BASE_URL", config.APP_BASE_URL),
+        help="REQUIRED: Base URL of a running DocAPI instance (e.g., http://localhost:9999).",
+    )
+    parser.addoption("--api-key-readonly", action="store", default=os.getenv("TEST_READONLY_KEY", config.TEST_READONLY_KEY))
+    parser.addoption("--api-key-user", action="store", default=os.getenv("TEST_USER_KEY", config.TEST_USER_KEY))
+    parser.addoption("--api-key-worker", action="store", default=os.getenv("TEST_WORKER_KEY", config.TEST_WORKER_KEY))
+    parser.addoption("--api-key-admin", action="store", default=os.getenv("TEST_ADMIN_KEY", config.TEST_ADMIN_KEY))
+    parser.addoption("--http-timeout", action="store",
+                     type=float,
+                     default=float(os.getenv("TEST_HTTP_TIMEOUT", config.TEST_HTTP_TIMEOUT)),
+                     help="HTTP client timeout in seconds.")
+
+
+@pytest.fixture(scope="session")
+def _opts(request):
+    return {
+        "APP_BASE_URL": request.config.getoption("--base-url"),
+        "TEST_READONLY_KEY": request.config.getoption("--api-key-readonly"),
+        "TEST_USER_KEY": request.config.getoption("--api-key-user"),
+        "TEST_WORKER_KEY": request.config.getoption("--api-key-worker"),
+        "TEST_ADMIN_KEY": request.config.getoption("--api-key-admin"),
+        "TEST_HTTP_TIMEOUT": request.config.getoption("--http-timeout"),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Single event loop for the entire test session
+# -----------------------------------------------------------------------------
 @pytest.fixture(scope="session")
 def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
 
-# ---------- One-time DB bootstrap + key seeding ----------
-def _init_db_sync():
-    # Create DB and run migrations/initialization
-    asyncio.run(create_database_if_does_not_exist())
-    init_and_update_db()
 
-# ---------- HMAC helpers & test secrets ----------
-def hmac_sha256_hex(s: str, secret: str) -> str:
-    return hmac.new(secret.encode(), s.encode(), hashlib.sha256).hexdigest()
-
+# -----------------------------------------------------------------------------
+# Validate required APP_BASE_URL once per session
+# -----------------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
-def test_hmac_secret():
-    old = config.HMAC_SECRET
-    test_secret = "test-hmac-secret"
-    config.HMAC_SECRET = test_secret
-    try:
-        yield test_secret
-    finally:
-        config.HMAC_SECRET = old
+def _require_base_url(_opts):
+    if not _opts["APP_BASE_URL"]:
+        pytest.exit(
+            "Remote-only test run requires --base-url (or APP_BASE_URL env). "
+            "Example: pytest --base-url http://localhost:9999",
+            returncode=2,
+        )
 
-async def _seed_keys_once(db_url: str, hmac_secret: str):
-    # Use a throwaway engine/session just for seeding, then dispose.
-    eng = create_async_engine(db_url, future=True, poolclass=NullPool)
-    session_maker = async_sessionmaker(bind=eng, expire_on_commit=False)
 
-    async with session_maker() as session:
-        async def ensure(label: str, role: model.KeyRole, plain_secret: str):
-            digest = hmac_sha256_hex(plain_secret, hmac_secret)
-            existing = await session.scalar(select(model.Key).where(model.Key.label == label))
-            if existing is None:
-                session.add(model.Key(label=label, role=role, key_hash=digest, active=True))
-            else:
-                existing.key_hash = digest
-                existing.role = role
-                existing.active = True
-
-        await ensure("test-user",   model.KeyRole.USER,   TEST_SECRETS["USER"])
-        await ensure("test-worker", model.KeyRole.WORKER, TEST_SECRETS["WORKER"])
-        await ensure("test-admin",  model.KeyRole.ADMIN,  TEST_SECRETS["ADMIN"])
-        await session.commit()
-
-    await eng.dispose()
-
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_db(test_hmac_secret):
-    _init_db_sync()
-    asyncio.run(_seed_keys_once(TEST_DB_URL, test_hmac_secret))
-    return True
-
-# ---------- HTTP client ----------
+# -----------------------------------------------------------------------------
+# httpx client pointed at the running instance
+# -----------------------------------------------------------------------------
 @pytest_asyncio.fixture()
-async def client():
-    # Import AFTER env is set & DB bootstrapped so the app initializes for tests.
-    from doc_api.api.main import app
-    async with LifespanManager(app):
-        transport = httpx.ASGITransport(app=app)  # compatible across httpx versions
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            yield ac
+async def client(_opts):
+    timeout = httpx.Timeout(_opts["TEST_HTTP_TIMEOUT"])
+    async with httpx.AsyncClient(base_url=_opts["APP_BASE_URL"], timeout=timeout, follow_redirects=True) as ac:
+        yield ac
 
-# ---------- Headers ----------
-@pytest.fixture()
-def readonly_headers():
-    return {"X-API-Key": TEST_SECRETS["READONLY"]}
 
-@pytest.fixture()
-def user_headers():
-    return {"X-API-Key": TEST_SECRETS["USER"]}
-
-@pytest.fixture()
-def worker_headers():
-    return {"X-API-Key": TEST_SECRETS["WORKER"]}
+# -----------------------------------------------------------------------------
+# Header fixtures (skip tests if a needed key isn't supplied)
+# -----------------------------------------------------------------------------
+def _headers_or_skip(key: Optional[str], which: str):
+    if not key:
+        pytest.skip(
+            f"{which} API key not provided for remote target. "
+            f"Pass --api-key-{which.lower()} or set TEST_{which.upper()}_KEY."
+        )
+    return {"X-API-Key": key}
 
 @pytest.fixture()
-def admin_headers():
-    return {"X-API-Key": TEST_SECRETS["ADMIN"]}
+def readonly_headers(_opts):
+    return _headers_or_skip(_opts["TEST_READONLY_KEY"], "READONLY")
 
+@pytest.fixture()
+def user_headers(_opts):
+    return _headers_or_skip(_opts["TEST_USER_KEY"], "USER")
+
+@pytest.fixture()
+def worker_headers(_opts):
+    return _headers_or_skip(_opts["TEST_WORKER_KEY"], "WORKER")
+
+@pytest.fixture()
+def admin_headers(_opts):
+    return _headers_or_skip(_opts["TEST_ADMIN_KEY"], "ADMIN")
