@@ -11,7 +11,7 @@ _init_lock = None
 def _engine_kwargs():
     testing = os.getenv("TESTING") == "1"
     if testing:
-        # loop-agnostic for tests
+        # loop-agnostic for tests, pytest creates event loop per test function
         return dict(poolclass=NullPool, pool_pre_ping=False)
     # prod/dev settings
     return dict(pool_pre_ping=True, pool_size=20, max_overflow=60)

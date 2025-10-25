@@ -207,4 +207,3 @@ class Config:
 config = Config()
 config.create_dirs()
 
-

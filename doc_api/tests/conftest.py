@@ -1,5 +1,6 @@
 # conftest.py
 import os
+
 import asyncio
 import hmac
 import hashlib
@@ -12,15 +13,32 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy import select
 
-from doc_api.db import model
-from doc_api.config import config
-from doc_api.db.db_create import create_database_if_does_not_exist
-from doc_api.db.db_update import init_and_update_db
-
+# ---------- Test DB and base dir setup ----------
 TEST_DB_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db_test",
 )
+
+TEST_BASE_DIR = os.getenv(
+    "TEST_BASE_DIR",
+    "/tmp/doc_api_test_data",
+)
+
+os.environ["TESTING"] = "1"
+os.environ["DATABASE_URL"] = TEST_DB_URL
+os.environ["BASE_DIR"] = TEST_BASE_DIR
+
+TEST_SECRETS = {
+    "READONLY": "readonly-secret",
+    "USER":   "user-secret",
+    "WORKER": "worker-secret",
+    "ADMIN":  "admin-secret"
+}
+
+from doc_api.config import config
+from doc_api.db import model
+from doc_api.db.db_create import create_database_if_does_not_exist
+from doc_api.db.db_update import init_and_update_db
 
 # ---------- Single event loop for the whole test session ----------
 @pytest.fixture(scope="session")
@@ -31,11 +49,6 @@ def event_loop():
 
 # ---------- One-time DB bootstrap + key seeding ----------
 def _init_db_sync():
-    # Make sure the app will see test env + test DB
-    os.environ["TESTING"] = "1"
-    os.environ["DATABASE_URL"] = TEST_DB_URL
-    config.DATABASE_URL = TEST_DB_URL
-
     # Create DB and run migrations/initialization
     asyncio.run(create_database_if_does_not_exist())
     init_and_update_db()
@@ -43,12 +56,6 @@ def _init_db_sync():
 # ---------- HMAC helpers & test secrets ----------
 def hmac_sha256_hex(s: str, secret: str) -> str:
     return hmac.new(secret.encode(), s.encode(), hashlib.sha256).hexdigest()
-
-TEST_SECRETS = {
-    "USER":   "user-secret",
-    "WORKER": "worker-secret",
-    "ADMIN":  "admin-secret",
-}
 
 @pytest.fixture(scope="session", autouse=True)
 def test_hmac_secret():
@@ -63,9 +70,9 @@ def test_hmac_secret():
 async def _seed_keys_once(db_url: str, hmac_secret: str):
     # Use a throwaway engine/session just for seeding, then dispose.
     eng = create_async_engine(db_url, future=True, poolclass=NullPool)
-    Session = async_sessionmaker(bind=eng, expire_on_commit=False)
+    session_maker = async_sessionmaker(bind=eng, expire_on_commit=False)
 
-    async with Session() as session:
+    async with session_maker() as session:
         async def ensure(label: str, role: model.KeyRole, plain_secret: str):
             digest = hmac_sha256_hex(plain_secret, hmac_secret)
             existing = await session.scalar(select(model.Key).where(model.Key.label == label))
@@ -89,7 +96,7 @@ def _bootstrap_db(test_hmac_secret):
     asyncio.run(_seed_keys_once(TEST_DB_URL, test_hmac_secret))
     return True
 
-# ---------- HTTP client (no DB overrides; app manages its own DB) ----------
+# ---------- HTTP client ----------
 @pytest_asyncio.fixture()
 async def client():
     # Import AFTER env is set & DB bootstrapped so the app initializes for tests.
@@ -100,6 +107,10 @@ async def client():
             yield ac
 
 # ---------- Headers ----------
+@pytest.fixture()
+def readonly_headers():
+    return {"X-API-Key": TEST_SECRETS["READONLY"]}
+
 @pytest.fixture()
 def user_headers():
     return {"X-API-Key": TEST_SECRETS["USER"]}
@@ -112,8 +123,3 @@ def worker_headers():
 def admin_headers():
     return {"X-API-Key": TEST_SECRETS["ADMIN"]}
 
-# ---------- Temp dirs ----------
-@pytest.fixture(autouse=True)
-def temp_dirs(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
-    return tmp_path
