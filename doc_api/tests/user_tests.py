@@ -10,10 +10,7 @@ from doc_api.api.schemas.responses import AppCode
 # POST /v1/jobs
 #
 
-# --- All boolean combinations of the three *_required flags ---
-REQUIRED_FLAGS = ["meta_json_required", "alto_required", "page_required"]
-
-def generate_payloads():
+def generate_job_definition_payloads():
     base_images = [
         {"name": "img1.png", "order": 0},
         {"name": "img2.jpg", "order": 1},
@@ -22,14 +19,14 @@ def generate_payloads():
 
     payloads = []
     for combo in itertools.product([False, True], repeat=3):
-        flags = dict(zip(REQUIRED_FLAGS, combo))
+        flags = dict(zip(["meta_json_required", "alto_required", "page_required"], combo))
         payloads.append({
             "images": base_images[:2] if any(combo) else base_images[:3],
             **flags,
         })
     return payloads
 
-def payload_id(payload):
+def job_definition_payload_id(payload):
     """Generate a readable ID for pytest logs."""
     image_count = len(payload["images"])
     # collect unique extensions
@@ -42,14 +39,9 @@ def payload_id(payload):
     flags_str = "+".join(flags) if flags else "none"
     return f"{image_count}-imgs:{'+'.join(sorted(exts))}:{flags_str}"
 
-PAYLOADS = generate_payloads()
+JOB_DEFINITION_PAYLOADS = generate_job_definition_payloads()
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("payload", PAYLOADS, ids=payload_id)
-async def test_post_job(client, user_headers, payload):
-    await assert_job_created(client, user_headers, payload)
-
-async def assert_job_created(
+async def assert_job_created_and_retrieved(
     client,
     headers: Dict[str, str],
     payload: Dict[str, Any],
@@ -78,32 +70,38 @@ async def assert_job_created(
         assert image_body["page_uploaded"] is False
 
 
+    r = await client.get(f"/v1/jobs/{data['id']}", headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    data_get = body["data"]
+    assert data_get == data
 
-'''
+
 @pytest.mark.asyncio
-async def test_post_job_validation_422(client, user_headers):
-    # Triggers the three example validation errors:
-    # - images[0].name missing
-    # - images[1].order not an integer
-    # - alto_required not a boolean
+@pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=job_definition_payload_id)
+async def test_creating_and_retrieving_job(client, user_headers, payload):
+    await assert_job_created_and_retrieved(client, user_headers, payload)
+
+@pytest.mark.asyncio
+async def test_post_job_422(client, user_headers):
     invalid_payload = {
         "images": [
-            {"order": 0},          # name missing
+            {"order": 0}, # name missing
             {"name": "b.png", "order": "one"},  # order wrong type
         ],
         "meta_json_required": False,
-        "alto_required": "yes",   # wrong type
+        "alto_required": "ffff",   # wrong type
         "page_required": False,
     }
     r = await client.post("/v1/jobs", json=invalid_payload, headers=user_headers)
     assert r.status_code == 422, r.text
-    detail = r.json().get("detail")
-    assert isinstance(detail, list)
+    body = r.json()
+    assert body["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+    details = body.get("details")
+    assert isinstance(details, list)
 
-    # optional: check that at least one of the expected paths is present
-    # (FastAPI’s error message format):
-    paths = [err.get("loc") for err in detail if isinstance(err, dict)]
+    paths = [err.get("loc") for err in details if isinstance(err, dict)]
     assert ["body", "images", 0, "name"] in paths
     assert ["body", "images", 1, "order"] in paths
     assert ["body", "alto_required"] in paths
-'''
