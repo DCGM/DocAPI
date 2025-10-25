@@ -63,7 +63,7 @@ tags_metadata = [
 
 
 @asynccontextmanager
-async def lifespan():
+async def lifespan(app: FastAPI):
     if getattr(config, "ADMIN_KEY", None):
         digest = hmac_sha256_hex(config.ADMIN_KEY)
         async with open_session() as db:
@@ -88,6 +88,69 @@ async def lifespan():
             "(this is OK if there is another admin key in the database)"
         )
 
+    if not config.PRODUCTION:
+        test_admin_digest = hmac_sha256_hex(config.TEST_ADMIN_KEY)
+        test_readonly_digest = hmac_sha256_hex(config.TEST_READONLY_KEY)
+        test_user_digest = hmac_sha256_hex(config.TEST_USER_KEY)
+        test_worker_digest = hmac_sha256_hex(config.TEST_WORKER_KEY)
+        async with open_session() as db:
+            result = await db.execute(
+                select(model.Key).where(model.Key.key_hash.in_([
+                    test_admin_digest,
+                    test_readonly_digest,
+                    test_user_digest,
+                    test_worker_digest,
+                ]))
+            )
+            existing_keys = {k.key_hash for k in result.scalars().all()}
+
+            if test_admin_digest not in existing_keys:
+                db.add(
+                    model.Key(
+                        key_hash=test_admin_digest,
+                        label="test-admin",
+                        active=True,
+                        role=KeyRole.ADMIN,
+                    )
+                )
+                logger.info("Test admin API key created!")
+
+            if test_readonly_digest not in existing_keys:
+                db.add(
+                    model.Key(
+                        key_hash=test_readonly_digest,
+                        label="test-readonly",
+                        active=True,
+                        role=KeyRole.READONLY,
+                    )
+                )
+                logger.info("Test readonly API key created!")
+
+            if test_user_digest not in existing_keys:
+                db.add(
+                    model.Key(
+                        key_hash=test_user_digest,
+                        label="test-user",
+                        active=True,
+                        role=KeyRole.USER,
+                    )
+                )
+                logger.info("Test user API key created!")
+
+            if test_worker_digest not in existing_keys:
+                db.add(
+                    model.Key(
+                        key_hash=test_worker_digest,
+                        label="test-worker",
+                        active=True,
+                        role=KeyRole.WORKER,
+                    )
+                )
+                logger.info("Test worker API key created!")
+
+            await db.commit()
+
+
     yield
 
     logger.info("Application shutdown complete.")
@@ -96,7 +159,8 @@ async def lifespan():
 app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
               version=config.APP_VERSION,
-              root_path=config.APP_URL_ROOT)
+              root_path=config.APP_URL_ROOT,
+              lifespan=lifespan)
 
 
 app.include_router(root_router)

@@ -117,6 +117,15 @@ class Config:
             "has_text": self._env_bool("PAGE_VALIDATE_HAS_TEXT", False),
         }
 
+        # Testing setup - these keys will be automatically created in the DB for testing purposes if PRODUCTION is False
+        # for tests in doc_api/tests/
+        ################################################################################################################
+        self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", "testadminkey")
+        self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", "testreadonlykey")
+        self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", "testuserkey")
+        self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", "testworkerkey")
+        self.TEST_HTTP_TIMEOUT = os.getenv("TEST_HTTP_TIMEOUT", "30")
+
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
 
@@ -205,5 +214,4 @@ class Config:
 
 
 config = Config()
-config.create_dirs()
 
