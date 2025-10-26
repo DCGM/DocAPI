@@ -142,7 +142,7 @@ async def delete_lease(
     if code == AppCode.JOB_LEASE_RELEASED:
         return validate_ok_response(DocAPIResponseOK[NoneType](
             status=fastapi.status.HTTP_204_NO_CONTENT,
-            code="",
+            code=AppCode.JOB_LEASE_RELEASED,
             detail=""
         ))
 
@@ -238,16 +238,16 @@ async def get_alto(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+    if not db_job.alto_required:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.ALTO_NOT_REQUIRED,
+            detail=GET_ALTO_RESPONSES[AppCode.ALTO_NOT_REQUIRED]["detail"]
+        )
+
     db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
     if code == AppCode.IMAGE_RETRIEVED:
-        if not db_job.alto_required:
-            raise DocAPIClientErrorException(
-                status=fastapi.status.HTTP_409_CONFLICT,
-                code=AppCode.ALTO_NOT_REQUIRED,
-                detail=GET_ALTO_RESPONSES[AppCode.ALTO_NOT_REQUIRED]["detail"]
-            )
-
         alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.alto.xml")
         if not await aiofiles_os.path.exists(alto_path) or not db_image.alto_uploaded:
             raise DocAPIClientErrorException(
@@ -302,17 +302,18 @@ async def get_page(
         image_id: UUID,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
+
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+    if not db_job.page_required:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.PAGE_NOT_REQUIRED,
+            detail=GET_PAGE_RESPONSES[AppCode.PAGE_NOT_REQUIRED]["detail"]
+        )
+
     db_image, code = await general_cruds.get_image_for_job(db=db, job_id=job_id, image_id=image_id)
 
     if code == AppCode.IMAGE_RETRIEVED:
-        if not db_job.page_required:
-            raise DocAPIClientErrorException(
-                status=fastapi.status.HTTP_409_CONFLICT,
-                code=AppCode.PAGE_NOT_REQUIRED,
-                detail=GET_PAGE_RESPONSES[AppCode.PAGE_NOT_REQUIRED]["detail"]
-            )
-
         page_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.page.xml")
         if not await aiofiles_os.path.exists(page_path) or not db_image.page_uploaded:
             raise DocAPIClientErrorException(
