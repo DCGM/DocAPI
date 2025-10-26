@@ -75,3 +75,14 @@ VALID_PAGE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   </Page>
 </PcGts>
 """
+
+VALID_ZIP = (b"PK\x03\x04"                      # local file header signature
+             b"\x14\x00\x00\x00\x00\x00"        # version / flags / compression / mod time/date
+             b"\x00\x00\x00\x00"                # crc32
+             b"\x00\x00\x00\x00"                # comp / uncomp sizes
+             b"\x00\x00"                        # filename length
+             b"\x00\x00"                        # extra length
+             b"PK\x01\x02"                      # central directory header
+             b"\x14\x00\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+             b"\x00\x00\x00\x00\x00\x00\x00\x00"
+             b"PK\x05\x06" + b"\x00" * 18)       # end of central directory

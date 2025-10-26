@@ -416,6 +416,7 @@ POST_RESULT_RESPONSES = {
     summary="Upload Result",
     tags=["Worker"],
     description="Upload the result ZIP archive for a specific job.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_RESULT_RESPONSES))
 @challenge_worker_access_to_processing_job
 async def post_result(
@@ -425,8 +426,8 @@ async def post_result(
     db: AsyncSession = Depends(get_async_session),
 ):
 
-    await aiofiles_os.makedirs(config.RESULT_DIR, exist_ok=True)
-    final_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+    await aiofiles_os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    final_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
     tmp_path = final_path + ".validating"
 
     async with aiofiles.open(tmp_path, "wb") as f:
@@ -449,15 +450,15 @@ async def post_result(
     os.replace(tmp_path, final_path)
 
     if already_exists:
-        return DocAPIResponseOK[NoneType](
+        return validate_ok_response(DocAPIResponseOK[NoneType](
             status=fastapi.status.HTTP_200_OK,
             code=AppCode.JOB_RESULT_REUPLOADED,
             detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_REUPLOADED]["detail"]
-        )
+        ))
     else:
-        return DocAPIResponseOK[NoneType](
+        return validate_ok_response(DocAPIResponseOK[NoneType](
             status=fastapi.status.HTTP_201_CREATED,
             code=AppCode.JOB_RESULT_UPLOADED,
             detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
-        )
+        ))
 
