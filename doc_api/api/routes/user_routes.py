@@ -516,7 +516,7 @@ GET_RESULT_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "Job result is not ready yet.",
     },
-    AppCode.JOB_FAILED: {
+    AppCode.JOB_MARKED_ERROR: {
         "status": fastapi.status.HTTP_409_CONFLICT,
         "description": "Job has failed and result is not available.",
         "model": DocAPIResponseClientError,
@@ -548,8 +548,8 @@ async def get_result(
     if db_job.state in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.CANCELLED}:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
-            code=AppCode.JOB_FAILED,
-            detail=GET_RESULT_RESPONSES[AppCode.JOB_FAILED]["detail"]
+            code=AppCode.JOB_MARKED_ERROR,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_MARKED_ERROR]["detail"]
         )
 
     if db_job.state in {base_objects.ProcessingState.NEW, base_objects.ProcessingState.PROCESSING}:
@@ -560,7 +560,7 @@ async def get_result(
         )
 
     if db_job.state == base_objects.ProcessingState.DONE:
-        result_file_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+        result_file_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
         if not os.path.exists(result_file_path):
              raise DocAPIClientErrorException(
                 status=status.HTTP_410_GONE,

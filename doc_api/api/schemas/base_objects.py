@@ -220,8 +220,7 @@ class JobProgressUpdate(BaseModel):
         examples=["Processing page 12 of 58."]
     )
 
-    model_config = ConfigDict(from_attributes=True, extra="ignore")
-
+    model_config = ConfigDict(extra="forbid")
 
 
 class JobLease(BaseModel):
@@ -250,8 +249,6 @@ class JobLease(BaseModel):
         ),
         examples=["2025-10-18T21:30:00+00:00"]
     )
-
-    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class Key(BaseModel):
@@ -312,11 +309,16 @@ class KeyNew(BaseModel):
         examples=[KeyRole.USER.value, KeyRole.WORKER.value, KeyRole.ADMIN.value],
     )
 
+    model_config = ConfigDict(extra="forbid")
+
+
 class KeyUpdate(BaseModel):
     label: Optional[str] = None
     role: Optional[KeyRole] = None
 
     active: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def model_example(model_type: Any) -> Any:

@@ -11,7 +11,8 @@ import urllib.parse
 import pytest
 import pytest_asyncio
 
-from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML
+from doc_api.api.schemas import base_objects
+from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, VALID_ZIP
 
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
@@ -251,3 +252,63 @@ async def lease_job(client, worker_headers, job_with_required_uploads_by_payload
     lease = body["data"]
 
     return {"created_job": job, "lease": lease, "payload": payload}
+
+
+@pytest_asyncio.fixture
+async def job_with_result(client, worker_headers, lease_job):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.post(
+        f"/v1/jobs/{job_id}/result/",
+        headers=worker_headers,
+        files={"result": ("result.zip", VALID_ZIP, "application/zip")},
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == 201
+    assert body["code"] == AppCode.JOB_RESULT_UPLOADED.value
+
+    return lease_job
+
+
+@pytest_asyncio.fixture
+async def job_marked_done(client, worker_headers, job_with_result):
+    job_id = job_with_result["lease"]["id"]
+
+    update_payload = {"state": base_objects.ProcessingState.DONE.value,
+                      "log": "technical log",
+                      "log_user": "user-friendly log"}
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+        json=update_payload
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_MARKED_DONE.value
+
+    return {**job_with_result, "update_payload": update_payload}
+
+
+@pytest_asyncio.fixture
+async def job_marked_error(client, worker_headers, lease_job):
+    job_id = lease_job["lease"]["id"]
+
+    update_payload = {"state": base_objects.ProcessingState.ERROR.value,
+                      "log": "technical error log",
+                      "log_user": "user-friendly error log"}
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+        json=update_payload
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_MARKED_ERROR.value
+
+    return {**lease_job, "update_payload": update_payload}

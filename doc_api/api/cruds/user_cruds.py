@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,8 @@ class JobDefinition(BaseModel):
     meta_json_required: bool = False
     alto_required: bool = False
     page_required: bool = False
+
+    model_config = ConfigDict(extra="forbid")
 
 
 async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefinition) -> Tuple[Optional[model.Job], AppCode]:
