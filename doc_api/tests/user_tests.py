@@ -632,5 +632,11 @@ async def test_patch_job_409_cancel_cancelled_job(client, user_headers, cancel_n
     body = r.json()
     assert body["code"] == AppCode.JOB_UNCANCELLABLE.value
 
+#
+# GET /v1/jobs/{job_id}/result - 200, 409, 410, 425
+#
+
+
+
 
 

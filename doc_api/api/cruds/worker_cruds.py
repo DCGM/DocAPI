@@ -140,7 +140,7 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
 
 async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
-        async with ((db.begin())):
+        async with (((db.begin()))):
             result = await db.execute(
                 select(model.Job).where(model.Job.id == job_id).with_for_update()
             )
@@ -148,11 +148,11 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
             if db_job is None:
                 return None, None, None, AppCode.JOB_NOT_FOUND
 
-            # allow updating progress for PROCESSING jobs, and finalizing jobs (DONE, ERROR) once
-            if db_job.state != base_objects.ProcessingState.PROCESSING:
-                return db_job, None, None, AppCode.JOB_NOT_IN_PROCESSING
+            update_logs = False
+            lease_expire_at = None
+            server_time = None
 
-            if job_progress_update.state is None:
+            if job_progress_update.state is None and db_job.state == base_objects.ProcessingState.PROCESSING:
                 if job_progress_update.progress is not None:
                     p = job_progress_update.progress
                     p = max(0.0, min(1.0, p))
@@ -160,38 +160,55 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
 
                 lease_expire_at, server_time = get_new_lease()
                 db_job.last_change = server_time
+                update_logs = True
 
-            if job_progress_update.state == base_objects.ProcessingState.DONE:
-                db_job.progress = 1.0
-
-            if job_progress_update.state == base_objects.ProcessingState.ERROR or \
-                job_progress_update.state == base_objects.ProcessingState.DONE:
+            elif job_progress_update.state == base_objects.ProcessingState.DONE and \
+                db_job.state in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE}:
+                if db_job.state == base_objects.ProcessingState.DONE:
+                    return db_job, None, None, AppCode.JOB_ALREADY_MARKED_DONE
                 db_job.state = job_progress_update.state
-
+                db_job.progress = 1.0
                 finished_date = datetime.now(timezone.utc)
                 db_job.finished_date = finished_date
                 db_job.last_change = finished_date
+                update_logs = True
 
-                lease_expire_at = None
-                server_time = None
+            elif job_progress_update.state == base_objects.ProcessingState.ERROR and \
+                    db_job.state in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.ERROR}:
+                if db_job.state == base_objects.ProcessingState.ERROR:
+                    return db_job, None, None, AppCode.JOB_ALREADY_MARKED_ERROR
+                db_job.state = job_progress_update.state
+                finished_date = datetime.now(timezone.utc)
+                db_job.finished_date = finished_date
+                db_job.last_change = finished_date
+                update_logs = True
 
-            if job_progress_update.log:
-                if db_job.log:
-                    if not db_job.log.endswith("\n"):
-                        db_job.log += "\n"
-                    db_job.log += job_progress_update.log
-                else:
-                    db_job.log = job_progress_update.log
 
-            if job_progress_update.log_user:
-                if db_job.log_user:
-                    if not db_job.log_user.endswith("\n"):
-                        db_job.log_user += "\n"
-                    db_job.log_user += job_progress_update.log_user
-                else:
-                    db_job.log_user = job_progress_update.log_user
+            if update_logs:
+                if job_progress_update.log:
+                    if db_job.log:
+                        if not db_job.log.endswith("\n"):
+                            db_job.log += "\n"
+                        db_job.log += job_progress_update.log
+                    else:
+                        db_job.log = job_progress_update.log
 
-            return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
+                if job_progress_update.log_user:
+                    if db_job.log_user:
+                        if not db_job.log_user.endswith("\n"):
+                            db_job.log_user += "\n"
+                        db_job.log_user += job_progress_update.log_user
+                    else:
+                        db_job.log_user = job_progress_update.log_user
+
+            if job_progress_update.state is None:
+                return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
+            elif job_progress_update.state == base_objects.ProcessingState.DONE:
+                return db_job, None, None, AppCode.JOB_MARKED_DONE
+            elif job_progress_update.state == base_objects.ProcessingState.ERROR:
+                return db_job, None, None, AppCode.JOB_MARKED_ERROR
+
+            raise DBError("Unhandled job progress update state.")
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating processing job.") from e

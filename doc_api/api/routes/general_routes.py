@@ -132,25 +132,25 @@ PATCH_JOB_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "Job cannot be marked as done. Result ZIP file has not been uploaded yet.",
     },
-    AppCode.JOB_COMPLETED: {
+    AppCode.JOB_MARKED_DONE: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been marked as done.",
         "model": DocAPIResponseOK,
         "detail": "Job has been marked as done.",
     },
-    AppCode.JOB_FAILED: {
+    AppCode.JOB_MARKED_ERROR: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been marked as error.",
         "model": DocAPIResponseOK,
         "detail": "Job has been marked as error.",
     },
-    AppCode.JOB_ALREADY_COMPLETED: {
+    AppCode.JOB_ALREADY_MARKED_DONE: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job was already marked as done.",
         "model": DocAPIResponseOK,
         "detail": "Job was already marked as done.",
     },
-    AppCode.JOB_ALREADY_FAILED: {
+    AppCode.JOB_ALREADY_MARKED_ERROR: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job was already marked as error.",
         "model": DocAPIResponseOK,
@@ -273,7 +273,8 @@ async def patch_job(
 
         # worker marks job as done
         if job_progress_update.state == base_objects.ProcessingState.DONE:
-            result_path = os.path.join(config.RESULT_DIR, f"{job_id}.zip")
+            logger.info("HALOOOOOOOOOOOOOOOOOOO")
+            result_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
             if not await aiofiles_os.path.exists(result_path):
                 raise DocAPIClientErrorException(
                     status=fastapi.status.HTTP_409_CONFLICT,
@@ -281,45 +282,45 @@ async def patch_job(
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_RESULT_MISSING]["detail"],
                 )
 
-            code_update_job = await worker_cruds.update_job_progress(
+            _, _, _, code_update_job = await worker_cruds.update_job_progress(
                 db=db,
                 job_id=job_id,
                 job_progress_update=job_progress_update
             )
 
-            if code_update_job == AppCode.JOB_COMPLETED:
+            if code_update_job == AppCode.JOB_MARKED_DONE:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_COMPLETED,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_COMPLETED]["detail"]
+                    code=AppCode.JOB_MARKED_DONE,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_MARKED_DONE]["detail"]
                 )
-            elif code_update_job == AppCode.JOB_ALREADY_COMPLETED:
+            elif code_update_job == AppCode.JOB_ALREADY_MARKED_DONE:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_ALREADY_COMPLETED,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_COMPLETED]["detail"]
+                    code=AppCode.JOB_ALREADY_MARKED_DONE,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_MARKED_DONE]["detail"]
                 )
 
         # worker marks job as error
         elif job_progress_update.state == base_objects.ProcessingState.ERROR:
 
-            code_update_job = await worker_cruds.update_job_progress(
+            _, _, _, code_update_job = await worker_cruds.update_job_progress(
                 db=db,
                 job_id=job_id,
                 job_progress_update=job_progress_update
             )
 
-            if code_update_job == AppCode.JOB_FAILED:
+            if code_update_job == AppCode.JOB_MARKED_ERROR:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_FAILED,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_FAILED]["detail"]
+                    code=AppCode.JOB_MARKED_ERROR,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_MARKED_ERROR]["detail"]
                 )
-            elif code_update_job == AppCode.JOB_ALREADY_FAILED:
+            elif code_update_job == AppCode.JOB_ALREADY_MARKED_ERROR:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_ALREADY_FAILED,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_FAILED]["detail"]
+                    code=AppCode.JOB_ALREADY_MARKED_ERROR,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_MARKED_ERROR]["detail"]
                 )
 
         # worker updates job progress
@@ -334,8 +335,8 @@ async def patch_job(
                 )
             db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
                 db=db,
-               job_id=job_id,
-               job_progress_update=job_progress_update
+                job_id=job_id,
+                job_progress_update=job_progress_update
             )
             if code_update_job == AppCode.JOB_UPDATED:
                 return DocAPIResponseOK[base_objects.JobLease](
