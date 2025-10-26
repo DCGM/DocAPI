@@ -1,5 +1,42 @@
+import itertools
+
 import cv2
 import numpy as np
+
+#
+# Generate combinations of job definition payloads for testing
+#
+
+def generate_job_definition_payloads():
+    base_images = [
+        {"name": "img1.png", "order": 0},
+        {"name": "img2.jpg", "order": 1},
+        {"name": "img3.tif", "order": 2},
+    ]
+
+    payloads = []
+    for combo in itertools.product([False, True], repeat=3):
+        flags = dict(zip(["meta_json_required", "alto_required", "page_required"], combo))
+        payloads.append({
+            "images": base_images[:2] if any(combo) else base_images[:3],
+            **flags,
+        })
+    return payloads
+
+def job_definition_payload_id(payload):
+    """Generate a readable ID for pytest logs."""
+    image_count = len(payload["images"])
+    # collect unique extensions
+    exts = {img["name"].split(".")[-1] for img in payload["images"]}
+    flags = [
+        name.replace("_required", "")
+        for name, val in payload.items()
+        if name.endswith("_required") and val
+    ]
+    flags_str = "+".join(flags) if flags else "none"
+    return f"{image_count}-imgs:{'+'.join(sorted(exts))}:{flags_str}"
+
+JOB_DEFINITION_PAYLOADS = generate_job_definition_payloads()
 
 def make_white_image_bytes(ext: str = ".jpg"):
     """

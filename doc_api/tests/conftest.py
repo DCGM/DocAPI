@@ -3,9 +3,17 @@ import asyncio
 from typing import Optional
 
 import httpx
+
+import io
+import os.path
+import urllib.parse
+
 import pytest
 import pytest_asyncio
 
+from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML
+
+from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
 
 # -----------------------------------------------------------------------------
@@ -99,3 +107,147 @@ def worker_headers(_opts):
 @pytest.fixture()
 def admin_headers(_opts):
     return _headers_or_skip(_opts["TEST_ADMIN_KEY"], "ADMIN")
+
+# -----------------------------------------------------------------------------
+
+@pytest.fixture
+def payload(request):
+    return request.param
+
+
+@pytest_asyncio.fixture
+async def created_job(client, user_headers, payload):
+    r = await client.post("/v1/jobs", json=payload, headers=user_headers)
+
+    assert r.status_code == 201, r.text
+
+    body = r.json()
+    assert body["code"] == AppCode.JOB_CREATED.value
+    assert body["status"] == 201
+
+    job = body["data"]
+    return {"created_job": job, "payload": payload}
+
+
+async def _put_file(client, url: str, field: str, filename: str, data: bytes, content_type: str, headers):
+    files = {field: (filename, io.BytesIO(data), content_type)}
+    r = await client.put(url, files=files, headers=headers)
+    return r
+
+def _ename(name: str) -> str:
+    return urllib.parse.quote(name, safe="._-()[]")
+
+@pytest_asyncio.fixture
+async def job_with_required_uploads_by_payload_name(client, user_headers, created_job):
+    job = created_job["created_job"]
+    payload = created_job["payload"]
+    job_id = job["id"]
+
+    if payload["meta_json_required"]:
+        r = await client.put(
+            f"/v1/jobs/{job_id}/files/metadata",
+            headers=user_headers,
+            json={"meta": "dummy"},
+        )
+        assert r.status_code == 201, r.text
+        r = await client.put(
+            f"/v1/jobs/{job_id}/files/metadata",
+            headers=user_headers,
+            json={"meta": "dummy"},
+        )
+        assert r.status_code == 200, r.text
+
+    for i, pimg in enumerate(payload["images"]):
+        name = pimg["name"]
+        enc = _ename(name)
+
+        img_bytes, ctype = make_white_image_bytes(os.path.splitext(name)[1])
+        r = await _put_file(
+            client,
+            f"/v1/jobs/{job_id}/images/{enc}/files/image",
+            "file",
+            name,
+            img_bytes,
+            ctype,
+            user_headers,
+        )
+        assert r.status_code == 201, r.text
+        if i < len(payload["images"]) - 1:
+            r = await _put_file(
+                client,
+                f"/v1/jobs/{job_id}/images/{enc}/files/image",
+                "file",
+                name,
+                img_bytes,
+                ctype,
+                user_headers,
+            )
+            assert r.status_code == 200, r.text
+
+        if payload["alto_required"]:
+            r = await _put_file(
+                client,
+                f"/v1/jobs/{job_id}/images/{enc}/files/alto",
+                "file",
+                f"{name.rsplit('.', 1)[0]}.xml",
+                VALID_ALTO_XML,
+                "application/xml",
+                user_headers,
+            )
+            assert r.status_code == 201, r.text
+            if i < len(payload["images"]) - 1:
+                r = await _put_file(
+                    client,
+                    f"/v1/jobs/{job_id}/images/{enc}/files/alto",
+                    "file",
+                    f"{name.rsplit('.', 1)[0]}.xml",
+                    VALID_ALTO_XML,
+                    "application/xml",
+                    user_headers,
+                )
+                assert r.status_code == 200, r.text
+
+        if payload["page_required"]:
+            r = await _put_file(
+                client,
+                f"/v1/jobs/{job_id}/images/{enc}/files/page",
+                "file",
+                f"{name.rsplit('.', 1)[0]}.xml",
+                VALID_PAGE_XML,
+                "application/xml",
+                user_headers,
+            )
+            assert r.status_code == 201, r.text
+            if i < len(payload["images"]) - 1:
+                r = await _put_file(
+                    client,
+                    f"/v1/jobs/{job_id}/images/{enc}/files/page",
+                    "file",
+                    f"{name.rsplit('.', 1)[0]}.xml",
+                    VALID_PAGE_XML,
+                    "application/xml",
+                    user_headers,
+                )
+                assert r.status_code == 200, r.text
+
+    return {"created_job": job, "payload": payload}
+
+
+@pytest_asyncio.fixture
+async def lease_job(client, worker_headers, job_with_required_uploads_by_payload_name):
+    job = job_with_required_uploads_by_payload_name["created_job"]
+    payload = job_with_required_uploads_by_payload_name["payload"]
+
+    r = await client.post(
+        "/v1/jobs/lease",
+        headers=worker_headers
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_LEASED.value
+
+    lease = body["data"]
+
+    return {"created_job": job, "lease": lease, "payload": payload}
