@@ -7,7 +7,8 @@ from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
 from doc_api.tests.conftest import user_headers
-from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, job_definition_payload_id
+from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, job_definition_payload_id, VALID_ZIP
+
 
 #
 # POST /v1/jobs/lease - 200
@@ -476,3 +477,58 @@ async def test_get_metadata_410(client, worker_headers, lease_job, payload):
     body = r.json()
     assert body["status"] == 410
     assert body["code"] == AppCode.META_JSON_GONE.value
+
+
+#
+# POST /v1/jobs/{job_id}/result/ - 201, 200, 415
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload", [JOB_DEFINITION_PAYLOADS[0]],
+    ids=[AppCode.JOB_RESULT_UPLOADED.value],
+    indirect=True,
+)
+async def test_post_job_result_with_reupload(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    # ---- 1st upload ----
+    r = await client.post(
+        f"/v1/jobs/{job_id}/result/",
+        headers=worker_headers,
+        files={"result": ("result.zip", VALID_ZIP, "application/zip")},
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == 201
+    assert body["code"] == AppCode.JOB_RESULT_UPLOADED.value
+
+    # ---- Re-upload (should trigger REUPLOADED) ----
+    r = await client.post(
+        f"/v1/jobs/{job_id}/result/",
+        headers=worker_headers,
+        files={"result": ("result.zip", VALID_ZIP, "application/zip")},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RESULT_REUPLOADED.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_INVALID], indirect=True)
+async def test_post_job_result_415(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.post(
+        f"/v1/jobs/{job_id}/result/",
+        headers=worker_headers,
+        files={"result": ("result.txt", b"This is not a zip file.", "text/plain")},
+    )
+
+    assert r.status_code == 415, r.text
+    body = r.json()
+    assert body["status"] == 415
+    assert body["code"] == AppCode.JOB_RESULT_INVALID.value
