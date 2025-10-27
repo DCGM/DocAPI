@@ -49,6 +49,73 @@ async def test_upload_job_files(client, user_headers, job_with_required_uploads_
     assert data["state"] == base_objects.ProcessingState.QUEUED.value
 
 
+#
+# Download all job files according to required flags
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=job_definition_payload_id, indirect=True)
+async def test_download_job_files(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    data = body["data"]
+
+    assert payload["meta_json_required"] == data["meta_json_required"]
+    assert payload["alto_required"] == data["alto_required"]
+    assert payload["page_required"] == data["page_required"]
+
+    # Metadata file if required
+    if data["meta_json_required"]:
+        r = await client.get(
+            f"/v1/jobs/{job_id}/files/metadata",
+            headers=worker_headers,
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/json", "Expected JSON content type for metadata"
+        assert len(r.content) > 0, "Metadata file content should not be empty"
+
+    job = body["data"]
+    for image in job["images"]:
+        image_id = image["id"]
+
+        # Image file
+        r = await client.get(
+            f"/v1/jobs/{job_id}/images/{image_id}/files/image",
+            headers=worker_headers,
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("image/"), "Expected image content type"
+        assert len(r.content) > 0, "Image file content should not be empty"
+
+        # ALTO file if required
+        if data["alto_required"]:
+            r = await client.get(
+                f"/v1/jobs/{job_id}/images/{image_id}/files/alto",
+                headers=worker_headers,
+            )
+            assert r.status_code == 200, r.text
+            assert r.headers["content-type"] == "application/xml", "Expected XML content type for ALTO"
+            assert len(r.content) > 0, "ALTO file content should not be empty"
+
+        # PAGE file if required
+        if data["page_required"]:
+            r = await client.get(
+                f"/v1/jobs/{job_id}/images/{image_id}/files/page",
+                headers=worker_headers,
+            )
+            assert r.status_code == 200, r.text
+            assert r.headers["content-type"] == "application/xml", "Expected XML content type for PAGE"
+            assert len(r.content) > 0, "PAGE file content should not be empty"
+
+
 @pytest.mark.asyncio
 async def test_user_to_readonly_job_access(client, admin_headers, worker_headers):
     # create random API key with USER role as ADMIN

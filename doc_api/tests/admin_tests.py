@@ -7,6 +7,25 @@ from doc_api.api.schemas.responses import AppCode
 
 
 #
+# GET /v1/admin/keys - 200
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[f"{AppCode.KEYS_RETRIEVED}"])
+async def test_get_keys_200(client, admin_headers, dummy):
+    r = await client.get("/v1/admin/keys", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.KEYS_RETRIEVED.value
+    data = body["data"]
+    assert isinstance(data, list)
+    for item in data:
+        assert "label" in item
+        assert "role" in item
+        assert "active" in item
+
+
+#
 # POST /v1/admin/keys - 201, 409
 #
 
@@ -98,7 +117,7 @@ async def test_post_keys_secret_201(client, admin_headers, new_key):
 
 
 @pytest.mark.asyncio
-async def test_post_keys_secret_404_nonexistent_key(client, admin_headers):
+async def test_post_keys_secret_404(client, admin_headers):
     r = await client.post(
         f"/v1/admin/keys/nonexistent-key/secret",
         headers=admin_headers
