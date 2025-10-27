@@ -53,15 +53,16 @@ async def get_keys(
 POST_KEY_RESPONSES = {
     AppCode.KEY_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
-        "description": "A new API key was created successfully.",
+        "description": "API key created successfully.",
         "model": DocAPIResponseOK,
-        "detail": "API key created successfully, secret: {key_str}",
+        "model_data": base_objects.KeySecret,
+        "detail": "API key created successfully.",
     },
     AppCode.KEY_ALREADY_EXISTS: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "An API key with the specified label already exists.",
+        "description": "API key with the specified label already exists.",
         "model": DocAPIResponseClientError,
-        "detail": "An API key with the specified label already exists.",
+        "detail": "API key with the specified label already exists.",
     },
     AppCode.KEY_CREATION_FAILED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
@@ -73,6 +74,7 @@ POST_KEY_RESPONSES = {
 @admin_router.post(
     "/keys",
     summary="Create Key",
+    response_model=DocAPIResponseOK[base_objects.KeySecret],
     tags=["Admin"],
     description="Create a new API key with the specified label and role.",
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -83,13 +85,16 @@ async def post_key(
         key: model.Key = Depends(require_api_key()),
         db: AsyncSession = Depends(get_async_session)):
 
-    key_str, code = await admin_cruds.new_key(db=db, key_new=key_new)
+    secret, code = await admin_cruds.new_key(db=db, key_new=key_new)
 
     if code == AppCode.KEY_CREATED:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
+        return validate_ok_response(DocAPIResponseOK[base_objects.KeySecret](
             status=fastapi.status.HTTP_201_CREATED,
             code=AppCode.KEY_CREATED,
-            detail=POST_KEY_RESPONSES[AppCode.KEY_CREATED]["detail"].format(key_str=key_str),
+            detail=POST_KEY_RESPONSES[AppCode.KEY_CREATED]["detail"],
+            data=base_objects.KeySecret(
+                secret=secret
+            )
         ))
     elif code == AppCode.KEY_ALREADY_EXISTS:
         raise DocAPIClientErrorException(
@@ -112,7 +117,8 @@ POST_KEY_SECRET_RESPONSES = {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "New secret for the API key were created successfully.",
         "model": DocAPIResponseOK,
-        "detail": "New API key secret created successfully: {key_str}",
+        "model_data": base_objects.KeySecret,
+        "detail": "New API key secret created successfully.",
     },
     AppCode.KEY_NOT_FOUND: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
@@ -130,23 +136,27 @@ POST_KEY_SECRET_RESPONSES = {
 @admin_router.post(
     "/keys/{label}/secret",
     summary="Create Key Secret",
+    response_model=DocAPIResponseOK[base_objects.KeySecret],
     tags=["Admin"],
     description="Create new secrets for an existing API key. The old secrets will be invalidated.",
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_KEY_SECRET_RESPONSES))
-async def post_key_secrets(
+async def post_key_secret(
         request: Request,
         label: str,
         key: model.Key = Depends(require_api_key()),
         db: AsyncSession = Depends(get_async_session)):
 
-    key_str, code = await admin_cruds.new_secret(db=db, label=label)
+    secret, code = await admin_cruds.new_secret(db=db, label=label)
 
     if code == AppCode.KEY_SECRET_CREATED:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
+        return validate_ok_response(DocAPIResponseOK[base_objects.KeySecret](
             status=fastapi.status.HTTP_201_CREATED,
             code=AppCode.KEY_SECRET_CREATED,
-            detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_SECRET_CREATED]["detail"].format(key_str=key_str),
+            detail=POST_KEY_SECRET_RESPONSES[AppCode.KEY_SECRET_CREATED]["detail"],
+            data=base_objects.KeySecret(
+                secret=secret
+            )
         ))
     elif code == AppCode.KEY_SECRET_CREATION_FAILED:
         raise DocAPIClientErrorException(
@@ -199,6 +209,7 @@ PATCH_KEY_RESPONSES = {
     responses=make_responses(PATCH_KEY_RESPONSES))
 async def patch_key(
         request: Request,
+        label: str,
         key_update: base_objects.KeyUpdate,
         key: model.Key = Depends(require_api_key()),
         db: AsyncSession = Depends(get_async_session)):
@@ -212,7 +223,7 @@ async def patch_key(
             detail=PATCH_KEY_RESPONSES[AppCode.KEY_UPDATE_NO_FIELDS]["detail"]
         )
 
-    code = await admin_cruds.update_key(db=db, key_update=key_update)
+    code = await admin_cruds.update_key(db=db, label=label, key_update=key_update)
 
     if code == AppCode.KEY_UPDATED:
         return validate_ok_response(DocAPIResponseOK[NoneType](

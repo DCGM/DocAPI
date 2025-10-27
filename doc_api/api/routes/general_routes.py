@@ -55,7 +55,7 @@ GET_JOB_RESPONSES = {
 async def get_job(
         request: Request,
         job_id: UUID,
-        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER, model.KeyRole.WORKER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
@@ -132,7 +132,7 @@ PATCH_JOB_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "Job cannot be marked as done. Result ZIP file has not been uploaded yet.",
     },
-    AppCode.JOB_MARKED_DONE: {
+    AppCode.JOB_COMPLETED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been marked as done.",
         "model": DocAPIResponseOK,
@@ -144,7 +144,7 @@ PATCH_JOB_RESPONSES = {
         "model": DocAPIResponseOK,
         "detail": "Job has been marked as error.",
     },
-    AppCode.JOB_ALREADY_MARKED_DONE: {
+    AppCode.JOB_ALREADY_COMPLETED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job was already marked as done.",
         "model": DocAPIResponseOK,
@@ -179,7 +179,7 @@ async def patch_job(
                     "description": "User marks job as cancelled."
                                    "\n\nOnly `state: cancelled` will be accepted, other fields will be ignored."
                                    "\n\nJob must be in one of the following "
-                                   f"`state: {base_objects.ProcessingState.NEW}|{base_objects.ProcessingState.QUEUED}|{base_objects.ProcessingState.PROCESSING}`.",
+                                   f"`state: {base_objects.ProcessingState.NEW}|{base_objects.ProcessingState.QUEUED}|{base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.ERROR}`.",
                     "value": {"state": base_objects.ProcessingState.CANCELLED.value},
                 },
                 "worker_done": {
@@ -226,22 +226,23 @@ async def patch_job(
                 }
             }
         ),
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code_get_job = await general_cruds.get_job(db=db, job_id=job_id)
     code_update_job = None
 
-    if key.role == model.KeyRole.USER:
+    if key.role == base_objects.KeyRole.USER:
         if job_progress_update.state != base_objects.ProcessingState.CANCELLED:
             raise DocAPIClientErrorException(
                 status=status.HTTP_403_FORBIDDEN,
                 code=AppCode.API_KEY_USER_FORBIDDEN,
                 detail=PATCH_JOB_RESPONSES[AppCode.API_KEY_USER_FORBIDDEN]["detail"]
             )
+        logger.info(db_job.state)
         if db_job.state in {base_objects.ProcessingState.CANCELLED,
                             base_objects.ProcessingState.DONE,
-                            base_objects.ProcessingState.ERROR}:
+                            base_objects.ProcessingState.FAILED}:
             raise DocAPIClientErrorException(
                 status=status.HTTP_409_CONFLICT,
                 code=AppCode.JOB_UNCANCELLABLE,
@@ -258,7 +259,7 @@ async def patch_job(
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
             )
 
-    elif key.role == model.KeyRole.WORKER:
+    elif key.role == base_objects.KeyRole.WORKER:
         if job_progress_update.state in {base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR} \
             and db_job.state not in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
             raise DocAPIClientErrorException(
@@ -273,7 +274,6 @@ async def patch_job(
 
         # worker marks job as done
         if job_progress_update.state == base_objects.ProcessingState.DONE:
-            logger.info("HALOOOOOOOOOOOOOOOOOOO")
             result_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
             if not await aiofiles_os.path.exists(result_path):
                 raise DocAPIClientErrorException(
@@ -288,17 +288,17 @@ async def patch_job(
                 job_progress_update=job_progress_update
             )
 
-            if code_update_job == AppCode.JOB_MARKED_DONE:
+            if code_update_job == AppCode.JOB_COMPLETED:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_MARKED_DONE,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_MARKED_DONE]["detail"]
+                    code=AppCode.JOB_COMPLETED,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_COMPLETED]["detail"]
                 )
-            elif code_update_job == AppCode.JOB_ALREADY_MARKED_DONE:
+            elif code_update_job == AppCode.JOB_ALREADY_COMPLETED:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.JOB_ALREADY_MARKED_DONE,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_MARKED_DONE]["detail"]
+                    code=AppCode.JOB_ALREADY_COMPLETED,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_COMPLETED]["detail"]
                 )
 
         # worker marks job as error
@@ -373,7 +373,7 @@ ME_RESPONSES = {
     description="Validate your API key and get information about it.",
     responses=make_responses(ME_RESPONSES)
 )
-async def me(key: model.Key = Depends(require_api_key(model.KeyRole.USER, model.KeyRole.WORKER))):
+async def me(key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER))):
     return DocAPIResponseOK[base_objects.Key](
         status=status.HTTP_200_OK,
         code=AppCode.API_KEY_VALID,

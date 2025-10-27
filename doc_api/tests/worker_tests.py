@@ -1,7 +1,5 @@
 import os
-
 import pytest
-import pytest_asyncio
 
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
@@ -496,7 +494,7 @@ async def test_post_job_result_200(client, worker_headers, job_with_result, payl
     r = await client.post(
         f"/v1/jobs/{job_id}/result/",
         headers=worker_headers,
-        files={"result": ("result.zip", VALID_ZIP, "application/zip")},
+        files={"file": ("result.zip", VALID_ZIP, "application/zip")},
     )
 
     assert r.status_code == 200, r.text
@@ -530,6 +528,7 @@ async def test_post_job_result_415(client, worker_headers, lease_job, payload):
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UPDATED], indirect=True)
 async def test_patch_job_200_update_progress(client, worker_headers, lease_job, payload):
     job_id = lease_job["created_job"]["id"]
+    lease = lease_job["lease"]
 
     r = await client.patch(
         f"/v1/jobs/{job_id}",
@@ -542,6 +541,10 @@ async def test_patch_job_200_update_progress(client, worker_headers, lease_job, 
     body = r.json()
     assert body["status"] == 200
     assert body["code"] == AppCode.JOB_UPDATED.value
+    extended_lease = body["data"]
+    assert extended_lease["id"] == lease["id"]
+    assert extended_lease["lease_expire_at"] > lease["lease_expire_at"], "Lease expiration time should be extended"
+    assert extended_lease["server_time"] > lease["server_time"], "Server time should be updated"
 
     r = await client.get(
         f"/v1/jobs/{job_id}",
@@ -558,7 +561,7 @@ async def test_patch_job_200_update_progress(client, worker_headers, lease_job, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_MARKED_DONE], indirect=True)
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_COMPLETED], indirect=True)
 async def test_patch_job_200_job_marked_done(client, worker_headers, job_marked_done, payload):
     job_id = job_marked_done["lease"]["id"]
     update_payload = job_marked_done["update_payload"]
@@ -578,7 +581,7 @@ async def test_patch_job_200_job_marked_done(client, worker_headers, job_marked_
     assert job["progress"] == 1.0
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ALREADY_MARKED_DONE], indirect=True)
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ALREADY_COMPLETED], indirect=True)
 async def test_patch_job_200_job_already_marked_done(client, worker_headers, job_marked_done, payload):
     job_id = job_marked_done["lease"]["id"]
     update_payload = job_marked_done["update_payload"]
@@ -591,7 +594,7 @@ async def test_patch_job_200_job_already_marked_done(client, worker_headers, job
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == 200
-    assert body["code"] == AppCode.JOB_ALREADY_MARKED_DONE.value
+    assert body["code"] == AppCode.JOB_ALREADY_COMPLETED.value
 
 
 @pytest.mark.asyncio
@@ -629,3 +632,54 @@ async def test_patch_job_200_job_already_marked_error(client, worker_headers, jo
     body = r.json()
     assert body["status"] == 200
     assert body["code"] == AppCode.JOB_ALREADY_MARKED_ERROR.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UPDATE_NO_FIELDS.value], indirect=True)
+async def test_patch_job_400_no_fields(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+        json={}
+    )
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["status"] == 400
+    assert body["code"] == AppCode.JOB_UPDATE_NO_FIELDS.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_MISSING.value], indirect=True)
+async def test_patch_job_409_job_result_missing(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+        json={"state": base_objects.ProcessingState.DONE.value,
+              "log_user": "user-friendly log"}
+    )
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["status"] == 409
+    assert body["code"] == AppCode.JOB_RESULT_MISSING.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNFINISHABLE.value], indirect=True)
+async def test_patch_job_409_job_unfinishable(client, worker_headers, cancelled_processing_job, payload):
+    job_id = cancelled_processing_job["lease"]["id"]
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+        json={"state": base_objects.ProcessingState.DONE.value,
+              "log_user": "user-friendly log"}
+    )
+
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["status"] == 409
+    assert body["code"] == AppCode.JOB_UNFINISHABLE.value

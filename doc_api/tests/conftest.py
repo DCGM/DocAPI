@@ -130,6 +130,25 @@ async def created_job(client, user_headers, payload):
     return {"created_job": job, "payload": payload}
 
 
+@pytest_asyncio.fixture
+async def cancelled_new_job(client, user_headers, created_job):
+    job = created_job["created_job"]
+    job_id = job["id"]
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=user_headers,
+        json={"state": base_objects.ProcessingState.CANCELLED.value},
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_CANCELLED.value
+
+    return created_job
+
+
 async def _put_file(client, url: str, field: str, filename: str, data: bytes, content_type: str, headers):
     files = {field: (filename, io.BytesIO(data), content_type)}
     r = await client.put(url, files=files, headers=headers)
@@ -251,7 +270,70 @@ async def lease_job(client, worker_headers, job_with_required_uploads_by_payload
 
     lease = body["data"]
 
-    return {"created_job": job, "lease": lease, "payload": payload}
+    return {**job_with_required_uploads_by_payload_name, "lease": lease}
+
+
+@pytest_asyncio.fixture
+async def failed_job(client, worker_headers, job_with_required_uploads_by_payload_name):
+    job = job_with_required_uploads_by_payload_name["created_job"]
+    job_id = job["id"]
+
+    for i in range(config.JOB_MAX_ATTEMPTS):
+        r = await client.post(
+            "/v1/jobs/lease",
+            headers=worker_headers
+        )
+        assert r.status_code == 200, r.text
+
+        body = r.json()
+        assert body["status"] == 200
+        assert body["code"] == AppCode.JOB_LEASED.value
+
+        lease = body["data"]
+
+        r = await client.patch(
+            f"/v1/jobs/{job_id}",
+            headers=worker_headers,
+            json={"state": base_objects.ProcessingState.ERROR.value,
+                  "log": "technical error log",
+                  "log_user": "user-friendly error log"}
+        )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == 200
+        assert body["code"] == AppCode.JOB_MARKED_ERROR.value
+
+    r = await client.post(
+        "/v1/jobs/lease",
+        headers=worker_headers
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_QUEUE_EMPTY.value
+
+    return job_with_required_uploads_by_payload_name
+
+
+@pytest_asyncio.fixture
+async def cancelled_processing_job(client, user_headers, lease_job):
+    job = lease_job["created_job"]
+    job_id = job["id"]
+
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=user_headers,
+        json={"state": base_objects.ProcessingState.CANCELLED.value},
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_CANCELLED.value
+
+    return lease_job
 
 
 @pytest_asyncio.fixture
@@ -261,7 +343,7 @@ async def job_with_result(client, worker_headers, lease_job):
     r = await client.post(
         f"/v1/jobs/{job_id}/result/",
         headers=worker_headers,
-        files={"result": ("result.zip", VALID_ZIP, "application/zip")},
+        files={"file": ("result.zip", VALID_ZIP, "application/zip")},
     )
 
     assert r.status_code == 201, r.text
@@ -288,7 +370,7 @@ async def job_marked_done(client, worker_headers, job_with_result):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == 200
-    assert body["code"] == AppCode.JOB_MARKED_DONE.value
+    assert body["code"] == AppCode.JOB_COMPLETED.value
 
     return {**job_with_result, "update_payload": update_payload}
 
@@ -312,3 +394,45 @@ async def job_marked_error(client, worker_headers, lease_job):
     assert body["code"] == AppCode.JOB_MARKED_ERROR.value
 
     return {**lease_job, "update_payload": update_payload}
+
+@pytest.fixture
+def key_role(request):
+    return request.param
+
+@pytest_asyncio.fixture
+async def new_key(client, admin_headers, key_role):
+    label = f"test-{key_role}-key-{os.urandom(4).hex()}"
+    r = await client.post(
+        "/v1/admin/keys",
+        headers=admin_headers,
+        json={
+            "label": label,
+            "role": key_role
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.KEY_CREATED.value
+    data = body["data"]
+    assert "secret" in data
+    assert len(data["secret"]) > 0
+
+    return {"role": key_role, "label": label, "secret": data["secret"]}
+
+
+@pytest_asyncio.fixture
+async def inactive_key(client, admin_headers, new_key):
+    label = new_key["label"]
+
+    r = await client.patch(
+        f"/v1/admin/keys/{label}",
+        headers=admin_headers,
+        json={
+            "active": False
+        }
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.KEY_UPDATED.value
+
+    return new_key

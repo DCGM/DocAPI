@@ -83,7 +83,7 @@ POST_JOB_RESPONSES = {
 async def post_job(
         request: Request,
         job_definition: user_cruds.JobDefinition = Body(..., openapi_examples=config.JOB_DEFINITION_EXAMPLES),
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
     #TODO check if there are duplicates in image names?
 
@@ -121,7 +121,7 @@ GET_JOBS_RESPONSES = {
     description="Retrieve all jobs associated with the authenticated API key.",
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
-        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
@@ -169,7 +169,7 @@ async def put_image(
         job_id: UUID,
         image_name: str,
         file: UploadFile,
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
@@ -263,7 +263,7 @@ async def put_alto(
         job_id: UUID,
         image_name: str,
         file: UploadFile,
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
@@ -369,7 +369,7 @@ async def put_page(
         job_id: UUID,
         image_name: str,
         file: UploadFile,
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
@@ -466,7 +466,7 @@ PUT_META_JSON_RESPONSES = {
 async def put_meta_json(
         job_id: UUID,
         meta_json: Annotated[JSONValue, Body(..., openapi_examples=config.META_JSON_EXAMPLES)],
-        key: model.Key = Depends(require_api_key(model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
@@ -512,15 +512,26 @@ GET_RESULT_RESPONSES = {
     },
     AppCode.JOB_RESULT_NOT_READY: {
         "status": fastapi.status.HTTP_425_TOO_EARLY,
-        "description": "Job result is not ready yet.",
+        "description": f"Job result is not ready yet. Job is in one of the following `state: "
+                       f"{base_objects.ProcessingState.NEW}|"
+                       f"{base_objects.ProcessingState.QUEUED}|"
+                       f"{base_objects.ProcessingState.PROCESSING}|"
+                       f"{base_objects.ProcessingState.ERROR}`.",
         "model": DocAPIResponseClientError,
         "detail": "Job result is not ready yet.",
+        "details": {"state": "processing"}
     },
-    AppCode.JOB_MARKED_ERROR: {
+    AppCode.JOB_CANCELLED: {
         "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "Job has failed and result is not available.",
+        "description": "Job cancelled.",
         "model": DocAPIResponseClientError,
-        "detail": "Job has failed and result is not available.",
+        "detail": "Job cancelled and result is not available.",
+    },
+    AppCode.JOB_FAILED: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Job failed.",
+        "model": DocAPIResponseClientError,
+        "detail": "Job failed and result is not available.",
     },
     AppCode.JOB_RESULT_GONE: {
         "status": fastapi.status.HTTP_410_GONE,
@@ -540,23 +551,34 @@ GET_RESULT_RESPONSES = {
 async def get_result(
         route_request: fastapi.Request,
         job_id: UUID,
-        key: model.Key = Depends(require_api_key(model.KeyRole.READONLY, model.KeyRole.USER)),
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
-    if db_job.state in {base_objects.ProcessingState.ERROR, base_objects.ProcessingState.CANCELLED}:
+    if db_job.state == base_objects.ProcessingState.CANCELLED:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
-            code=AppCode.JOB_MARKED_ERROR,
-            detail=GET_RESULT_RESPONSES[AppCode.JOB_MARKED_ERROR]["detail"]
+            code=AppCode.JOB_CANCELLED,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
         )
 
-    if db_job.state in {base_objects.ProcessingState.NEW, base_objects.ProcessingState.PROCESSING}:
+    if db_job.state == base_objects.ProcessingState.FAILED:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.JOB_FAILED,
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_FAILED]["detail"]
+        )
+
+    if db_job.state in {base_objects.ProcessingState.NEW,
+                        base_objects.ProcessingState.QUEUED,
+                        base_objects.ProcessingState.PROCESSING,
+                        base_objects.ProcessingState.ERROR}:
         raise DocAPIClientErrorException(
             status=status.HTTP_425_TOO_EARLY,
             code=AppCode.JOB_RESULT_NOT_READY,
-            detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_NOT_READY]["detail"]
+            detail=GET_RESULT_RESPONSES[AppCode.JOB_RESULT_NOT_READY]["detail"],
+            details={"state": db_job.state.value}
         )
 
     if db_job.state == base_objects.ProcessingState.DONE:

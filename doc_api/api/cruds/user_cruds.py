@@ -20,6 +20,8 @@ class ImageForJobDefinition(BaseModel):
     name: str
     order: int
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class JobDefinition(BaseModel):
     images: List[ImageForJobDefinition]
@@ -157,7 +159,7 @@ async def cancel_job(db: AsyncSession, job_id: UUID) -> AppCode:
                 return AppCode.JOB_NOT_FOUND
 
             if db_job.state in (base_objects.ProcessingState.DONE,
-                                base_objects.ProcessingState.ERROR,
+                                base_objects.ProcessingState.FAILED,
                                 base_objects.ProcessingState.CANCELLED):
                 return AppCode.JOB_UNCANCELLABLE
 

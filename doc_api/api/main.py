@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
                 db.add(
                     model.Key(
                         key_hash=test_admin_digest,
-                        label="test-admin",
+                        label=config.TEST_ADMIN_KEY_LABEL,
                         active=True,
                         role=KeyRole.ADMIN,
                     )
@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
                 db.add(
                     model.Key(
                         key_hash=test_readonly_digest,
-                        label="test-readonly",
+                        label=config.TEST_READONLY_KEY_LABEL,
                         active=True,
                         role=KeyRole.READONLY,
                     )
@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
                 db.add(
                     model.Key(
                         key_hash=test_user_digest,
-                        label="test-user",
+                        label=config.TEST_USER_KEY_LABEL,
                         active=True,
                         role=KeyRole.USER,
                     )
@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
                 db.add(
                     model.Key(
                         key_hash=test_worker_digest,
-                        label="test-worker",
+                        label=config.TEST_WORKER_KEY_LABEL,
                         active=True,
                         role=KeyRole.WORKER,
                     )
