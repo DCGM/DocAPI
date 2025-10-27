@@ -95,7 +95,7 @@ class Config:
         #         - the job is marked as ERROR
         self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
-        self.JOB_MAX_ATTEMPTS = int(os.getenv("JOB_MAX_ATTEMPTS", "5"))
+        self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
 
         # validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
         ################################################################################################################
@@ -124,6 +124,12 @@ class Config:
         self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", "testreadonlykey")
         self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", "testuserkey")
         self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", "testworkerkey")
+
+        self.TEST_ADMIN_KEY_LABEL = os.getenv("TEST_ADMIN_KEY_LABEL", "test-admin")
+        self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
+        self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
+        self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
+
         self.TEST_HTTP_TIMEOUT = os.getenv("TEST_HTTP_TIMEOUT", "30")
 
         # EMAILS and NOTIFICATIONS configuration

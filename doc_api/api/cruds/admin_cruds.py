@@ -36,8 +36,8 @@ async def new_key(*, db: AsyncSession, key_new: base_objects.KeyNew) -> Tuple[Op
             if key is not None:
                 return None, AppCode.KEY_ALREADY_EXISTS
 
-            raw_key, key_hash = await get_secret(db=db)
-            if raw_key is None:
+            secret, key_hash = await get_secret(db=db)
+            if secret is None:
                 return None, AppCode.KEY_CREATION_FAILED
 
             db.add(model.Key(
@@ -45,7 +45,7 @@ async def new_key(*, db: AsyncSession, key_new: base_objects.KeyNew) -> Tuple[Op
                 role=key_new.role,
                 key_hash=key_hash
             ))
-            return raw_key, AppCode.KEY_CREATED
+            return secret, AppCode.KEY_CREATED
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed adding new key") from e
@@ -58,16 +58,16 @@ async def new_secret(*, db: AsyncSession, label: str) -> Tuple[Optional[str], Ap
                 select(model.Key).where(model.Key.label == label).with_for_update()
             )
             key = result.scalar_one_or_none()
-            if key is not None:
-                return None, AppCode.KEY_ALREADY_EXISTS
+            if key is None:
+                return None, AppCode.KEY_NOT_FOUND
 
-            raw_key, key_hash = await get_secret(db=db)
-            if raw_key is None:
+            secret, key_hash = await get_secret(db=db)
+            if secret is None:
                 return None, AppCode.KEY_SECRET_CREATION_FAILED
 
             key.key_hash = key_hash
 
-            return raw_key, AppCode.KEY_CREATION_FAILED
+            return secret, AppCode.KEY_SECRET_CREATED
 
 
     except exc.SQLAlchemyError as e:
@@ -75,13 +75,13 @@ async def new_secret(*, db: AsyncSession, label: str) -> Tuple[Optional[str], Ap
 
 
 async def get_secret(db: AsyncSession) -> Tuple[Optional[str], Optional[str]]:
-    raw_key = None
+    secret = None
     key_hash = None
 
     # Retry loop in the vanishingly unlikely case of a hash collision
     for _ in range(3):
-        raw_key = generate_raw_key()
-        key_hash = hmac_sha256_hex(raw_key)
+        secret = generate_raw_key()
+        key_hash = hmac_sha256_hex(secret)
 
         # ensure uniqueness before insert (cheap existence check)
         existing = await db.execute(
@@ -90,15 +90,15 @@ async def get_secret(db: AsyncSession) -> Tuple[Optional[str], Optional[str]]:
         if existing.scalar_one_or_none() is not None:
             continue
 
-    return raw_key, key_hash
+    return secret, key_hash
 
 
-async def update_key(*, db: AsyncSession, key_update: base_objects.KeyUpdate) -> AppCode:
+async def update_key(*, db: AsyncSession, label: str, key_update: base_objects.KeyUpdate) -> AppCode:
     try:
         async with db.begin():
 
             result = await db.execute(
-                select(model.Key).where(model.Key.label == key_update.label).with_for_update()
+                select(model.Key).where(model.Key.label == label).with_for_update()
             )
             key = result.scalar_one_or_none()
             if key is None:

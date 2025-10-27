@@ -73,7 +73,7 @@ async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple
             db_job.started_date = now
             db_job.last_change = now
             db_job.worker_key_id = worker_key_id
-            db_job.previous_attempts = (db_job.previous_attempts or 0) + 1
+            db_job.previous_attempts = previous_attempts + 1
 
             lease_expire_at, server_time = get_new_lease(now)
 
@@ -140,7 +140,7 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
 
 async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
-        async with (((db.begin()))):
+        async with db.begin():
             result = await db.execute(
                 select(model.Job).where(model.Job.id == job_id).with_for_update()
             )
@@ -165,8 +165,8 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
             elif job_progress_update.state == base_objects.ProcessingState.DONE and \
                 db_job.state in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE}:
                 if db_job.state == base_objects.ProcessingState.DONE:
-                    return db_job, None, None, AppCode.JOB_ALREADY_MARKED_DONE
-                db_job.state = job_progress_update.state
+                    return db_job, None, None, AppCode.JOB_ALREADY_COMPLETED
+                db_job.state = base_objects.ProcessingState.DONE
                 db_job.progress = 1.0
                 finished_date = datetime.now(timezone.utc)
                 db_job.finished_date = finished_date
@@ -177,12 +177,11 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
                     db_job.state in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.ERROR}:
                 if db_job.state == base_objects.ProcessingState.ERROR:
                     return db_job, None, None, AppCode.JOB_ALREADY_MARKED_ERROR
-                db_job.state = job_progress_update.state
+                db_job.state = base_objects.ProcessingState.ERROR
                 finished_date = datetime.now(timezone.utc)
                 db_job.finished_date = finished_date
                 db_job.last_change = finished_date
                 update_logs = True
-
 
             if update_logs:
                 if job_progress_update.log:
@@ -204,7 +203,7 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
             if job_progress_update.state is None:
                 return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED
             elif job_progress_update.state == base_objects.ProcessingState.DONE:
-                return db_job, None, None, AppCode.JOB_MARKED_DONE
+                return db_job, None, None, AppCode.JOB_COMPLETED
             elif job_progress_update.state == base_objects.ProcessingState.ERROR:
                 return db_job, None, None, AppCode.JOB_MARKED_ERROR
 

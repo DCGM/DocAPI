@@ -23,7 +23,7 @@ def generate_job_definition_payloads():
         })
     return payloads
 
-def job_definition_payload_id(payload):
+def job_definition_payload_id(payload, app_code=None):
     """Generate a readable ID for pytest logs."""
     image_count = len(payload["images"])
     # collect unique extensions
@@ -34,7 +34,10 @@ def job_definition_payload_id(payload):
         if name.endswith("_required") and val
     ]
     flags_str = "+".join(flags) if flags else "none"
-    return f"{image_count}-imgs:{'+'.join(sorted(exts))}:{flags_str}"
+    payload_id = f"{image_count}-imgs:{'+'.join(sorted(exts))}:{flags_str}"
+    if app_code is not None:
+        return f"{app_code}:{payload_id}"
+    return payload_id
 
 JOB_DEFINITION_PAYLOADS = generate_job_definition_payloads()
 

@@ -415,13 +415,14 @@ POST_RESULT_RESPONSES = {
     response_model=DocAPIResponseOK,
     summary="Upload Result",
     tags=["Worker"],
-    description="Upload the result ZIP archive for a specific job.",
+    description="Upload the result ZIP archive for a specific job. "
+                "The uploaded file must be a `.zip`.",
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_RESULT_RESPONSES))
 @challenge_worker_access_to_processing_job
 async def post_result(
     job_id: UUID,
-    result: UploadFile = File(...),
+    file: UploadFile = File(..., description="ZIP archive containing the results of the job processing."),
     key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -431,7 +432,7 @@ async def post_result(
     tmp_path = final_path + ".validating"
 
     async with aiofiles.open(tmp_path, "wb") as f:
-        while chunk := await result.read(1024 * 1024):
+        while chunk := await file.read(1024 * 1024):
             await f.write(chunk)
 
     if config.RESULT_ZIP_VALIDATION:

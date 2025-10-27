@@ -321,6 +321,19 @@ class KeyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class KeySecret(BaseModel):
+    """
+    Represents the secret value of an API key.
+    This value is only shown at creation time and is required for authentication.
+    """
+
+    secret: str = Field(
+        ...,
+        description="The secret value of the API key used for authentication.",
+        examples=["abcd1234efgh5678ijkl9012mnop3456qrst7890uvwx"],
+    )
+
+
 def model_example(model_type: Any) -> Any:
     """
     Build a simple example for:
