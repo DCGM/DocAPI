@@ -57,7 +57,7 @@ async def test_post_job_lease_200_queue_empty(client, worker_headers, dummy):
 #
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASED], indirect=True)
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASE_EXTENDED], indirect=True)
 async def test_patch_job_lease_extend_200(client, worker_headers, lease_job, payload):
     job = lease_job["created_job"]
     lease = lease_job["lease"]
@@ -116,16 +116,14 @@ async def test_delete_job_lease_200(client, worker_headers, user_headers, lease_
     assert body["status"] == 403
     assert body["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
 
+
 #
-# GET /v1/jobs/{job_id}/images/{image_id}/files/image - 200, 404, 410
-# GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 404, 409, 410
-# GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 404, 409, 410
-# GET /v1/jobs/{job_id}/files/metadata - 200
+# GET /v1/jobs/{job_id} - 200
 #
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=job_definition_payload_id, indirect=True)
-async def test_worker_get_uploaded_files_200(client, worker_headers, lease_job, payload):
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RETRIEVED], indirect=True)
+async def test_get_job_200(client, worker_headers, lease_job, payload):
     job_id = lease_job["created_job"]["id"]
 
     r = await client.get(
@@ -137,48 +135,38 @@ async def test_worker_get_uploaded_files_200(client, worker_headers, lease_job, 
     assert body["status"] == 200
     assert body["code"] == AppCode.JOB_RETRIEVED.value
 
-    # Metadata file if required
-    if payload["meta_json_required"]:
-        r = await client.get(
-            f"/v1/jobs/{job_id}/files/metadata",
-            headers=worker_headers,
-        )
-        assert r.status_code == 200, r.text
-        assert r.headers["content-type"] == "application/json", "Expected JSON content type for metadata"
-        assert len(r.content) > 0, "Metadata file content should not be empty"
+    job = body["data"]
+    assert job["id"] == job_id
+
+
+#
+# GET /v1/jobs/{job_id}/images/{image_id}/files/image - 200, 404, 410
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_DOWNLOADED], indirect=True)
+async def test_get_image_200(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
 
     job = body["data"]
-    for image in job["images"]:
-        image_id = image["id"]
-
-        # Image file
-        r = await client.get(
-            f"/v1/jobs/{job_id}/images/{image_id}/files/image",
-            headers=worker_headers,
-        )
-        assert r.status_code == 200, r.text
-        assert r.headers["content-type"].startswith("image/"), "Expected image content type"
-        assert len(r.content) > 0, "Image file content should not be empty"
-
-        # ALTO file if required
-        if payload["alto_required"]:
-            r = await client.get(
-                f"/v1/jobs/{job_id}/images/{image_id}/files/alto",
-                headers=worker_headers,
-            )
-            assert r.status_code == 200, r.text
-            assert r.headers["content-type"] == "application/xml", "Expected XML content type for ALTO"
-            assert len(r.content) > 0, "ALTO file content should not be empty"
-
-        # PAGE file if required
-        if payload["page_required"]:
-            r = await client.get(
-                f"/v1/jobs/{job_id}/images/{image_id}/files/page",
-                headers=worker_headers,
-            )
-            assert r.status_code == 200, r.text
-            assert r.headers["content-type"] == "application/xml", "Expected XML content type for PAGE"
-            assert len(r.content) > 0, "PAGE file content should not be empty"
+    image_id = job["images"][0]["id"]
+    image_name = job["images"][0]["name"]
+    r = await client.get(
+        f"/v1/jobs/{job_id}/images/{image_id}/files/image",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["Content-Disposition"] == f'attachment; filename="{image_name}"'
+    assert r.headers["Content-Type"].startswith("image/")
 
 
 @pytest.mark.asyncio
@@ -240,6 +228,36 @@ async def test_get_image_410(client, worker_headers, lease_job, payload):
         body = r.json()
         assert body["status"] == 410
         assert body["code"] == AppCode.IMAGE_GONE.value
+
+
+#
+# GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 404, 409, 410
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_DOWNLOADED], indirect=True)
+async def test_get_alto_200(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    job = body["data"]
+    image_id = job["images"][0]["id"]
+    image_name = job["images"][0]["name"]
+    r = await client.get(
+        f"/v1/jobs/{job_id}/images/{image_id}/files/alto",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["Content-Disposition"] == f'attachment; filename="{os.path.splitext(image_name)[0]}.xml"'
+    assert r.headers["Content-Type"] == "application/xml"
 
 
 @pytest.mark.asyncio
@@ -332,6 +350,36 @@ async def test_get_alto_410(client, worker_headers, lease_job, payload):
         assert body["code"] == AppCode.ALTO_GONE.value
 
 
+#
+# GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 404, 409, 410
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_DOWNLOADED], indirect=True)
+async def test_get_page_200(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    job = body["data"]
+    image_id = job["images"][0]["id"]
+    image_name = job["images"][0]["name"]
+    r = await client.get(
+        f"/v1/jobs/{job_id}/images/{image_id}/files/page",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["Content-Disposition"] == f'attachment; filename="{os.path.splitext(image_name)[0]}.xml"'
+    assert r.headers["Content-Type"] == "application/xml"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB], indirect=True)
 async def test_get_page_404(client, worker_headers, lease_job, payload):
@@ -420,6 +468,34 @@ async def test_get_page_410(client, worker_headers, lease_job, payload):
         body = r.json()
         assert body["status"] == 410
         assert body["code"] == AppCode.PAGE_GONE.value
+
+
+#
+# GET /v1/jobs/{job_id}/files/metadata - 200, 409, 410
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.META_JSON_DOWNLOADED], indirect=True)
+async def test_get_metadata_200(client, worker_headers, lease_job, payload):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    # Attempt to get the metadata file as worker
+    r = await client.get(
+        f"/v1/jobs/{job_id}/files/metadata",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["Content-Disposition"] == f'attachment; filename="meta.json"'
+    assert r.headers["Content-Type"] == "application/json"
 
 
 @pytest.mark.asyncio
@@ -511,7 +587,7 @@ async def test_post_job_result_415(client, worker_headers, lease_job, payload):
     r = await client.post(
         f"/v1/jobs/{job_id}/result/",
         headers=worker_headers,
-        files={"result": ("result.txt", b"This is not a zip file.", "text/plain")},
+        files={"file": ("result.txt", b"This is not a zip file.", "text/plain")},
     )
 
     assert r.status_code == 415, r.text
@@ -562,7 +638,7 @@ async def test_patch_job_200_update_progress(client, worker_headers, lease_job, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_COMPLETED], indirect=True)
-async def test_patch_job_200_job_marked_done(client, worker_headers, job_marked_done, payload):
+async def test_patch_job_200_job_completed(client, worker_headers, job_marked_done, payload):
     job_id = job_marked_done["lease"]["id"]
     update_payload = job_marked_done["update_payload"]
 
@@ -582,7 +658,7 @@ async def test_patch_job_200_job_marked_done(client, worker_headers, job_marked_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ALREADY_COMPLETED], indirect=True)
-async def test_patch_job_200_job_already_marked_done(client, worker_headers, job_marked_done, payload):
+async def test_patch_job_200_job_already_completed(client, worker_headers, job_marked_done, payload):
     job_id = job_marked_done["lease"]["id"]
     update_payload = job_marked_done["update_payload"]
 
@@ -683,3 +759,5 @@ async def test_patch_job_409_job_unfinishable(client, worker_headers, cancelled_
     body = r.json()
     assert body["status"] == 409
     assert body["code"] == AppCode.JOB_UNFINISHABLE.value
+    assert "state" in body["details"]
+    assert body["details"]["state"] == base_objects.ProcessingState.CANCELLED.value

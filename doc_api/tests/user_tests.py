@@ -790,7 +790,7 @@ async def test_put_metadata_422(client, user_headers, created_job):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
 async def test_patch_job_200_cancel_new_job(client, user_headers, cancelled_new_job):
-    job = cancelled_new_job["job"]
+    job = cancelled_new_job["created_job"]
     job_id = job["id"]
 
     r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
@@ -827,21 +827,25 @@ async def test_patch_job_200_cancel_processing_job(client, user_headers, lease_j
     job = lease_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
-
+    r = await client.patch(
+        f"/v1/jobs/{job_id}",
+        headers=user_headers,
+        json={"state": base_objects.ProcessingState.CANCELLED.value},
+    )
     assert r.status_code == 200, r.text
 
     body = r.json()
-    assert body["status"] == 200
-    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    assert body["code"] == AppCode.JOB_CANCELLED.value
 
-    data = body["data"]
+    r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
     assert data["state"] == base_objects.ProcessingState.CANCELLED.value
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
-async def test_patch_job_200_cancel_job_marked_error(client, user_headers, job_marked_error):
+async def test_patch_job_200_cancel_error_job(client, user_headers, job_marked_error):
     job = job_marked_error["created_job"]
     job_id = job["id"]
 
@@ -859,7 +863,7 @@ async def test_patch_job_200_cancel_job_marked_error(client, user_headers, job_m
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
 async def test_patch_job_409_cancel_cancelled_job(client, user_headers, cancelled_new_job):
-    job = cancelled_new_job["job"]
+    job = cancelled_new_job["created_job"]
     job_id = job["id"]
 
     r = await client.patch(
@@ -875,7 +879,7 @@ async def test_patch_job_409_cancel_cancelled_job(client, user_headers, cancelle
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
-async def test_patch_job_409_cancel_job_marked_done(client, user_headers, job_marked_done):
+async def test_patch_job_409_cancel_done_job(client, user_headers, job_marked_done):
     job = job_marked_done["created_job"]
     job_id = job["id"]
 
@@ -892,7 +896,7 @@ async def test_patch_job_409_cancel_job_marked_done(client, user_headers, job_ma
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
-async def test_patch_job_409_cancel_job_marked_failed(client, user_headers, failed_job):
+async def test_patch_job_409_cancel_failed_job(client, user_headers, failed_job):
     job = failed_job["created_job"]
     job_id = job["id"]
 

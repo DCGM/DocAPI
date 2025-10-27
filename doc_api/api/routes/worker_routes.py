@@ -80,7 +80,7 @@ async def post_lease(
     raise RouteInvariantError(code=code, request=request)
 
 
-PATCH_LEASE_RESPONSES = {
+PATCH_LEASE_EXTENDED_RESPONSES = {
     AppCode.JOB_LEASE_EXTENDED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job lease has been successfully extended (UTC time).",
@@ -95,7 +95,7 @@ PATCH_LEASE_RESPONSES = {
     summary="Extend Lease",
     tags=["Worker"],
     description="Extend the lease time for a specific job that is currently being processed by the worker.",
-    responses=make_responses(PATCH_LEASE_RESPONSES))
+    responses=make_responses(PATCH_LEASE_EXTENDED_RESPONSES))
 @challenge_worker_access_to_processing_job
 async def patch_lease(
         request: Request,
@@ -109,7 +109,7 @@ async def patch_lease(
         return DocAPIResponseOK[base_objects.JobLease](
             status=fastapi.status.HTTP_200_OK,
             code=AppCode.JOB_LEASE_EXTENDED,
-            detail=PATCH_LEASE_RESPONSES[AppCode.JOB_LEASE_EXTENDED]["detail"],
+            detail=PATCH_LEASE_EXTENDED_RESPONSES[AppCode.JOB_LEASE_EXTENDED]["detail"],
             data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time),
         )
 
