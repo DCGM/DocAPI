@@ -70,8 +70,9 @@ class Key(Base):
     __tablename__ = "keys"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
 
-    # Store only a hash (e.g. sha256). Use String(64) for hex digest
-    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    kid = mapped_column(String(32), unique=True, nullable=False, index=True)
+    salt = mapped_column(String(64), unique=True, nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
 
     label: Mapped[str] = mapped_column(String(255), nullable=False, index=True, unique=True)
     role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)

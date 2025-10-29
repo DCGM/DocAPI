@@ -15,7 +15,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sqlalchemy import select
 
-from doc_api.api.authentication import hmac_sha256_hex, AUTHENTICATION_RESPONSES
+from doc_api.api.authentication import AUTHENTICATION_RESPONSES, issue_key_components, salted_hmac_sha256_hex, \
+    parse_api_key
 from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
@@ -65,16 +66,20 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if getattr(config, "ADMIN_KEY", None):
-        digest = hmac_sha256_hex(config.ADMIN_KEY)
+        _, _, salt = issue_key_components()
+        kid, secret = parse_api_key(config.ADMIN_KEY)
+        digest = salted_hmac_sha256_hex(secret, salt)
         async with open_session() as db:
             result = await db.execute(
-                select(model.Key).where(model.Key.key_hash == digest)
+                select(model.Key).where(model.Key.kid == kid)
             )
             key = result.scalar_one_or_none()
             if key is None:
                 db.add(
                     model.Key(
+                        kid=kid,
                         key_hash=digest,
+                        salt=salt,
                         label="admin",
                         active=True,
                         role=KeyRole.ADMIN,
@@ -89,24 +94,38 @@ async def lifespan(app: FastAPI):
         )
 
     if not config.PRODUCTION:
-        test_admin_digest = hmac_sha256_hex(config.TEST_ADMIN_KEY)
-        test_readonly_digest = hmac_sha256_hex(config.TEST_READONLY_KEY)
-        test_user_digest = hmac_sha256_hex(config.TEST_USER_KEY)
-        test_worker_digest = hmac_sha256_hex(config.TEST_WORKER_KEY)
+        _, _, test_admin_salt = issue_key_components()
+        test_admin_kid, test_admin_secret = parse_api_key(config.TEST_ADMIN_KEY)
+        test_admin_digest = salted_hmac_sha256_hex(test_admin_secret, test_admin_salt)
+
+        _, _, test_readonly_salt = issue_key_components()
+        test_readonly_kid, test_readonly_secret = parse_api_key(config.TEST_READONLY_KEY)
+        test_readonly_digest = salted_hmac_sha256_hex(test_readonly_secret, test_readonly_salt)
+
+        _, _, test_user_salt = issue_key_components()
+        test_user_kid, test_user_secret = parse_api_key(config.TEST_USER_KEY)
+        test_user_digest = salted_hmac_sha256_hex(test_user_secret, test_user_salt)
+
+        _, _, test_worker_salt = issue_key_components()
+        test_worker_kid, test_worker_secret = parse_api_key(config.TEST_WORKER_KEY)
+        test_worker_digest = salted_hmac_sha256_hex(test_worker_secret, test_worker_salt)
+
         async with open_session() as db:
             result = await db.execute(
-                select(model.Key).where(model.Key.key_hash.in_([
-                    test_admin_digest,
-                    test_readonly_digest,
-                    test_user_digest,
-                    test_worker_digest,
+                select(model.Key).where(model.Key.kid.in_([
+                    test_admin_kid,
+                    test_readonly_kid,
+                    test_user_kid,
+                    test_worker_kid,
                 ]))
             )
-            existing_keys = {k.key_hash for k in result.scalars().all()}
+            existing_keys = {k.kid for k in result.scalars().all()}
 
-            if test_admin_digest not in existing_keys:
+            if test_admin_kid not in existing_keys:
                 db.add(
                     model.Key(
+                        kid=test_admin_kid,
+                        salt=test_admin_salt,
                         key_hash=test_admin_digest,
                         label=config.TEST_ADMIN_KEY_LABEL,
                         active=True,
@@ -115,9 +134,11 @@ async def lifespan(app: FastAPI):
                 )
                 logger.info("Test admin API key created!")
 
-            if test_readonly_digest not in existing_keys:
+            if test_readonly_kid not in existing_keys:
                 db.add(
                     model.Key(
+                        kid=test_readonly_kid,
+                        salt=test_readonly_salt,
                         key_hash=test_readonly_digest,
                         label=config.TEST_READONLY_KEY_LABEL,
                         active=True,
@@ -126,9 +147,11 @@ async def lifespan(app: FastAPI):
                 )
                 logger.info("Test readonly API key created!")
 
-            if test_user_digest not in existing_keys:
+            if test_user_kid not in existing_keys:
                 db.add(
                     model.Key(
+                        kid=test_user_kid,
+                        salt=test_user_salt,
                         key_hash=test_user_digest,
                         label=config.TEST_USER_KEY_LABEL,
                         active=True,
@@ -137,9 +160,11 @@ async def lifespan(app: FastAPI):
                 )
                 logger.info("Test user API key created!")
 
-            if test_worker_digest not in existing_keys:
+            if test_worker_kid not in existing_keys:
                 db.add(
                     model.Key(
+                        kid=test_worker_kid,
+                        salt=test_worker_salt,
                         key_hash=test_worker_digest,
                         label=config.TEST_WORKER_KEY_LABEL,
                         active=True,

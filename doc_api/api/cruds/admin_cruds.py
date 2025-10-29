@@ -1,4 +1,3 @@
-import secrets
 import logging
 from typing import Tuple, List, Optional
 from uuid import UUID
@@ -6,10 +5,9 @@ from uuid import UUID
 from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import hmac_sha256_hex
+from doc_api.api.authentication import salted_hmac_sha256_hex, issue_key_components, make_api_key
 from doc_api.api.database import DBError
 from doc_api.api.schemas.responses import AppCode
-from doc_api.config import config
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
 
@@ -17,11 +15,6 @@ from doc_api.api.schemas import base_objects
 logger = logging.getLogger(__name__)
 
 
-KEY_BYTES = 32  # 32 bytes ≈ 256-bit entropy (recommended)
-
-def generate_raw_key() -> str:
-    # URL-safe Base64 without padding-ish chars; good for headers, query, and cookies
-    return config.KEY_PREFIX + secrets.token_urlsafe(KEY_BYTES)
 
 async def new_key(*, db: AsyncSession, key_new: base_objects.KeyNew) -> Tuple[Optional[str], AppCode]:
     """
@@ -37,16 +30,18 @@ async def new_key(*, db: AsyncSession, key_new: base_objects.KeyNew) -> Tuple[Op
             if key is not None:
                 return None, AppCode.KEY_ALREADY_EXISTS
 
-            secret, key_hash = await get_secret(db=db)
+            kid, secret, salt, digest = await get_secret(db=db)
             if secret is None:
                 return None, AppCode.KEY_CREATION_FAILED
 
             db.add(model.Key(
                 label=key_new.label,
                 role=key_new.role,
-                key_hash=key_hash
+                kid=kid,
+                key_hash=digest,
+                salt=salt
             ))
-            return secret, AppCode.KEY_CREATED
+            return make_api_key(kid=kid, secret=secret), AppCode.KEY_CREATED
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed adding new key") from e
@@ -62,36 +57,44 @@ async def new_secret(*, db: AsyncSession, label: str) -> Tuple[Optional[str], Ap
             if key is None:
                 return None, AppCode.KEY_NOT_FOUND
 
-            secret, key_hash = await get_secret(db=db)
+            kid, secret, salt, digest = await get_secret(db=db)
             if secret is None:
                 return None, AppCode.KEY_SECRET_CREATION_FAILED
 
-            key.key_hash = key_hash
+            key.kid = kid
+            key.key_hash = digest
+            key.salt = salt
 
-            return secret, AppCode.KEY_SECRET_CREATED
+            return make_api_key(kid=kid, secret=secret), AppCode.KEY_SECRET_CREATED
 
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed creating new secret for key") from e
 
 
-async def get_secret(db: AsyncSession) -> Tuple[Optional[str], Optional[str]]:
+async def get_secret(db: AsyncSession) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    kid = None
     secret = None
-    key_hash = None
+    salt = None
+    digest = None
 
     # Retry loop in the vanishingly unlikely case of a hash collision
     for _ in range(3):
-        secret = generate_raw_key()
-        key_hash = hmac_sha256_hex(secret)
+        kid, secret, salt = issue_key_components()
+        digest = salted_hmac_sha256_hex(secret, salt)
 
         # ensure uniqueness before insert (cheap existence check)
         existing = await db.execute(
-            select(model.Key.key_hash).where(model.Key.key_hash == key_hash)
+            select(model.Key.key_hash).where(model.Key.key_hash == digest)
         )
         if existing.scalar_one_or_none() is not None:
+            kid = None
+            secret = None
+            salt = None
+            digest = None
             continue
 
-    return secret, key_hash
+    return kid, secret, salt, digest
 
 
 async def update_key(*, db: AsyncSession, label: str, key_update: base_objects.KeyUpdate) -> AppCode:

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.routes import debug_router
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
-from doc_api.api.authentication import require_api_key
+from doc_api.api.authentication import require_api_key, require_admin_key
 from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
@@ -53,7 +53,7 @@ POST_JOB_START_RESPONSES = {
     responses=make_responses(POST_JOB_START_RESPONSES))
 async def start_job(
         job_id: UUID,
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
@@ -82,7 +82,7 @@ async def start_job(
 
 # @debug_router.get("/http_exception", tags=["Debug"])
 # async def http_exception(
-#         key: model.Key = Depends(require_api_key()),
+#         key: model.Key = Depends(require_admin_key),
 #         db: AsyncSession = Depends(get_async_session)):
 #     raise HTTPException(status_code=418, detail="This is a debug HTTP exception.")
 
