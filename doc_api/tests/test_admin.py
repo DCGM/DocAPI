@@ -263,7 +263,7 @@ async def test_patch_key_409(client, admin_headers, new_key):
         f"/v1/admin/keys/{label}",
         headers=admin_headers,
         json={
-            "label": "duplicate-label-key"
+            "label": random_new_label
         }
     )
     assert r.status_code == 409, r.text
