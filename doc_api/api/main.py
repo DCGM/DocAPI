@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         kid, secret = parse_api_key(config.ADMIN_KEY)
         async with open_session() as db:
             result = await db.execute(
-                select(model.Key).where(model.Key.kid == kid).with_for_update()
+                select(model.Key).where(model.Key.label == "admin").with_for_update()
             )
             key = result.scalar_one_or_none()
             # Create admin key if it does not exist
@@ -89,12 +89,18 @@ async def lifespan(app: FastAPI):
                 await db.commit()
                 logger.info("Admin API key created!")
             else:
+                update_key = False
+                if key.kid != kid:
+                    key.kid = kid
+                    update_key = True
                 digest = salted_hmac_sha256_hex(secret, key.salt)
                 if key.key_hash != digest:
                     _, _, salt = issue_key_components()
                     new_digest = salted_hmac_sha256_hex(secret, salt)
                     key.key_hash = new_digest
                     key.salt = salt
+                    update_key = True
+                if update_key:
                     await db.commit()
                     logger.info("Admin API key updated!")
     else:
