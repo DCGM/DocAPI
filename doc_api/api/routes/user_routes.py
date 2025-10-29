@@ -71,7 +71,7 @@ POST_JOB_RESPONSES = {
 }
 @root_router.post(
     "/v1/jobs",
-    summary="Create Job",
+    summary=config.JOB_DEFINITION_SUMMARY,
     tags=["User"],
     description=config.JOB_DEFINITION_DESCRIPTION,
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -456,7 +456,7 @@ PUT_META_JSON_RESPONSES = {
 @root_router.put(
     "/v1/jobs/{job_id}/files/metadata",
     response_model=DocAPIResponseOK[NoneType],
-    summary="Upload Meta JSON",
+    summary=config.META_JSON_SUMMARY,
     tags=["User"],
     description=config.META_JSON_DESCRIPTION,
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -543,7 +543,7 @@ GET_RESULT_RESPONSES = {
 }
 @root_router.get(
     "/v1/jobs/{job_id}/result",
-    summary="Download Result",
+    summary=config.RESULT_SUMMARY,
     response_class=FileResponse,
     tags=["User"],
     description=config.RESULT_DESCRIPTION,

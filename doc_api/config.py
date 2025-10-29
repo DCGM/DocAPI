@@ -167,7 +167,7 @@ class Config:
 
         # API documentation configuration
         ################################################################################################################
-        self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, General, Admin").split(',')])
+        self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, Admin").split(',')])
 
         self.SHOW_PUT_IMAGE = self._env_bool("SHOW_PUT_IMAGE", True)
         self.SHOW_PUT_ALTO = self._env_bool("SHOW_PUT_ALTO", True)
@@ -176,6 +176,7 @@ class Config:
 
 
         # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+        self.JOB_DEFINITION_SUMMARY = os.getenv("JOB_DEFINITION_SUMMARY", "Create Job")
         self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION",
                                                     "Create a new job with the specified images and options.\n\n"
                                                     "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
@@ -205,6 +206,7 @@ class Config:
                                                                     }}})))
 
         # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+        self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")
         self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION",
                                                "Upload the Meta JSON file for a job.")
         self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES",
@@ -217,6 +219,7 @@ class Config:
                                                        })))
 
         # Result download examples for documentation
+        self.RESULT_SUMMARY = os.getenv("RESULT_SUMMARY", "Download Result")
         self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION",
                                             "Download the result ZIP file for a completed job.")
         self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE",

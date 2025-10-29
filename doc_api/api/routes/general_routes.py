@@ -47,7 +47,7 @@ GET_JOB_RESPONSES = {
     "/v1/jobs/{job_id}",
     summary="Get Job",
     response_model=DocAPIResponseOK[base_objects.JobWithImages],
-    tags=["User", "Worker"],
+    tags=["User"],
     description="Retrieve the details of a specific job by its ID.",
     responses=make_responses(GET_JOB_RESPONSES))
 @challenge_user_access_to_job
@@ -161,7 +161,7 @@ PATCH_JOB_RESPONSES = {
     "/v1/jobs/{job_id}",
     summary="Update Job",
     response_model=DocAPIResponseOK[NoneType] | DocAPIResponseOK[base_objects.JobLease],
-    tags=["User", "Worker"],
+    tags=["User"],
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
     responses=make_responses(PATCH_JOB_RESPONSES))
@@ -369,7 +369,7 @@ ME_RESPONSES = {
     "/v1/me",
     summary="Who am I?",
     response_model=DocAPIResponseOK[base_objects.Key],
-    tags=["General"],
+    tags=["User"],
     description="Validate your API key and get information about it.",
     responses=make_responses(ME_RESPONSES)
 )
