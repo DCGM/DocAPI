@@ -1,5 +1,6 @@
 import logging
 from types import NoneType
+from uuid import UUID
 
 import fastapi
 from fastapi import Depends, Request
@@ -7,7 +8,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import require_api_key
-from doc_api.api.cruds import admin_cruds
+from doc_api.api.cruds import admin_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.schemas import base_objects
@@ -243,5 +244,43 @@ async def patch_key(
             code=AppCode.KEY_NOT_FOUND,
             detail=PATCH_KEY_RESPONSES[AppCode.KEY_NOT_FOUND]["detail"]
         )
+
+    raise RouteInvariantError(request=request, code=code)
+
+
+PATCH_JOB_RESPONSES = {
+    AppCode.JOB_UPDATED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job was updated successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was updated successfully.",
+    }
+}
+
+@admin_router.patch(
+    "/jobs/{job_id}",
+    summary="Update Job",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["Admin"],
+    description="Force update fields of an existing job. Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
+    responses=make_responses(PATCH_JOB_RESPONSES))
+async def patch_job(
+        request: Request,
+        job_id: UUID,
+        job_update: base_objects.JobUpdate,
+        append_logs: bool = True,
+        key: model.Key = Depends(require_api_key()),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_RETRIEVED:
+        code = await admin_cruds.update_job(db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
+        if code == AppCode.JOB_UPDATED:
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=fastapi.status.HTTP_200_OK,
+                code=AppCode.JOB_UPDATED,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
+            ))
 
     raise RouteInvariantError(request=request, code=code)

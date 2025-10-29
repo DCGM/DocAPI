@@ -45,12 +45,12 @@ POST_JOB_START_RESPONSES = {
 @debug_router.put(
     "/jobs/{job_id}/start",
     summary="Start Job",
+    include_in_schema=False,
     response_model=DocAPIResponseOK[NoneType],
     tags=["Debug"],
     description="Start processing a job. There should be no need to call this endpoint under normal circumstances, "
                 "as jobs are started automatically when all required files have been uploaded.",
     responses=make_responses(POST_JOB_START_RESPONSES))
-@challenge_user_access_to_job
 async def start_job(
         job_id: UUID,
         key: model.Key = Depends(require_api_key()),
@@ -85,3 +85,5 @@ async def start_job(
 #         key: model.Key = Depends(require_api_key()),
 #         db: AsyncSession = Depends(get_async_session)):
 #     raise HTTPException(status_code=418, detail="This is a debug HTTP exception.")
+
+

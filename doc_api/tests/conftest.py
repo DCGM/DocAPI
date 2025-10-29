@@ -117,7 +117,7 @@ def payload(request):
 
 
 @pytest_asyncio.fixture
-async def created_job(client, user_headers, payload):
+async def created_job(client, user_headers, admin_headers, payload):
     r = await client.post("/v1/jobs", json=payload, headers=user_headers)
 
     assert r.status_code == 201, r.text
@@ -127,7 +127,17 @@ async def created_job(client, user_headers, payload):
     assert body["status"] == 201
 
     job = body["data"]
-    return {"created_job": job, "payload": payload}
+
+    yield {"created_job": job, "payload": payload}
+
+    job_id = job["id"]
+    r = await client.patch(f"/v1/admin/jobs/{job_id}",
+                           headers=admin_headers,
+                           json={"state": base_objects.ProcessingState.DONE.value})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_UPDATED.value
 
 
 @pytest_asyncio.fixture
