@@ -79,6 +79,7 @@ POST_JOB_RESPONSES = {
                 "`page_required`, `meta_json_required` must be set to `true`.\n\n"
                 "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
                 "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
@@ -460,6 +461,7 @@ PUT_META_JSON_RESPONSES = {
     summary="Upload Meta JSON",
     tags=["User"],
     description="Upload the Meta JSON file for a job.",
+    status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(PUT_META_JSON_RESPONSES)
 )
 @challenge_user_access_to_new_job
