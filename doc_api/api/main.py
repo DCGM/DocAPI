@@ -330,6 +330,17 @@ def custom_openapi():
                 prefix = f"{int(x):04d}-" if isinstance(x, int) else "9999-"
                 op["operationId"] = prefix + oid
 
+    filtered_paths = {}
+    for path, path_item in schema["paths"].items():
+        methods = {}
+        for method, op in path_item.items():
+            tags = set(op.get("tags", []))
+            if tags.issubset(config.SHOW_SECTIONS):
+                methods[method] = op
+        if methods:
+            filtered_paths[path] = methods
+    schema["paths"] = filtered_paths
+
     app.openapi_schema = schema
     return app.openapi_schema
 

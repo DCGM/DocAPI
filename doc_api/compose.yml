@@ -2,6 +2,10 @@ services:
   doc-api:
     # see https://github.com/DCGM/DocAPI/pkgs/container/doc-api and choose your version
     image: ghcr.io/dcgm/doc-api:latest
+    # for local build from GIT
+    # build:
+    #   context: path/to/doc/api/root/git/DocAPI/doc_api
+    #   dockerfile: Dockerfile
     ports:
       - "9999:9999"
     volumes:
@@ -10,6 +14,17 @@ services:
       - .env
     environment:
       # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+      JOB_DEFINITION_DESCRIPTION: |
+        Create a new job with the specified images and options.
+
+        The job definition must include a list of `images`, each with a unique `name` and `order`.
+
+        If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`,
+        `page_required`, `meta_json_required` must be set to `true`.
+
+        The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.
+
+        Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.
       JOB_DEFINITION_EXAMPLES: |
         {
           "IMAGE job": {
@@ -27,12 +42,19 @@ services:
           }
         }
       # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+      META_JSON_DESCRIPTION: |
+        Upload the Meta JSON file for a job.
       META_JSON_EXAMPLES: |
         {
           "object": {"summary": "JSON object", "value": {"engine": "ocr", "version": 2}},
           "array": {"summary": "JSON array", "value": ["step1", "step2", "step3"]},
           "primitive": {"summary": "Primitive value", "value": true}
         }
+      # Result download examples for documentation
+      RESULT_DESCRIPTION: |
+        Download the result ZIP file for a completed job.
+      RESULT_EXAMPLE: |
+        (binary ZIP file content)
     restart: unless-stopped
     # if using traefik, comment out the ports section above and uncomment the labels section below (add traefik network)
     # labels:
@@ -47,9 +69,8 @@ services:
 
 
   db:
-    image: postgres:alpine
+    image: postgres:16
     volumes:
-      # sudo chown -R 999:999 /mnt/ssd/doc_api/db before first use
       - /mnt/ssd/doc_api/db:/var/lib/postgresql/data/
     env_file:
       - .env
@@ -78,6 +99,7 @@ services:
     env_file:
       - .env
     environment:
+      POSTGRES_HOST: db
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
