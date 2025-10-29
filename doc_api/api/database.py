@@ -9,10 +9,10 @@ global_async_session_maker = None
 _init_lock = None
 
 def _engine_kwargs():
-    testing = os.getenv("TESTING") == "1"
-    if testing:
-        # loop-agnostic for tests, pytest creates event loop per test function
-        return dict(poolclass=NullPool, pool_pre_ping=False)
+    # loop-agnostic for tests, pytest creates event loop per test function, not currently in use
+    # testing = os.getenv("TESTING") == "1"
+    # if testing:
+    #     return dict(poolclass=NullPool, pool_pre_ping=False)
     # prod/dev settings
     return dict(pool_pre_ping=True, pool_size=20, max_overflow=60)
 
