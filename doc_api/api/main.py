@@ -1,4 +1,3 @@
-import logging
 import logging.config
 import traceback
 from contextlib import asynccontextmanager
@@ -376,7 +375,7 @@ def custom_openapi():
         methods = {}
         for method, op in path_item.items():
             tags = set(op.get("tags", []))
-            if tags.issubset(config.SHOW_SECTIONS):
+            if tags.intersection(config.SHOW_SECTIONS):
                 methods[method] = op
         if methods:
             filtered_paths[path] = methods
