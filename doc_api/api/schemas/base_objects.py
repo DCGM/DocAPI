@@ -179,10 +179,91 @@ class JobWithImages(Job):
 
 
 class JobUpdate(BaseModel):
+    state: Optional[ProcessingState] = Field(
+        None,
+        description="New state of the job.",
+        examples=[ProcessingState.PROCESSING.value]
+    )
+
+    progress: Optional[float] = Field(
+        None,
+        description=(
+            "Current completion percentage of the job (0.0–100.0). "
+            "Omit if progress has not changed since the last update."
+        ),
+        examples=[0.5]
+    )
+
+    previous_attempts: Optional[int] = Field(
+        None,
+        examples=[1],
+        description="Number of previous attempts if the job was retried."
+    )
+
     meta_json_uploaded: Optional[bool] = Field(
         None,
         description="Whether the metadata JSON has been uploaded for this job.",
         examples=[True]
+    )
+
+    meta_json_required: Optional[bool] = Field(
+        None,
+        examples=[True],
+        description="Whether Meta JSON file is required for this job."
+    )
+
+    alto_required: Optional[bool] = Field(
+        None,
+        examples=[True],
+        description="Whether ALTO XML file is required for this job."
+    )
+
+    page_required: Optional[bool] = Field(
+        None,
+        examples=[False],
+        description="Whether PAGE XML file is required for this job."
+    )
+
+    created_date: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-18T21:30:00+00:00"],
+        description="UTC timestamp when the job was created."
+    )
+
+    started_date: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-18T21:30:00+00:00"],
+        description="UTC timestamp when processing started."
+    )
+
+    last_change: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-18T21:30:00+00:00"],
+        description="UTC timestamp of the last state change."
+    )
+
+    finished_date: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-18T21:30:00+00:00"],
+        description="UTC timestamp when the job was finished."
+    )
+
+    log: Optional[str] = Field(
+        None,
+        description=(
+            "Technical or debug log text appended to the internal system log. "
+            "Used for diagnostics or backend monitoring."
+        ),
+        examples=["Loaded 500 image tiles and initialized OCR engine."]
+    )
+
+    log_user: Optional[str] = Field(
+        None,
+        description=(
+            "User-facing log message displayed in the interface. "
+            "Helps indicate current processing step or progress in human-readable form."
+        ),
+        examples=["Processing page 12 of 58."]
     )
 
 
