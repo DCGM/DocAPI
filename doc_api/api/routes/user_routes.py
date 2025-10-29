@@ -73,12 +73,7 @@ POST_JOB_RESPONSES = {
     "/v1/jobs",
     summary="Create Job",
     tags=["User"],
-    description="Create a new job with the specified images and options.\n\n"
-                "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
-                "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
-                "`page_required`, `meta_json_required` must be set to `true`.\n\n"
-                "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
-                "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.",
+    description=config.JOB_DEFINITION_DESCRIPTION,
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
@@ -163,6 +158,7 @@ PUT_IMAGE_RESPONSES = {
     tags=["User"],
     description="Upload an IMAGE file for a specific job and image name.",
     status_code=fastapi.status.HTTP_201_CREATED,
+    include_in_schema=config.SHOW_PUT_IMAGE,
     responses=make_responses(PUT_IMAGE_RESPONSES))
 @challenge_user_access_to_new_job
 async def put_image(
@@ -256,6 +252,7 @@ PUT_ALTO_RESPONSES = {
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an ALTO XML file for a specific job and image name.",
     status_code=fastapi.status.HTTP_201_CREATED,
+    include_in_schema=config.SHOW_PUT_ALTO,
     tags=["User"],
 responses=make_responses(PUT_ALTO_RESPONSES))
 @challenge_user_access_to_new_job
@@ -362,6 +359,7 @@ PUT_PAGE_RESPONSES = {
     response_model=DocAPIResponseOK[NoneType],
     description="Upload an PAGE XML file for a specific job and image name.",
     status_code=fastapi.status.HTTP_201_CREATED,
+    include_in_schema=config.SHOW_PUT_PAGE,
     tags=["User"],
 responses=make_responses(PUT_PAGE_RESPONSES))
 @challenge_user_access_to_new_job
@@ -460,8 +458,9 @@ PUT_META_JSON_RESPONSES = {
     response_model=DocAPIResponseOK[NoneType],
     summary="Upload Meta JSON",
     tags=["User"],
-    description="Upload the Meta JSON file for a job.",
+    description=config.META_JSON_DESCRIPTION,
     status_code=fastapi.status.HTTP_201_CREATED,
+    include_in_schema=config.SHOW_PUT_METADATA,
     responses=make_responses(PUT_META_JSON_RESPONSES)
 )
 @challenge_user_access_to_new_job
@@ -510,7 +509,7 @@ GET_RESULT_RESPONSES = {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job result retrieved successfully.",
         "content_type": "application/zip",
-        "example_value": "(binary ZIP file content)"
+        "example_value": config.RESULT_EXAMPLE
     },
     AppCode.JOB_RESULT_NOT_READY: {
         "status": fastapi.status.HTTP_425_TOO_EARLY,
@@ -547,7 +546,7 @@ GET_RESULT_RESPONSES = {
     summary="Download Result",
     response_class=FileResponse,
     tags=["User"],
-    description="Download the result ZIP file for a completed job.",
+    description=config.RESULT_DESCRIPTION,
     responses=make_responses(GET_RESULT_RESPONSES))
 @challenge_user_access_to_job
 async def get_result(

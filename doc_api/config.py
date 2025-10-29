@@ -58,34 +58,6 @@ class Config:
         # if True, skip creating DB and alembic upgrade, simply assume the DB is ready
         self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
 
-        # Job definition examples for documentation (validation is strictly for JobDefinition schema)
-        self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps({
-                    "IMAGE job": {
-                        "summary": "Default",
-                        "description": "Simple job with two images.",
-                        "value": {
-                            "images": [
-                                {
-                                  "name": "image0.jpg",
-                                  "order": 0
-                                },
-                                {
-                                  "name": "image1.jpg",
-                                  "order": 1
-                                }
-                            ],
-                            "meta_json_required": False,
-                            "alto_required": False,
-                            "page_required": False
-                        }}})))
-
-        # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
-        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES", json.dumps({
-                    "object": {"summary": "JSON object", "value": {"engine": "ocr", "version": 2}},
-                    "array": {"summary": "JSON array", "value": ["step1", "step2", "step3"]},
-                    "primitive": {"summary": "Primitive value", "value": True},
-                })))
-
         # job processing configuration
         ################################################################################################################
         # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
@@ -116,21 +88,6 @@ class Config:
             "has_page": self._env_bool("PAGE_VALIDATE_HAS_PAGE", False),
             "has_text": self._env_bool("PAGE_VALIDATE_HAS_TEXT", False),
         }
-
-        # Testing setup - these keys will be automatically created in the DB for testing purposes if PRODUCTION is False
-        # for tests in doc_api/tests/
-        ################################################################################################################
-        self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", "testadminkey")
-        self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", "testreadonlykey")
-        self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", "testuserkey")
-        self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", "testworkerkey")
-
-        self.TEST_ADMIN_KEY_LABEL = os.getenv("TEST_ADMIN_KEY_LABEL", "test-admin")
-        self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
-        self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
-        self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
-
-        self.TEST_HTTP_TIMEOUT = os.getenv("TEST_HTTP_TIMEOUT", "30")
 
         # EMAILS and NOTIFICATIONS configuration
         ################################################################################################################
@@ -205,7 +162,79 @@ class Config:
                 }
             }
         }
+
+        # API documentation configuration
         ################################################################################################################
+        self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, General, Admin").split(',')])
+
+        self.SHOW_PUT_IMAGE = self._env_bool("SHOW_PUT_IMAGE", True)
+        self.SHOW_PUT_ALTO = self._env_bool("SHOW_PUT_ALTO", True)
+        self.SHOW_PUT_PAGE = self._env_bool("SHOW_PUT_PAGE", True)
+        self.SHOW_PUT_METADATA = self._env_bool("SHOW_PUT_METADATA", True)
+
+
+        # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+        self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION",
+                                                    "Create a new job with the specified images and options.\n\n"
+                                                    "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
+                                                    "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
+                                                    "`page_required`, `meta_json_required` must be set to `true`.\n\n"
+                                                    "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
+                                                    "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.")
+        self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES",
+                                                            json.dumps({
+                                                                "IMAGE job": {
+                                                                    "summary": "Default",
+                                                                    "description": "Simple job with two images.",
+                                                                    "value": {
+                                                                        "images": [
+                                                                            {
+                                                                                "name": "image0.jpg",
+                                                                                "order": 0
+                                                                            },
+                                                                            {
+                                                                                "name": "image1.jpg",
+                                                                                "order": 1
+                                                                            }
+                                                                        ],
+                                                                        "meta_json_required": False,
+                                                                        "alto_required": False,
+                                                                        "page_required": False
+                                                                    }}})))
+
+        # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+        self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION",
+                                               "Upload the Meta JSON file for a job.")
+        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES",
+                                                       json.dumps({
+                                                           "object": {"summary": "JSON object",
+                                                                      "value": {"engine": "ocr", "version": 2}},
+                                                           "array": {"summary": "JSON array",
+                                                                     "value": ["step1", "step2", "step3"]},
+                                                           "primitive": {"summary": "Primitive value", "value": True},
+                                                       })))
+
+        # Result download examples for documentation
+        self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION",
+                                            "Download the result ZIP file for a completed job.")
+        self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE",
+                                        "(binary ZIP file content)")
+
+
+        # Testing setup - these keys will be automatically created in the DB for testing purposes if PRODUCTION is False
+        # for tests in doc_api/tests/
+        ################################################################################################################
+        self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", "testadminkey")
+        self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", "testreadonlykey")
+        self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", "testuserkey")
+        self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", "testworkerkey")
+
+        self.TEST_ADMIN_KEY_LABEL = os.getenv("TEST_ADMIN_KEY_LABEL", "test-admin")
+        self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
+        self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
+        self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
+
+        self.TEST_HTTP_TIMEOUT = os.getenv("TEST_HTTP_TIMEOUT", "30")
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)
