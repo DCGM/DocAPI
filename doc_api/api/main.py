@@ -66,15 +66,16 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if getattr(config, "ADMIN_KEY", None):
-        _, _, salt = issue_key_components()
         kid, secret = parse_api_key(config.ADMIN_KEY)
-        digest = salted_hmac_sha256_hex(secret, salt)
         async with open_session() as db:
             result = await db.execute(
-                select(model.Key).where(model.Key.kid == kid)
+                select(model.Key).where(model.Key.kid == kid).with_for_update()
             )
             key = result.scalar_one_or_none()
+            # Create admin key if it does not exist
             if key is None:
+                _, _, salt = issue_key_components()
+                digest = salted_hmac_sha256_hex(secret, salt)
                 db.add(
                     model.Key(
                         kid=kid,
@@ -87,6 +88,15 @@ async def lifespan(app: FastAPI):
                 )
                 await db.commit()
                 logger.info("Admin API key created!")
+            else:
+                digest = salted_hmac_sha256_hex(secret, key.salt)
+                if key.key_hash != digest:
+                    _, _, salt = issue_key_components()
+                    new_digest = salted_hmac_sha256_hex(secret, salt)
+                    key.key_hash = new_digest
+                    key.salt = salt
+                    await db.commit()
+                    logger.info("Admin API key updated!")
     else:
         logger.warning(
             "ADMIN_KEY is not set! No admin API key created! "

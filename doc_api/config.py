@@ -34,8 +34,8 @@ class Config:
         self.KEY_PREFIX = os.getenv("KEY_PREFIX", "doc-api")
 
         # THIS MUST BE CHANGED IN PRODUCTION
-        self.ADMIN_KEY = os.getenv("ADMIN_KEY", f"{self.KEY_PREFIX}.adminkid.adminkey")
-        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
+        self.ADMIN_KEY = os.getenv("ADMIN_KEY", f"{self.KEY_PREFIX}.adminkeykid.changemeadminkeysecret12345")
+        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "changemehmacsecret12345")
 
 
 
