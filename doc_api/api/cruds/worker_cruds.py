@@ -132,6 +132,11 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
             db_job.worker_key_id = None
             db_job.state = base_objects.ProcessingState.QUEUED
 
+            if db_job.previous_attempts == 0:
+                db_job.previous_attempts = None
+            else:
+                db_job.previous_attempts = db_job.previous_attempts - 1
+
             return AppCode.JOB_LEASE_RELEASED
 
     except exc.SQLAlchemyError as e:
