@@ -7,7 +7,7 @@ from fastapi import Depends, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import require_api_key
+from doc_api.api.authentication import require_api_key, require_admin_key
 from doc_api.api.cruds import admin_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
@@ -40,7 +40,7 @@ GET_KEYS_RESPONSES = {
     description="Retrieve a list of all API keys in the system.",
     responses=make_responses(GET_KEYS_RESPONSES))
 async def get_keys(
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
     db_keys, code = await admin_cruds.get_keys(db=db)
     return DocAPIResponseOK[List[base_objects.Key]](
@@ -83,7 +83,7 @@ POST_KEY_RESPONSES = {
 async def post_key(
         request: Request,
         key_new: base_objects.KeyNew,
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     secret, code = await admin_cruds.new_key(db=db, key_new=key_new)
@@ -145,7 +145,7 @@ POST_KEY_SECRET_RESPONSES = {
 async def post_key_secret(
         request: Request,
         label: str,
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     secret, code = await admin_cruds.new_secret(db=db, label=label)
@@ -212,7 +212,7 @@ async def patch_key(
         request: Request,
         label: str,
         key_update: base_objects.KeyUpdate,
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     if key_update.label is None and \
@@ -269,7 +269,7 @@ async def patch_job(
         job_id: UUID,
         job_update: base_objects.JobUpdate,
         append_logs: bool = True,
-        key: model.Key = Depends(require_api_key()),
+        key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)

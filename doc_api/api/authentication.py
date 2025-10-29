@@ -1,8 +1,11 @@
+import base64
 import hashlib
 import hmac
 import logging
+import os
+import re
 from datetime import datetime, timezone
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 
 import fastapi
 from fastapi import Security
@@ -108,31 +111,63 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
     _dep.__require_api_key_roles__ = tuple(allowed)
     return _dep
 
-def hmac_sha256_hex(s: str) -> str:
-    return hmac.new(config.HMAC_SECRET.encode(), s.encode(), hashlib.sha256).hexdigest()
+
+require_admin_key = require_api_key()
+
 
 async def lookup_key(db: AsyncSession, provided_key: str) -> Optional[model.Key]:
-    digest = hmac_sha256_hex(provided_key)
+    try:
+        kid, secret = parse_api_key(provided_key)
+    except ValueError:
+        return None
 
-    result = await db.execute(select(model.Key).where(model.Key.key_hash == digest))
+    result = await db.execute(
+        select(model.Key).where(model.Key.kid == kid)
+    )
     key = result.scalar_one_or_none()
     if key is None:
         return None
 
-    # Best-effort touch; failure must not block auth
+    digest = salted_hmac_sha256_hex(secret, key.salt)
+    if not hmac.compare_digest(digest, key.key_hash):
+        return None
+
+    # best-effort touch
     try:
         now = datetime.now(timezone.utc)
         await db.execute(
-            update(model.Key)
-              .where(model.Key.key_hash == digest)
-              .values(last_used=now)
+            update(model.Key).where(model.Key.id == key.id).values(last_used=now)
         )
         await db.commit()
-        key.last_used = now  # reflect locally
-
+        key.last_used = now
     except Exception:
         await db.rollback()
 
     return key
 
-require_admin_key = require_api_key()
+
+KEY_RE = re.compile(r"^[^.]+\.(?P<kid>[A-Za-z0-9_-]+)\.(?P<secret>[A-Za-z0-9_-]+)$")
+
+def _rand_urlsafe(nbytes: int) -> str:
+    # URL-safe, no padding
+    return base64.urlsafe_b64encode(os.urandom(nbytes)).rstrip(b"=").decode("ascii")
+
+def salted_hmac_sha256_hex(secret: str, salt: str) -> str:
+    # Simple and solid: HMAC over secret using (global_secret || salt) as key
+    key = (config.HMAC_SECRET + salt).encode()
+    return hmac.new(key, secret.encode(), hashlib.sha256).hexdigest()
+
+def issue_key_components():
+    kid = _rand_urlsafe(6)      # 8 chars ≈ 48 bits
+    secret = _rand_urlsafe(30)  # 40 chars ≈ 240 bits
+    salt = os.urandom(16).hex()
+    return kid, secret, salt
+
+def parse_api_key(api_key: str) -> Tuple[str, str]:
+    m = KEY_RE.match(api_key)
+    if not m:
+        raise ValueError("Invalid API key format. Should be: KEY_PREFIX.kid.secret")
+    return m.group("kid"), m.group("secret")
+
+def make_api_key(*, kid: str, secret: str) -> str:
+    return f"{config.KEY_PREFIX}.{kid}.{secret}"

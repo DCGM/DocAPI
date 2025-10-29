@@ -30,12 +30,14 @@ class Config:
         # sender name for emails sent by the app t admins
         self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
 
+        # prefix for API keys, the format of the keys is {KEY_PREFIX}.{KEY_ID}.secret
+        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "doc-api")
+
         # THIS MUST BE CHANGED IN PRODUCTION
-        self.ADMIN_KEY = os.getenv("ADMIN_KEY", "adminkey")
+        self.ADMIN_KEY = os.getenv("ADMIN_KEY", f"{self.KEY_PREFIX}.adminkid.adminkey")
         self.HMAC_SECRET = os.getenv("HMAC_SECRET", "hmacsecret")
 
-        # prefix for API keys da_cIOkx8RI2A5RO1GIuhhMvcZux94d8NlsFiMF_HOQCrE
-        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "da_")
+
 
         # displayed in the web interface footer
         # return in detail on unsuccessful authentication
@@ -43,7 +45,7 @@ class Config:
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
 
         # displayed in the web interface footer
-        self.APP_VERSION = os.getenv("APP_VERSION", "1.0")
+        self.APP_VERSION = os.getenv("APP_VERSION", "custom")
 
         # return in detail on unsuccessful authentication
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
@@ -224,10 +226,10 @@ class Config:
         # Testing setup - these keys will be automatically created in the DB for testing purposes if PRODUCTION is False
         # for tests in doc_api/tests/
         ################################################################################################################
-        self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", "testadminkey")
-        self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", "testreadonlykey")
-        self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", "testuserkey")
-        self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", "testworkerkey")
+        self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", f"{self.KEY_PREFIX}.testadminkid.testadminkey")
+        self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", f"{self.KEY_PREFIX}.testreadonlykid.testreadonlykey")
+        self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", f"{self.KEY_PREFIX}.testuserkid.testuserkey")
+        self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", f"{self.KEY_PREFIX}.testworkerkid.testworkerkey")
 
         self.TEST_ADMIN_KEY_LABEL = os.getenv("TEST_ADMIN_KEY_LABEL", "test-admin")
         self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
