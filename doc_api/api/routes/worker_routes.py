@@ -411,7 +411,7 @@ POST_RESULT_RESPONSES = {
     },
 }
 @root_router.post(
-    "/v1/jobs/{job_id}/result/",
+    "/v1/jobs/{job_id}/result",
     response_model=DocAPIResponseOK,
     summary="Upload Result",
     tags=["Worker"],

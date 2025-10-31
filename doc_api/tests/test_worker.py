@@ -568,7 +568,7 @@ async def test_post_job_result_200(client, worker_headers, job_with_result, payl
     job_id = job_with_result["lease"]["id"]
 
     r = await client.post(
-        f"/v1/jobs/{job_id}/result/",
+        f"/v1/jobs/{job_id}/result",
         headers=worker_headers,
         files={"file": ("result.zip", VALID_ZIP, "application/zip")},
     )

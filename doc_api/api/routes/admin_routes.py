@@ -7,7 +7,7 @@ from fastapi import Depends, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import require_api_key, require_admin_key
+from doc_api.api.authentication import require_admin_key
 from doc_api.api.cruds import admin_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.routes.helper import RouteInvariantError
