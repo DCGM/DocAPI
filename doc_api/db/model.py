@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
-from sqlalchemy import ForeignKey, DateTime
+from sqlalchemy import ForeignKey, DateTime, Text
 from sqlalchemy.types import String
 
 from datetime import datetime, timezone
@@ -77,6 +77,23 @@ class Key(Base):
     label: Mapped[str] = mapped_column(String(255), nullable=False, index=True, unique=True)
     role: Mapped[KeyRole] = mapped_column(index=True, default=KeyRole.USER, nullable=False)
 
+    active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+
+    created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class ProcessingProfile(Base):
+    __tablename__ = "processing_profiles"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+
+    label: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+
+    definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    default: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
     active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
