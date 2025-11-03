@@ -2,6 +2,8 @@ import hashlib
 import json
 import logging
 import os
+from collections import Counter
+from datetime import datetime, timezone
 from types import NoneType
 
 import fastapi
@@ -12,16 +14,20 @@ from fastapi import Depends, UploadFile, status, Request, Body
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
+from natsort import natsort_keygen, natsorted
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
+from doc_api.api.routes.general_routes import prepare_job_data
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_new_job, challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
+from doc_api.api.schemas.base_objects import JobWithEngine
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
     validate_ok_response, DocAPIClientErrorException, GENERAL_RESPONSES
 from doc_api.api.validators.alto_validator import validate_alto_basic
@@ -30,7 +36,7 @@ from doc_api.api.validators.xml_validator import is_well_formed_xml
 from doc_api.db import model
 from doc_api.config import config
 
-from typing import List, Union, Annotated
+from typing import List, Union, Annotated, Optional
 from uuid import UUID
 
 
@@ -41,9 +47,27 @@ POST_JOB_RESPONSES = {
     AppCode.JOB_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Job created successfully.",
-        "model": DocAPIResponseOK,
-        "model_data": base_objects.JobWithImages,
+        "model": DocAPIResponseOK[base_objects.Job],
+        "model_data": base_objects.Job,
         "detail": "Job created successfully.",
+    },
+    AppCode.ENGINE_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified engine does not exist.",
+        "model": DocAPIResponseClientError,
+        "detail": "The specified engine does not exist."
+    },
+    AppCode.ENGINE_INACTIVE: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "The specified engine is inactive.",
+        "model": DocAPIResponseClientError,
+        "detail": "The specified engine is inactive."
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_VERSION: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Regular API keys are not allowed to specify 'engine_version'.",
+        "model": DocAPIResponseClientError,
+        "detail": "Regular API keys are not allowed to specify 'engine_version'."
     },
     AppCode.REQUEST_VALIDATION_ERROR: {
         "status": fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -55,6 +79,11 @@ POST_JOB_RESPONSES = {
                             "loc": ["body", "images", 0, "name"],
                             "msg": "field required",
                             "type": "value_error.missing",
+                        },
+                        {
+                            "loc": ["body", "images", "name"],
+                            "msg": "Duplicate image names found: {duplicate_names}",
+                            "type": "value_error.duplicate",
                         },
                         {
                             "loc": ["body", "images", 1, "order"],
@@ -81,53 +110,138 @@ async def post_job(
         job_definition: user_cruds.JobDefinition = Body(..., openapi_examples=config.JOB_DEFINITION_EXAMPLES),
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-    #TODO check if there are duplicates in image names?
 
-    db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
+    duplicates_name = [item for item, count in Counter([x.name for x in job_definition.images]).items() if count > 1]
+    if duplicates_name:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            code=AppCode.REQUEST_VALIDATION_ERROR,
+            detail="Validation of the job definition failed. Duplicate image names are not allowed.",
+            details=[{
+                "loc": ["body", "images", "name"],
+                "msg": f"Duplicate image names found: {', '.join(duplicates_name)}",
+                "type": "value_error.duplicate",
+            }]
+        )
+
+    if key.role == base_objects.KeyRole.ADMIN:
+        db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
+    else:
+        if job_definition.engine_version is not None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_VERSION,
+                detail=POST_JOB_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_VERSION]["detail"]
+            )
+        db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition, active_engine=True)
+
+    if job_code == AppCode.ENGINE_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_NOT_FOUND,
+            detail=POST_JOB_RESPONSES[AppCode.ENGINE_NOT_FOUND]["detail"]
+        )
+    elif job_code == AppCode.ENGINE_INACTIVE:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_409_CONFLICT,
+            code=AppCode.ENGINE_INACTIVE,
+            detail=POST_JOB_RESPONSES[AppCode.ENGINE_INACTIVE]["detail"]
+        )
+
     db_images, images_code = await general_cruds.get_job_images(db=db, job_id=db_job.id)
+    db_engine = None
+    engine_code = None
+    if db_job.engine_id is not None:
+        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
 
     if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGES_RETRIEVED:
-        job = base_objects.Job.model_validate(db_job).model_dump()
-        images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
-        data = base_objects.JobWithImages(**job, images=images)
-        # FastAPI automatically validates only for 200, so we need to do it manually for 201 here
-        return validate_ok_response(DocAPIResponseOK[base_objects.JobWithImages](
+        data = prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
             status=status.HTTP_201_CREATED,
             code=AppCode.JOB_CREATED,
             detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
-            data=data))
+            data=data), exclude_none=True)
 
-    raise RouteInvariantError(code=job_code if job_code != AppCode.JOB_CREATED else images_code, request=request)
+    if job_code != AppCode.JOB_CREATED:
+        raise RouteInvariantError(code=job_code, request=request)
+    if images_code != AppCode.IMAGES_RETRIEVED:
+        raise RouteInvariantError(code=images_code, request=request)
+    raise RouteInvariantError(code=engine_code, request=request)
 
 
 GET_JOBS_RESPONSES = {
     AppCode.JOBS_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Jobs retrieved successfully.",
-        "model": DocAPIResponseOK,
-        "model_data": List[base_objects.Job],
+        "model": DocAPIResponseOK[List[base_objects.JobWithEngine]],
+        "model_data": List[base_objects.JobWithEngine],
         "detail": "Jobs retrieved successfully.",
     }
 }
 @root_router.get(
     "/v1/jobs",
     summary="Get Jobs",
-    response_model=DocAPIResponseOK[List[base_objects.Job]],
+    response_model=DocAPIResponseOK[List[base_objects.JobWithEngine]],
     tags=["User"],
     description="Retrieve all jobs associated with the authenticated API key.",
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
+        state: Optional[base_objects.ProcessingState] = None,
+        engine_name: Optional[str] = None,
+        engine_version: Optional[str] = None,
+        from_created_date: Optional[datetime] = None,
+        from_started_date: Optional[datetime] = None,
+        from_last_change: Optional[datetime] = None,
+        from_finished_date: Optional[datetime] = None,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    db_jobs, code = await general_cruds.get_jobs(db=db, key_id=key.id)
+    if from_created_date is not None:
+        from_created_date = from_created_date.replace(tzinfo=timezone.utc)
+    if from_started_date is not None:
+        from_started_date = from_started_date.replace(tzinfo=timezone.utc)
+    if from_last_change is not None:
+        from_last_change = from_last_change.replace(tzinfo=timezone.utc)
+    if from_finished_date is not None:
+        from_finished_date = from_finished_date.replace(tzinfo=timezone.utc)
 
-    return DocAPIResponseOK[List[base_objects.Job]](
+    if key.role == base_objects.KeyRole.ADMIN:
+        db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
+            db=db,
+            state=state,
+            engine_name=engine_name,
+            engine_version=engine_version,
+            from_created_date=from_created_date,
+            from_started_date=from_started_date,
+            from_last_change=from_last_change,
+            from_finished_date=from_finished_date
+        )
+    else:
+        db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
+            db=db,
+            key_id=key.id,
+            state=state,
+            engine_name=engine_name,
+            engine_version=engine_version,
+            from_created_date=from_created_date,
+            from_started_date=from_started_date,
+            from_last_change=from_last_change,
+            from_finished_date=from_finished_date
+        )
+
+    data = []
+    for db_job, db_engine in db_jobs_with_engines:
+        job = base_objects.JobProper.model_validate(db_job).model_dump()
+        data.append(JobWithEngine(**job,
+                                  engine_name=db_engine.name,
+                                  engine_version=db_engine.version))
+
+    return validate_ok_response(DocAPIResponseOK[List[base_objects.JobWithEngine]](
         status=status.HTTP_200_OK,
         code=AppCode.JOBS_RETRIEVED,
         detail=GET_JOBS_RESPONSES[AppCode.JOBS_RETRIEVED]["detail"],
-        data=db_jobs
-    )
+        data=data
+    ), exclude_none=True)
 
 
 PUT_IMAGE_RESPONSES = {
@@ -160,6 +274,7 @@ PUT_IMAGE_RESPONSES = {
     status_code=fastapi.status.HTTP_201_CREATED,
     include_in_schema=config.SHOW_PUT_IMAGE,
     responses=make_responses(PUT_IMAGE_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_new_job
 async def put_image(
         request: Request,
@@ -255,6 +370,7 @@ PUT_ALTO_RESPONSES = {
     include_in_schema=config.SHOW_PUT_ALTO,
     tags=["User"],
 responses=make_responses(PUT_ALTO_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_new_job
 async def put_alto(
         request: Request,
@@ -362,6 +478,7 @@ PUT_PAGE_RESPONSES = {
     include_in_schema=config.SHOW_PUT_PAGE,
     tags=["User"],
 responses=make_responses(PUT_PAGE_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_new_job
 async def put_page(
         request: Request,
@@ -463,6 +580,7 @@ PUT_META_JSON_RESPONSES = {
     include_in_schema=config.SHOW_PUT_METADATA,
     responses=make_responses(PUT_META_JSON_RESPONSES)
 )
+@challenge_job_exists
 @challenge_user_access_to_new_job
 async def put_meta_json(
         job_id: UUID,
@@ -548,6 +666,7 @@ GET_RESULT_RESPONSES = {
     tags=["User"],
     description=config.RESULT_DESCRIPTION,
     responses=make_responses(GET_RESULT_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_job
 async def get_result(
         route_request: fastapi.Request,
@@ -598,6 +717,101 @@ async def get_result(
         )
 
     raise RouteInvariantError(code=code, request=route_request)
+
+
+GET_ENGINES_RESPONSES = {
+    AppCode.ENGINE_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Engines retrieved successfully.",
+        "model": DocAPIResponseOK[List[base_objects.Engine]],
+        "model_data": List[base_objects.Engine],
+        "detail": "Engines retrieved successfully.",
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Regular API keys are not allowed to filter by 'active'.",
+        "model": DocAPIResponseClientError,
+        "detail": "Regular API keys are not allowed to filter by 'active'."
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Regular API keys are not allowed to use 'show_definition'.",
+        "model": DocAPIResponseClientError,
+        "detail": "Regular API keys are not allowed to use 'show_definition'."
+    }
+}
+@root_router.get(
+    "/v1/engines",
+    summary="Get Engines",
+    response_model=DocAPIResponseOK[List[base_objects.Engine]],
+    tags=["User"],
+    description="Retrieve a list of all available engines.\n\n"
+                "You can filter engines by name, version, and default status.\n\n"
+                "`active` and `show_definition` are meant only for admins.",
+    responses=make_responses(GET_ENGINES_RESPONSES))
+async def list_engines(
+        request: Request,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+        default: Optional[bool] = None,
+        active: Optional[bool] = None,
+        show_definition: bool = False,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    if key.role == base_objects.KeyRole.ADMIN:
+        db_engines, code = await general_cruds.get_engines(db=db,
+                                                           engine_name=name,
+                                                           engine_version=version,
+                                                           default=default,
+                                                           active=active)
+    else:
+        if active is not None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE,
+                detail=GET_ENGINES_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE]["detail"]
+            )
+        if show_definition is not None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION,
+                detail=GET_ENGINES_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION]["detail"]
+            )
+        db_engines, code = await general_cruds.get_engines(db=db,
+                                                           engine_name=name,
+                                                           engine_version=version,
+                                                           default=default,
+                                                           active=True)
+
+    if code == AppCode.ENGINES_RETRIEVED:
+        engines: List[base_objects.Engine] = []
+        for db_engine in db_engines:
+            engine = base_objects.Engine.model_validate(db_engine).model_dump()
+            if key.role != base_objects.KeyRole.ADMIN:
+                engine.pop("id")
+                engine.pop("active", None)
+                engine.pop("definition", None)
+                engine.pop("created_date", None)
+                engine.pop("last_used", None)
+            else:
+                if not show_definition:
+                    engine.pop("definition", None)
+            engines.append(base_objects.Engine(**engine))
+
+        # Natural sort by name (primary) then version (secondary)
+        k_name = natsort_keygen(key=lambda e: e.name)
+        k_version = natsort_keygen(key=lambda e: e.version)
+        engines = natsorted(engines, key=lambda e: (k_name(e), k_version(e)))
+
+        return validate_ok_response(DocAPIResponseOK[List[base_objects.Engine]](
+            status=status.HTTP_200_OK,
+            code=AppCode.ENGINES_RETRIEVED,
+            detail=GET_ENGINES_RESPONSES[AppCode.ENGINE_RETRIEVED]["detail"],
+            data=engines,
+        ), exclude_none=True)
+
+    raise RouteInvariantError(code=code, request=request)
 
 
 

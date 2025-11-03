@@ -24,8 +24,8 @@ class KeyRole(str, enum.Enum):
 
 
 class Image(BaseModel):
-    id: UUID = Field(
-        ...,
+    id: Optional[UUID] = Field(
+        None,
         examples=["550e8400-e29b-41d4-a716-446655440000"],
         description="Unique identifier of the image."
     )
@@ -89,7 +89,7 @@ class ImageUpdate(BaseModel):
     )
 
 
-class Job(BaseModel):
+class JobProper(BaseModel):
     id: UUID = Field(
         ...,
         examples=["550e8400-e29b-41d4-a716-446655440000"],
@@ -164,14 +164,42 @@ class Job(BaseModel):
 
     log_user: Optional[str] = Field(
         None,
-        examples=["string"],
-        description="User or worker identifier associated with this job."
+        examples=["USER log."],
+        description="User facing log message displayed in the interface. "
+                    "Helps indicate current processing step or progress in human-readable form."
+    )
+
+    log: Optional[str] = Field(
+        None,
+        examples=["ADMIN log."],
+        description=(
+            "Technical or debug log text appended to the internal system log. "
+            "Used for diagnostics or backend monitoring."
+        )
     )
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
-class JobWithImages(Job):
+class JobWithEngine(JobProper):
+    engine_name: Optional[str] = Field(
+        None,
+        examples=["OCR Engine X"],
+        description="Name of the engine assigned to this job."
+    )
+    engine_version: Optional[str] = Field(
+        None,
+        examples=["v1.0.0"],
+        description="Version of the engine assigned to this job."
+    )
+
+
+class Job(JobWithEngine):
+    engine_definition: Optional[dict] = Field(
+        None,
+        examples=[{"param1": "value1", "param2": 42}],
+        description="JSON definition/configuration of the engine assigned to this job."
+    )
     images: List[Image] = Field(
         ...,
         description="List of images associated with this job."
@@ -413,6 +441,126 @@ class KeySecret(BaseModel):
         description="The secret value of the API key used for authentication.",
         examples=["abcd1234efgh5678ijkl9012mnop3456qrst7890uvwx"],
     )
+
+
+class Engine(BaseModel):
+    id: Optional[UUID] = Field(
+        None,
+        description="Unique identifier of the engine (UUIDv4).",
+        examples=["a1b2c3d4-e5f6-47a8-9abc-def012345678"],
+    )
+    name: str = Field(
+        ...,
+        description="Name of the engine.",
+        examples=["OCR Engine X"],
+    )
+    version: str = Field(
+        ...,
+        description="Version of the engine.",
+        examples=["v1.0.0"],
+    )
+    description: str = Field(
+        ...,
+        description="Description of the engine.",
+        examples=["An advanced OCR engine optimized for historical documents."],
+    )
+    definition: Optional[dict] = Field(
+        None,
+        description="JSON definition/configuration of the engine.",
+        examples=[{"param1": "value1", "param2": 42}],
+    )
+    default: bool = Field(
+        ...,
+        description="Whether this engine is the default choice for jobs.",
+        examples=[True],
+    )
+    active: Optional[bool] = Field(
+        None,
+        description="Whether this engine is currently active and available for use.",
+        examples=[True],
+    )
+    created_date: Optional[datetime] = Field(
+        None,
+        description="Timestamp when the engine was added (in UTC).",
+        examples=["2025-02-20T14:45:00+00:00"],
+    )
+    last_used: Optional[datetime] = Field(
+        None,
+        description="Timestamp of the last time this engine was used (in UTC). May be null if unused.",
+        examples=["2025-10-22T11:30:00+00:00"],
+    )
+
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
+
+
+class EngineNew(BaseModel):
+    name: str = Field(
+        ...,
+        description="Name of the engine.",
+        examples=["OCR Engine X"],
+    )
+    version: str = Field(
+        ...,
+        description="Version of the engine.",
+        examples=["v1.0.0"],
+    )
+    description: str = Field(
+        ...,
+        description="Description of the engine.",
+        examples=["An advanced OCR engine optimized for historical documents."],
+    )
+    definition: dict = Field(
+        ...,
+        description="JSON definition/configuration of the engine.",
+        examples=[{"param1": "value1", "param2": 42}],
+    )
+    default: Optional[bool] = Field(
+        False,
+        description="Whether this engine should be the default choice for jobs.",
+        examples=[False],
+    )
+    active: Optional[bool] = Field(
+        True,
+        description="Whether this engine is currently active and available for use.",
+        examples=[True],
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class EngineUpdate(BaseModel):
+    name: Optional[str] = Field(
+        None,
+        description="Name of the engine.",
+        examples=["OCR Engine X"],
+    )
+    version: Optional[str] = Field(
+        None,
+        description="Version of the engine.",
+        examples=["v1.0.0"],
+    )
+    description: Optional[str] = Field(
+        None,
+        description="Description of the engine.",
+        examples=["An advanced OCR engine optimized for historical documents."],
+    )
+    definition: Optional[dict] = Field(
+        None,
+        description="JSON definition/configuration of the engine.",
+        examples=[{"param1": "value1", "param2": 42}],
+    )
+    default: Optional[bool] = Field(
+        None,
+        description="Whether this engine should be the default choice for jobs.",
+        examples=[True],
+    )
+    active: Optional[bool] = Field(
+        None,
+        description="Whether this engine is currently active and available for use.",
+        examples=[True],
+    )
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def model_example(model_type: Any) -> Any:

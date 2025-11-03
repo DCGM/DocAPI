@@ -92,6 +92,15 @@ class AppCode(str, enum.Enum):
     JOB_RESULT_REUPLOADED = 'JOB_RESULT_REUPLOADED'
     JOB_RESULT_MISSING = 'JOB_RESULT_MISSING'
 
+    ENGINE_CREATED = 'ENGINE_CREATED'
+    ENGINE_NOT_FOUND = 'ENGINE_NOT_FOUND'
+    ENGINE_RETRIEVED = 'ENGINE_RETRIEVED'
+    ENGINES_RETRIEVED = 'ENGINES_RETRIEVED'
+    ENGINE_INACTIVE = 'ENGINE_INACTIVE'
+    ENGINE_ALREADY_EXISTS = 'ENGINE_ALREADY_EXISTS'
+    ENGINE_UPDATED = 'ENGINE_UPDATED'
+    ENGINE_UPDATE_NO_FIELDS = 'ENGINE_UPDATE_NO_FIELDS'
+
     KEYS_RETRIEVED = 'KEYS_RETRIEVED'
     KEY_ALREADY_EXISTS = 'KEY_ALREADY_EXISTS'
     KEY_CREATED = 'KEY_CREATED'
@@ -109,6 +118,9 @@ class AppCode(str, enum.Enum):
     API_KEY_USER_FORBIDDEN = 'API_KEY_USER_FORBIDDEN'
     API_KEY_WORKER_FORBIDDEN = 'API_KEY_WORKER_FORBIDDEN'
     API_KEY_FORBIDDEN_FOR_JOB = 'API_KEY_FORBIDDEN_FOR_JOB'
+    API_KEY_FORBIDDEN_FOR_ENGINE_VERSION = 'API_KEY_FORBIDDEN_FOR_ENGINE_VERSION'
+    API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE = 'API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE'
+    API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION = 'API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION'
 
     REQUEST_VALIDATION_ERROR = 'REQUEST_VALIDATION_ERROR'
     INTERNAL_ERROR = 'INTERNAL_ERROR'
@@ -191,7 +203,7 @@ class DocAPIResponseServerError(DocAPIResponseBase):
 
 NO_BODY_STATUSES = {fastapi.status.HTTP_204_NO_CONTENT, fastapi.status.HTTP_205_RESET_CONTENT}
 
-def validate_ok_response(payload: DocAPIResponseOK[T]) -> Response:
+def validate_ok_response(payload: DocAPIResponseOK[T], exclude_none: bool = False) -> Response:
     """
     Render a 2xx response, for 200 strictly prefer returning Pydantic model
     directly from route and use FastAPI response_model for validation.
@@ -202,7 +214,7 @@ def validate_ok_response(payload: DocAPIResponseOK[T]) -> Response:
     if payload.status in NO_BODY_STATUSES:
         return Response(status_code=payload.status)
 
-    return JSONResponse(status_code=payload.status, content=payload.model_dump(mode="json"))
+    return JSONResponse(status_code=payload.status, content=payload.model_dump(mode="json", exclude_none=exclude_none))
 
 
 def validate_client_error_response(payload: DocAPIResponseClientError, headers: Optional[Mapping[str, str]] = None) -> JSONResponse:
@@ -390,14 +402,11 @@ def _build_json_example(
         inst = model_cls(status=status, code=app_code, detail=detail, details=details)
     return inst.model_dump(mode="json", exclude_none=True)
 
-def _schema_ref_from_model(model_tp: Type[Any], *, model_data_cls: Optional[Type[Any]] = None) -> str:
+def _schema_ref_from_model(model_tp: Type[Any]) -> str:
     """
     Compose a stable components schema $ref:
       - Success:  Origin_ModelData  (e.g., DocAPIResponseOK_JobLease)
       - Error:    Origin             (e.g., DocAPIResponseClientError)
     """
     base = getattr(model_tp, "__name__", str(model_tp))
-    if model_data_cls is not None:
-        arg = getattr(model_data_cls, "__name__", str(model_data_cls))
-        return f"#/components/schemas/{base}_{arg}"
     return f"#/components/schemas/{base}"

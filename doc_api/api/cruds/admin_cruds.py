@@ -2,7 +2,7 @@ import logging
 from typing import Tuple, List, Optional
 from uuid import UUID
 
-from sqlalchemy import select, exc
+from sqlalchemy import select, exc, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import salted_hmac_sha256_hex, issue_key_components, make_api_key
@@ -206,4 +206,128 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed updating job in database") from e
+
+
+async def new_engine(*, db: AsyncSession, engine_new: base_objects.EngineNew) -> Tuple[Optional[model.Engine], AppCode]:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Engine).
+                where(model.Engine.name == engine_new.name).
+                where(model.Engine.version == engine_new.version)
+            )
+            existing_engine = result.scalar_one_or_none()
+            if existing_engine is not None:
+                return None, AppCode.ENGINE_ALREADY_EXISTS
+
+            # Unset existing defaults
+            if engine_new.default:
+                await db.execute(
+                    update(model.Engine).
+                    where(model.Engine.default.is_(True)).
+                    values(default=False)
+                )
+
+            # Unset other active engines with the same name
+            if engine_new.active:
+                await db.execute(
+                    update(model.Engine).
+                    where(model.Engine.name == engine_new.name).
+                    where(model.Engine.active.is_(True)).
+                    values(active=False)
+                )
+
+            db_engine = model.Engine(
+                name=engine_new.name,
+                version=engine_new.version,
+                description=engine_new.description,
+                definition=engine_new.definition,
+                default=engine_new.default,
+                active=engine_new.active
+            )
+
+            db.add(db_engine)
+
+            return db_engine, AppCode.ENGINE_CREATED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed creating new engine") from e
+
+
+async def update_engine(*, db: AsyncSession, engine_name: str, engine_version: str, engine_update: base_objects.EngineUpdate) -> AppCode:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Engine).
+                where(model.Engine.name == engine_name).
+                where(model.Engine.version == engine_version).with_for_update())
+            db_engine = result.scalar_one_or_none()
+
+            if db_engine is None:
+                return AppCode.ENGINE_NOT_FOUND
+
+            new_name = engine_update.name if engine_update.name is not None else db_engine.name
+            new_version = engine_update.version if engine_update.version is not None else db_engine.version
+
+            if (new_name, new_version) != (db_engine.name, db_engine.version):
+                exists_row = await db.execute(
+                    select(model.Engine.id)
+                    .where(
+                        model.Engine.name == new_name,
+                        model.Engine.version == new_version,
+                        model.Engine.id != db_engine.id,
+                    )
+                    .limit(1)
+                )
+                if exists_row.first() is not None:
+                    return AppCode.ENGINE_ALREADY_EXISTS
+
+            result = await db.execute(
+                select(model.Engine).
+                where(model.Engine.name == engine_update.name).
+                where(model.Engine.version == engine_update.version).
+                where(model.Engine.id != db_engine.id)
+            )
+            existing_engine = result.scalar_one_or_none()
+            if existing_engine is not None:
+                return AppCode.ENGINE_ALREADY_EXISTS
+
+            if engine_update.name is not None:
+                db_engine.name = engine_update.name
+
+            if engine_update.version is not None:
+                db_engine.version = engine_update.version
+
+            if engine_update.description is not None:
+                db_engine.description = engine_update.description
+
+            if engine_update.definition is not None:
+                db_engine.definition = engine_update.definition
+
+            if engine_update.default is not None:
+                if engine_update.default:
+                    # Unset existing defaults
+                    await db.execute(
+                        update(model.Engine).
+                        where(model.Engine.default.is_(True)).
+                        values(default=False)
+                    )
+                db_engine.default = engine_update.default
+
+            if engine_update.active is not None:
+                if engine_update.active:
+                    # Unset other active engines with the same name
+                    await db.execute(
+                        update(model.Engine).
+                        where(model.Engine.name == db_engine.name).
+                        where(model.Engine.active.is_(True)).
+                        where(model.Engine.id != db_engine.id).
+                        values(active=False)
+                    )
+                db_engine.active = engine_update.active
+
+            return AppCode.ENGINE_UPDATED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError("Failed updating engine") from e
 

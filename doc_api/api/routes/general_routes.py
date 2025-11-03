@@ -1,6 +1,7 @@
 import logging
 import os
 from types import NoneType
+from typing import Optional, List
 
 import fastapi
 from fastapi import Depends, status, Request, Body
@@ -10,6 +11,7 @@ from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
@@ -19,7 +21,7 @@ from doc_api.api.database import get_async_session
 from doc_api.api.guards.worker_guards import challenge_worker_access_to_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
-    DocAPIClientErrorException
+    DocAPIClientErrorException, validate_ok_response
 
 from doc_api.db import model
 from doc_api.config import config
@@ -38,18 +40,19 @@ GET_JOB_RESPONSES = {
     AppCode.JOB_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job details retrieved successfully.",
-        "model": DocAPIResponseOK,
-        "model_data": base_objects.JobWithImages,
+        "model": DocAPIResponseOK[base_objects.Job],
+        "model_data": base_objects.Job,
         "detail": "The job details have been retrieved successfully.",
     }
 }
 @root_router.get(
     "/v1/jobs/{job_id}",
     summary="Get Job",
-    response_model=DocAPIResponseOK[base_objects.JobWithImages],
+    response_model=DocAPIResponseOK[base_objects.Job],
     tags=["User"],
     description="Retrieve the details of a specific job by its ID.",
     responses=make_responses(GET_JOB_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
 async def get_job(
@@ -60,19 +63,50 @@ async def get_job(
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
     db_images, images_code = await general_cruds.get_job_images(db=db, job_id=job_id)
+    db_engine = None
+    engine_code = None
+    if db_job.engine_id is not None:
+        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
 
     if job_code == AppCode.JOB_RETRIEVED and images_code == AppCode.IMAGES_RETRIEVED:
-        job = base_objects.Job.model_validate(db_job).model_dump()
-        images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
-        data = base_objects.JobWithImages(**job, images=images)
-        return DocAPIResponseOK[base_objects.JobWithImages](
+        data = prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
             status=status.HTTP_200_OK,
             code=AppCode.JOB_RETRIEVED,
             detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
             data=data
-        )
+        ), exclude_none=True)
 
-    raise RouteInvariantError(code=job_code if job_code != AppCode.JOB_RETRIEVED else images_code, request=request)
+    if job_code != AppCode.JOB_RETRIEVED:
+        raise RouteInvariantError(code=job_code, request=request)
+    if images_code != AppCode.IMAGES_RETRIEVED:
+        raise RouteInvariantError(code=images_code, request=request)
+    raise RouteInvariantError(code=engine_code, request=request)
+
+
+def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
+    job = base_objects.JobProper.model_validate(db_job).model_dump()
+    images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
+
+    # drop everything that is only for admins
+    if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+        job.pop("log", None)
+        for img in images:
+            img.pop("id", None)
+
+    if db_engine is None:
+        data = base_objects.Job(**job, images=images)
+    else:
+        engine_definition = db_engine.definition
+        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+            engine_definition = None
+        data = base_objects.Job(**job,
+                                images=images,
+                                engine_name=db_engine.name,
+                                engine_version=db_engine.version,
+                                engine_definition=engine_definition)
+
+    return data
 
 
 PATCH_JOB_RESPONSES = {
@@ -107,7 +141,7 @@ PATCH_JOB_RESPONSES = {
     AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been updated successfully and the lease has been extended (UTC time).",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.JobLease],
         "model_data": base_objects.JobLease,
         "detail": "Job has been updated successfully and the lease has been extended (UTC time).",
     },
@@ -165,6 +199,7 @@ PATCH_JOB_RESPONSES = {
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
     responses=make_responses(PATCH_JOB_RESPONSES))
+@challenge_job_exists
 @challenge_user_access_to_job
 @challenge_worker_access_to_job
 async def patch_job(
@@ -232,6 +267,7 @@ async def patch_job(
     db_job, code_get_job = await general_cruds.get_job(db=db, job_id=job_id)
     code_update_job = None
 
+    # user guards
     if key.role == base_objects.KeyRole.USER:
         if job_progress_update.state != base_objects.ProcessingState.CANCELLED:
             raise DocAPIClientErrorException(
@@ -239,7 +275,7 @@ async def patch_job(
                 code=AppCode.API_KEY_USER_FORBIDDEN,
                 detail=PATCH_JOB_RESPONSES[AppCode.API_KEY_USER_FORBIDDEN]["detail"]
             )
-        logger.info(db_job.state)
+
         if db_job.state in {base_objects.ProcessingState.CANCELLED,
                             base_objects.ProcessingState.DONE,
                             base_objects.ProcessingState.FAILED}:
@@ -250,18 +286,21 @@ async def patch_job(
                 details={"state": f"{db_job.state.value}"}
             )
 
-        # user cancels job
-        code_update_job = await user_cruds.cancel_job(db, job_id)
-        if code_update_job == AppCode.JOB_CANCELLED:
-            return DocAPIResponseOK[NoneType](
-                status=status.HTTP_200_OK,
-                code=AppCode.JOB_CANCELLED,
-                detail=PATCH_JOB_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
+    # worker guards
+    if key.role == base_objects.KeyRole.WORKER:
+        if job_progress_update.state not in {
+            base_objects.ProcessingState.DONE,
+            base_objects.ProcessingState.ERROR,
+            None
+        }:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_WORKER_FORBIDDEN,
+                detail=PATCH_JOB_RESPONSES[AppCode.API_KEY_WORKER_FORBIDDEN]["detail"]
             )
 
-    elif key.role == base_objects.KeyRole.WORKER:
-        if job_progress_update.state in {base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR} \
-            and db_job.state not in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
+        if job_progress_update.state in {base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR} and \
+                db_job.state not in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE, base_objects.ProcessingState.ERROR}:
             raise DocAPIClientErrorException(
                 status=status.HTTP_409_CONFLICT,
                 code=AppCode.JOB_UNFINISHABLE,
@@ -269,10 +308,6 @@ async def patch_job(
                 details={"state": f"{db_job.state.value}"}
             )
 
-        # at this point, the job must be finishable because the worker can access only jobs in processing|done|error state
-        # new and queued jobs are not assigned to workers
-
-        # worker marks job as done
         if job_progress_update.state == base_objects.ProcessingState.DONE:
             result_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
             if not await aiofiles_os.path.exists(result_path):
@@ -282,12 +317,34 @@ async def patch_job(
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_RESULT_MISSING]["detail"],
                 )
 
-            _, _, _, code_update_job = await worker_cruds.update_job_progress(
-                db=db,
-                job_id=job_id,
-                job_progress_update=job_progress_update
+        if job_progress_update.state is None:
+            if job_progress_update.progress is None and \
+                    job_progress_update.log is None and \
+                    job_progress_update.log_user is None:
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_400_BAD_REQUEST,
+                    code=AppCode.JOB_UPDATE_NO_FIELDS,
+                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATE_NO_FIELDS]["detail"]
+                )
+
+    # at this point we know the request is valid
+
+    if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.ADMIN}:
+        code_update_job = await user_cruds.cancel_job(db, job_id)
+        if code_update_job == AppCode.JOB_CANCELLED:
+            return DocAPIResponseOK[NoneType](
+                status=status.HTTP_200_OK,
+                code=AppCode.JOB_CANCELLED,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
             )
 
+    if key.role in {base_objects.KeyRole.WORKER, base_objects.KeyRole.ADMIN}:
+        db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
+            db=db,
+            job_id=job_id,
+            job_progress_update=job_progress_update
+        )
+        if job_progress_update.state == base_objects.ProcessingState.DONE:
             if code_update_job == AppCode.JOB_COMPLETED:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
@@ -301,15 +358,7 @@ async def patch_job(
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_COMPLETED]["detail"]
                 )
 
-        # worker marks job as error
         elif job_progress_update.state == base_objects.ProcessingState.ERROR:
-
-            _, _, _, code_update_job = await worker_cruds.update_job_progress(
-                db=db,
-                job_id=job_id,
-                job_progress_update=job_progress_update
-            )
-
             if code_update_job == AppCode.JOB_MARKED_ERROR:
                 return DocAPIResponseOK[NoneType](
                     status=fastapi.status.HTTP_200_OK,
@@ -323,21 +372,7 @@ async def patch_job(
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_MARKED_ERROR]["detail"]
                 )
 
-        # worker updates job progress
         elif job_progress_update.state is None:
-            if job_progress_update.progress is None and \
-                job_progress_update.log is None and \
-                job_progress_update.log_user is None:
-                raise DocAPIClientErrorException(
-                    status=status.HTTP_400_BAD_REQUEST,
-                    code=AppCode.JOB_UPDATE_NO_FIELDS,
-                    detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATE_NO_FIELDS]["detail"]
-                )
-            db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
-                db=db,
-                job_id=job_id,
-                job_progress_update=job_progress_update
-            )
             if code_update_job == AppCode.JOB_UPDATED:
                 return DocAPIResponseOK[base_objects.JobLease](
                     status=fastapi.status.HTTP_200_OK,
@@ -346,13 +381,6 @@ async def patch_job(
                     data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time)
                 )
 
-        else:
-            raise DocAPIClientErrorException(
-                status=status.HTTP_403_FORBIDDEN,
-                code=AppCode.API_KEY_WORKER_FORBIDDEN,
-                detail=PATCH_JOB_RESPONSES[AppCode.API_KEY_WORKER_FORBIDDEN]["detail"]
-            )
-
     raise RouteInvariantError(code=code_get_job if code_update_job is None else code_update_job, request=request)
 
 
@@ -360,7 +388,7 @@ ME_RESPONSES = {
     AppCode.API_KEY_VALID: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "API key is valid.",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.Key],
         "model_data": base_objects.Key,
         "detail": "API key is valid.",
     }
