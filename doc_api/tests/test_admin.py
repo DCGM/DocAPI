@@ -271,4 +271,438 @@ async def test_patch_key_409(client, admin_headers, new_key):
     assert body["code"] == AppCode.KEY_ALREADY_EXISTS.value
 
 
+#
+# POST /v1/admin/engines - 201, 409
+#
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_CREATED])
+async def test_post_engine_201(created_engine, dummy):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_CREATED])
+async def test_post_engine_201_new_default(client, admin_headers, created_engine, dummy):
+    assert created_engine["default"] is True
+    new_definition = {
+                "type": "docker",
+                "docker_image": "example/engine:latest",
+                "resources": { "cpu": 2, "memory": "4G" }
+            }
+    r = await client.post(
+        "/v1/admin/engines",
+        headers=admin_headers,
+        json={
+            "name": f"{created_engine['name']}-new",
+            "version": created_engine["version"],
+            "description": created_engine["description"],
+            "definition": new_definition,
+            "active": True,
+            "default": True
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.get("/v1/engines",
+        params={
+            "name": created_engine["name"],
+            "version": created_engine["version"],
+            "show_definition": True
+        },
+        headers=admin_headers)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is False
+    assert engine["active"] is True
+    assert engine["definition"] == created_engine["definition"]
+
+    r = await client.get("/v1/engines",
+                            params={
+                                "name": f"{created_engine['name']}-new",
+                                "version": created_engine["version"],
+                                "show_definition": True
+
+                            },
+                            headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is True
+    assert engine["active"] is True
+    assert engine["definition"] == new_definition
+    
+    
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_CREATED])
+async def test_post_engine_201_new_active(client, admin_headers, created_engine, dummy):
+    assert created_engine["default"] is True
+    new_definition = {
+                "type": "docker",
+                "docker_image": "example/engine:latest",
+                "resources": { "cpu": 2, "memory": "4G" }
+            }
+    r = await client.post(
+        "/v1/admin/engines",
+        headers=admin_headers,
+        json={
+            "name": created_engine['name'],
+            "version": created_engine["version"] + "-new",
+            "description": created_engine["description"],
+            "definition": new_definition,
+            "active": True
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.get("/v1/engines",
+                         params={
+                             "name": created_engine["name"],
+                             "version": created_engine["version"],
+                             "show_definition": True
+                         },
+                         headers=admin_headers)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is True
+    assert engine["active"] is False
+    assert engine["definition"] == created_engine["definition"]
+
+    r = await client.get("/v1/engines",
+                            params={
+                                "name": created_engine["name"],
+                                "version": created_engine["version"] + "-new",
+                                "show_definition": True
+                            },
+                            headers=admin_headers)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is False
+    assert engine["active"] is True
+    assert engine["definition"] == new_definition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_CREATED])
+async def test_post_engine_201_new_default_and_active(client, admin_headers, created_engine, dummy):
+    assert created_engine["default"] is True
+    new_definition = {
+        "type": "docker",
+        "docker_image": "example/engine:latest",
+        "resources": {"cpu": 2, "memory": "4G"}
+    }
+    r = await client.post(
+        "/v1/admin/engines",
+        headers=admin_headers,
+        json={
+            "name": created_engine['name'],
+            "version": created_engine["version"] + "-new",
+            "description": created_engine["description"],
+            "definition": new_definition,
+            "active": True,
+            "default": True
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.get("/v1/engines",
+                         params={
+                             "name": created_engine["name"],
+                             "version": created_engine["version"],
+                             "show_definition": True
+                         },
+                         headers=admin_headers)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is False
+    assert engine["active"] is False
+    assert engine["definition"] == created_engine["definition"]
+
+    r = await client.get("/v1/engines",
+                            params={
+                                "name": created_engine["name"],
+                                "version": created_engine["version"] + "-new",
+                                "show_definition": True
+                            },
+                            headers=admin_headers)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is True
+    assert engine["active"] is True
+    assert engine["definition"] == new_definition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_ALREADY_EXISTS])
+async def test_post_engine_409(client, admin_headers, created_engine, dummy):
+    r = await client.post(
+        "/v1/admin/engines",
+        headers=admin_headers,
+        json=created_engine
+    )
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_ALREADY_EXISTS.value
+
+#
+# PATCH /v1/admin/engines/{name}/{version} - 200, 400, 404, 409
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_UPDATED])
+async def test_patch_engine_200_update_default(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    new_version = created_engine["version"] + "-future-default"
+
+    r = await client.post(
+        f"/v1/admin/engines",
+        headers=admin_headers,
+        json={**created_engine,
+              "version": new_version,
+              "default": False}
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{new_version}",
+        headers=admin_headers,
+        json={
+            "default": True
+        }
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_UPDATED.value
+    r = await client.get(
+        "/v1/engines",
+        params={
+            "name": name,
+            "version": new_version
+        },
+        headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is True
+
+    f = await client.get(
+        "/v1/engines",
+        params={
+            "name": name,
+            "version": version
+        },
+        headers=admin_headers
+    )
+    assert f.status_code == 200, f.text
+    body = f.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["default"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_UPDATED])
+async def test_patch_engine_200_update_active(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    new_version = created_engine["version"] + "-future-active"
+
+    r = await client.post(
+        f"/v1/admin/engines",
+        headers=admin_headers,
+        json={**created_engine,
+              "version": new_version,
+              "active": False}
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{new_version}",
+        headers=admin_headers,
+        json={
+            "active": True
+        }
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_UPDATED.value
+    r = await client.get(
+        "/v1/engines",
+        params={
+            "name": name,
+            "version": new_version
+        },
+        headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["active"] is True
+
+    f = await client.get(
+        "/v1/engines",
+        params={
+            "name": name,
+            "version": version
+        },
+        headers=admin_headers
+    )
+    assert f.status_code == 200, f.text
+    body = f.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["active"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_UPDATED])
+async def test_patch_engine_200_update_description(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+    new_description = f"{created_engine['description']} - updated"
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{version}",
+        headers=admin_headers,
+        json={
+            "description": new_description
+        }
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_UPDATED.value
+
+    r = await client.get(
+        "/v1/engines",
+        params={
+            "name": name,
+            "version": version
+        },
+        headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    assert engine["description"] == new_description
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_UPDATE_NO_FIELDS])
+async def test_patch_engine_400_no_fields(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{version}",
+        headers=admin_headers,
+        json={}
+    )
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_UPDATE_NO_FIELDS.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_NOT_FOUND])
+async def test_patch_engine_404(client, admin_headers, dummy):
+    r = await client.patch(
+        f"/v1/admin/engines/nonexistent-engine/1.0.0",
+        headers=admin_headers,
+        json={
+            "active": True
+        }
+    )
+    assert r.status_code == 404, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_ALREADY_EXISTS])
+async def test_patch_engine_409(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    new_version = created_engine["version"] + "-duplicate"
+
+    r = await client.post(
+        f"/v1/admin/engines",
+        headers=admin_headers,
+        json={**created_engine,
+              "version": new_version}
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{new_version}",
+        headers=admin_headers,
+        json={
+            "version": version,
+        }
+    )
+
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_ALREADY_EXISTS.value

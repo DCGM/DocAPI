@@ -183,7 +183,8 @@ class Config:
                                                     "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
                                                     "`page_required`, `meta_json_required` must be set to `true`.\n\n"
                                                     "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
-                                                    "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.")
+                                                    "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.\n\n"
+                                                    "Optionally, you can specify `engine_name` to select a specific processing engine. Default engine will be used if not specified.\n\n")
         self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES",
                                                             json.dumps({
                                                                 "IMAGE job": {
@@ -202,7 +203,8 @@ class Config:
                                                                         ],
                                                                         "meta_json_required": False,
                                                                         "alto_required": False,
-                                                                        "page_required": False
+                                                                        "page_required": False,
+                                                                        "engine_name": "Engine A",
                                                                     }}})))
 
         # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)

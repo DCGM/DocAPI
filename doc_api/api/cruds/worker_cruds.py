@@ -143,7 +143,7 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
         raise DBError("Failed releasing job lease.") from e
 
 
-async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[base_objects.Job], Optional[datetime], Optional[datetime], AppCode]:
+async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
             result = await db.execute(

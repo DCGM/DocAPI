@@ -14,8 +14,7 @@ from doc_api.db import model
 
 
 USER_ACCESS_TO_JOB_GUARD_RESPONSES = {
-    AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND],
-    AppCode.API_KEY_FORBIDDEN_FOR_JOB: GENERAL_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_JOB],
+    AppCode.API_KEY_FORBIDDEN_FOR_JOB: GENERAL_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_JOB]
 }
 def challenge_user_access_to_job(fn):
     @wraps(fn)
@@ -38,13 +37,6 @@ async def _challenge_user_access_to_job(
         key: model.Key,
         job_id: UUID) -> model.Job:
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
-
-    if code == AppCode.JOB_NOT_FOUND:
-        raise DocAPIClientErrorException(
-            status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.JOB_NOT_FOUND,
-            detail=USER_ACCESS_TO_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
-        )
 
     if db_job.owner_key_id != key.id:
         raise DocAPIClientErrorException(

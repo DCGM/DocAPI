@@ -169,6 +169,13 @@ def _ename(name: str) -> str:
 
 @pytest_asyncio.fixture
 async def job_with_required_uploads_by_payload_name(client, user_headers, created_job):
+    return await _job_with_required_uploads_by_payload_name(client, user_headers, created_job)
+
+@pytest_asyncio.fixture
+async def job_with_engine_with_required_uploads_by_payload_name(client, user_headers, created_job_with_engine):
+    return await _job_with_required_uploads_by_payload_name(client, user_headers, created_job_with_engine)
+
+async def _job_with_required_uploads_by_payload_name(client, user_headers, created_job):
     job = created_job["created_job"]
     payload = created_job["payload"]
     job_id = job["id"]
@@ -260,14 +267,18 @@ async def job_with_required_uploads_by_payload_name(client, user_headers, create
                 )
                 assert r.status_code == 200, r.text
 
-    return {"created_job": job, "payload": payload}
+    return created_job
 
 
 @pytest_asyncio.fixture
 async def lease_job(client, worker_headers, job_with_required_uploads_by_payload_name):
-    job = job_with_required_uploads_by_payload_name["created_job"]
-    payload = job_with_required_uploads_by_payload_name["payload"]
+    return await _lease_job(client, worker_headers, job_with_required_uploads_by_payload_name)
 
+@pytest_asyncio.fixture
+async def lease_job_with_engine(client, worker_headers, job_with_engine_with_required_uploads_by_payload_name):
+    return await _lease_job(client, worker_headers, job_with_engine_with_required_uploads_by_payload_name)
+
+async def _lease_job(client, worker_headers, job_with_required_uploads_by_payload_name):
     r = await client.post(
         "/v1/jobs/lease",
         headers=worker_headers
@@ -446,3 +457,73 @@ async def inactive_key(client, admin_headers, new_key):
     assert body["code"] == AppCode.KEY_UPDATED.value
 
     return new_key
+
+
+@pytest_asyncio.fixture
+async def created_engine(client, admin_headers):
+    name = f"test-engine-{os.urandom(4).hex()}"
+    version = "1.0.0"
+    definition = {
+                "type": "test engine",
+                "config": {
+                    "param1": "value1",
+                    "param2": 2
+                }
+            }
+
+    engine = {
+            "name": name,
+            "version": version,
+            "description": "Test engine",
+            "definition": definition,
+            "default": True,
+            "active": True
+        }
+
+    r = await client.post(
+        "/v1/admin/engines",
+        headers=admin_headers,
+        json=engine
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_CREATED.value
+
+    yield engine
+
+    r = await client.patch(
+        f"/v1/admin/engines/{name}/{version}",
+        headers=admin_headers,
+        json={
+            "default": False,
+            "active": False
+        }
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_UPDATED.value
+
+
+@pytest_asyncio.fixture
+async def created_job_with_engine(client, user_headers, admin_headers, created_engine, payload):
+    r = await client.post("/v1/jobs", json=payload, headers=user_headers)
+
+    assert r.status_code == 201, r.text
+
+    body = r.json()
+    assert body["code"] == AppCode.JOB_CREATED.value
+    assert body["status"] == 201
+
+    job = body["data"]
+
+    yield {"created_job": job, "engine": created_engine, "payload": payload}
+
+    job_id = job["id"]
+    r = await client.patch(f"/v1/admin/jobs/{job_id}",
+                            headers=admin_headers,
+                            json={"state": base_objects.ProcessingState.DONE})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_UPDATED.value

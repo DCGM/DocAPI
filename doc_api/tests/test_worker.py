@@ -1,11 +1,15 @@
+import logging
 import os
 import pytest
 
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
-from doc_api.tests.conftest import user_headers
-from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, job_definition_payload_id, VALID_ZIP
+from doc_api.tests.conftest import user_headers, admin_headers
+from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, VALID_ZIP
+
+
+logger = logging.getLogger(__name__)
 
 
 #
@@ -35,6 +39,47 @@ async def test_post_job_lease_200_job_leased(client, worker_headers, lease_job):
 
     job_after_lease = body["data"]
     assert job_after_lease["state"] == base_objects.ProcessingState.PROCESSING.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASED], indirect=True)
+async def test_post_job_lease_200_job_leased_with_engine(client, worker_headers, admin_headers, lease_job_with_engine):
+    job = lease_job_with_engine["created_job"]
+    engine = lease_job_with_engine["engine"]
+    lease = lease_job_with_engine["lease"]
+
+    assert lease["id"] == job["id"], "This will only pass if there are not other jobs in QUEUED state apart from the one just created by this test."
+    assert "lease_expire_at" in lease
+    assert "server_time" in lease
+
+    assert job["id"] is not None
+
+    r = await client.get(
+        f"/v1/jobs/{job['id']}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    job_after_lease = body["data"]
+    assert job_after_lease["state"] == base_objects.ProcessingState.PROCESSING.value
+
+    r = await client.get(
+        f"/v1/engines",
+        headers=admin_headers,
+        params={"name": engine["name"],
+                "version": engine["version"]}
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    engines = body["data"]
+    assert len(engines) == 1
+    assert engines[0]["last_used"] is not None
 
 
 @pytest.mark.asyncio
@@ -137,6 +182,28 @@ async def test_get_job_200(client, worker_headers, lease_job, payload):
 
     job = body["data"]
     assert job["id"] == job_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RETRIEVED], indirect=True)
+async def test_get_job_200_with_engine(client, worker_headers, lease_job_with_engine, payload):
+    job_id = lease_job_with_engine["created_job"]["id"]
+    engine = lease_job_with_engine["engine"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    job = body["data"]
+    assert job["id"] == job_id
+    assert job["engine_name"] == engine["name"]
+    assert job["engine_version"] == engine["version"]
+    assert job["engine_definition"] == engine["definition"]
 
 
 #

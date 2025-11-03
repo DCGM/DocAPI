@@ -1,6 +1,7 @@
 import io
 import os.path
 import logging
+from datetime import datetime, timezone
 from functools import partial
 
 import pytest
@@ -25,6 +26,27 @@ logger = logging.getLogger(__name__)
 async def test_post_job_201(created_job):
     job = created_job["created_job"]
     payload = created_job["payload"]
+    assert job["state"] == base_objects.ProcessingState.NEW.value
+    assert job["meta_json_required"] == payload["meta_json_required"]
+    assert job["alto_required"] == payload["alto_required"]
+    assert job["page_required"] == payload["page_required"]
+    assert len(job["images"]) == len(payload["images"])
+    for img_payload, img_body in zip(payload["images"], job["images"]):
+        assert img_payload["name"] == img_body["name"]
+        assert img_payload["order"] == img_body["order"]
+        assert img_body["image_uploaded"] is False
+        assert img_body["alto_uploaded"] is False
+        assert img_body["page_uploaded"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_CREATED.value), indirect=True)
+async def test_post_job_201_with_engine(created_job_with_engine):
+    job = created_job_with_engine["created_job"]
+    engine = created_job_with_engine["engine"]
+    payload = created_job_with_engine["payload"]
+    assert job["engine_name"] == engine["name"]
+    assert job["engine_version"] == engine["version"]
     assert job["state"] == base_objects.ProcessingState.NEW.value
     assert job["meta_json_required"] == payload["meta_json_required"]
     assert job["alto_required"] == payload["alto_required"]
@@ -87,6 +109,42 @@ async def test_post_job_422_extra_keys(client, user_headers, dummy):
     assert ["body", "unexpected_key"] in paths
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.REQUEST_VALIDATION_ERROR.value])
+async def test_post_job_422_duplicate_image_names(client, user_headers, dummy):
+    invalid_payload = {
+        "images": [
+            {"name": "a.png", "order": 0},
+            {"name": "a.png", "order": 1},
+            {"name": "b.png", "order": 2},
+            {"name": "b.png", "order": 3},
+            {"name": "c.png", "order": 4},
+            {"name": "C.PNG", "order": 5},
+            {"name": "d.png", "order": 6},
+            {"name": " d.png ", "order": 7},
+        ],
+        "meta_json_required": False,
+        "alto_required": False,
+        "page_required": False,
+    }
+    r = await client.post("/v1/jobs", json=invalid_payload, headers=user_headers)
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+    details = body.get("details")
+    assert isinstance(details, list)
+
+    duplicate_names = set()
+    for item in details:
+        if item["loc"] == ["body", "images", "name"]:
+            if item["msg"].startswith("Duplicate image names found:"):
+                duplicate_names = duplicate_names.union(set([x.strip() for x in item["msg"].split(":")[-1].strip().split(",")]))
+
+    assert duplicate_names == {"a.png", "b.png"}
+
+    paths = [err.get("loc") for err in details if isinstance(err, dict)]
+    assert ["body", "images", "name"] in paths
+
 #
 # GET /v1/jobs - 200
 #
@@ -105,6 +163,27 @@ async def test_get_jobs_200(client, user_headers, dummy):
     data = body["data"]
     assert isinstance(data, list)
     assert len(data) >= len(JOB_DEFINITION_PAYLOADS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.JOBS_RETRIEVED.value])
+async def test_get_jobs_200_with_engines(client, user_headers, created_engine, dummy):
+    now = datetime.now(timezone.utc)
+    for p in JOB_DEFINITION_PAYLOADS:
+        r = await client.post("/v1/jobs", json={**p, "engine_name": created_engine["name"]} , headers=user_headers)
+        assert r.status_code == 201, r.text
+
+    r = await client.get("/v1/jobs", params={"from_created_date": now}, headers=user_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.JOBS_RETRIEVED.value
+    data = body["data"]
+    assert isinstance(data, list)
+    assert len(data) >= len(JOB_DEFINITION_PAYLOADS)
+    for job in data:
+        assert job["engine_name"] == created_engine["name"]
+        assert job["engine_version"] == created_engine["version"]
+
 
 #
 # GET /v1/jobs/{job_id} - 200
@@ -127,6 +206,30 @@ async def test_get_job_200(client, user_headers, created_job):
     assert len(data["images"]) == len(job["images"])
     for img_post, img_get in zip(job["images"], data["images"]):
         assert img_post == img_get
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_RETRIEVED.value), indirect=True)
+async def test_get_job_200_with_engine(client, user_headers, created_job_with_engine):
+    job = created_job_with_engine["created_job"]
+    engine = created_job_with_engine["engine"]
+    job_id = job["id"]
+
+    r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    data = body["data"]
+
+    assert data["id"] == job_id
+    assert data["state"] == base_objects.ProcessingState.NEW.value
+    assert len(data["images"]) == len(job["images"])
+    for img_post, img_get in zip(job["images"], data["images"]):
+        assert img_post == img_get
+
+    assert data["engine_name"] == engine["name"]
+    assert data["engine_version"] == engine["version"]
+    assert "engine_definition" not in data
 
 
 #

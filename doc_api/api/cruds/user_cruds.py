@@ -28,11 +28,13 @@ class JobDefinition(BaseModel):
     meta_json_required: bool = False
     alto_required: bool = False
     page_required: bool = False
+    engine_name: Optional[str] = None
+    engine_version: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
 
 
-async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefinition) -> Tuple[Optional[model.Job], AppCode]:
+async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefinition, active_engine: bool = False) -> Tuple[Optional[model.Job], AppCode]:
     try:
         async with db.begin():
             result = await db.execute(
@@ -42,8 +44,39 @@ async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefin
             if db_key is None:
                 return None, AppCode.API_KEY_INVALID
 
+            db_engine_id = None
+            if job_definition.engine_name is not None:
+                query = select(model.Engine).where(model.Engine.name == job_definition.engine_name)
+                if job_definition.engine_version is not None:
+                    query = query.where(model.Engine.version == job_definition.engine_version)
+                result = await db.execute(query)
+
+                db_engines = result.scalars().all()
+                if not db_engines:
+                    return None, AppCode.ENGINE_NOT_FOUND
+
+                logger.info(f"Found {len(db_engines)} engines matching name/version")
+
+                if active_engine or len(db_engines) > 1:
+                    active_engines = [e for e in db_engines if e.active]
+                    if not active_engines:
+                        return None, AppCode.ENGINE_INACTIVE
+                    db_engines = [active_engines[0]]
+
+                db_engine_id = db_engines[0].id
+            else:
+                result = await db.execute(
+                    select(model.Engine).
+                    where(model.Engine.default.is_(True)).
+                    where(model.Engine.active.is_(True))
+                )
+                db_engine = result.scalar_one_or_none()
+                if db_engine is not None:
+                    db_engine_id = db_engine.id
+
             db_job = model.Job(
                 owner_key_id=key_id,
+                engine_id=db_engine_id,
                 definition=job_definition.model_dump(mode="json"),
                 alto_required=job_definition.alto_required,
                 page_required=job_definition.page_required,
@@ -62,7 +95,7 @@ async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefin
             return db_job, AppCode.JOB_CREATED
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed creating new job in database") from e
+        raise DBError("Failed creating new job.") from e
 
 
 async def get_image_by_job_and_name(*, db: AsyncSession, job_id: UUID, image_name: str) -> Tuple[Optional[model.Image], AppCode]:
@@ -81,7 +114,7 @@ async def get_image_by_job_and_name(*, db: AsyncSession, job_id: UUID, image_nam
             return db_image, AppCode.IMAGE_RETRIEVED
 
     except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed reading image from database") from e
+        raise DBError(f"Failed reading image.") from e
 
 
 async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
@@ -124,6 +157,8 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                 or_(model.Job.page_required.is_(False), not_(page_missing)),
             )
 
+            now = datetime.now(timezone.utc)
+
             stmt = (
                 update(model.Job)
                 .where(
@@ -134,16 +169,30 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                 )
                 .values(
                     state=base_objects.ProcessingState.QUEUED,
-                    last_change=datetime.now(timezone.utc),
+                    last_change=now,
                 )
-                .returning(model.Job.id)
+                .returning(model.Job.id, model.Job.engine_id)
             )
 
             res = await db.execute(stmt)
-            return res.scalar_one_or_none() is not None
+            row = res.first()
+
+            if not row:
+                return False
+
+            _job_id, engine_id = row
+
+            if engine_id is not None:
+                await db.execute(
+                    update(model.Engine)
+                    .where(model.Engine.id == engine_id)
+                    .values(last_used=now)
+                )
+
+            return True
 
     except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job state in database") from e
+        raise DBError("Failed updating job state.") from e
 
 
 

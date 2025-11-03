@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
+from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.guards.worker_guards import challenge_worker_access_to_processing_job
@@ -35,7 +36,7 @@ POST_LEASE_RESPONSES = {
     AppCode.JOB_LEASED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been assigned to the worker and the lease has been established (UTC time).",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.JobLease],
         "model_data": base_objects.JobLease,
         "detail": "Job has been assigned to the worker and the lease has been established (UTC time).",
     },
@@ -84,7 +85,7 @@ PATCH_LEASE_EXTENDED_RESPONSES = {
     AppCode.JOB_LEASE_EXTENDED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job lease has been successfully extended (UTC time).",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.JobLease],
         "model_data": base_objects.JobLease,
         "detail": "Job lease has been successfully extended (UTC time)."
     }
@@ -96,6 +97,7 @@ PATCH_LEASE_EXTENDED_RESPONSES = {
     tags=["Worker"],
     description="Extend the lease time for a specific job that is currently being processed by the worker.",
     responses=make_responses(PATCH_LEASE_EXTENDED_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def patch_lease(
         request: Request,
@@ -130,6 +132,7 @@ DELETE_LEASE_RESPONSES = {
     tags=["Worker"],
     description="Release the lease for a specific job that is currently being processed by the worker.",
     responses=make_responses(DELETE_LEASE_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def delete_lease(
         request: Request,
@@ -171,6 +174,7 @@ GET_IMAGE_RESPONSES = {
     tags=["Worker"],
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def get_image(
         request: Request,
@@ -229,6 +233,7 @@ GET_ALTO_RESPONSES = {
     tags=["Worker"],
     description="Download the ALTO XML file associated with a specific image of a job.",
     responses=make_responses(GET_ALTO_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def get_alto(
         request: Request,
@@ -295,6 +300,7 @@ GET_PAGE_RESPONSES = {
     tags=["Worker"],
     description="Download the PAGE XML file associated with a specific image of a job.",
     responses=make_responses(GET_PAGE_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def get_page(
         request: Request,
@@ -361,6 +367,7 @@ GET_METADATA = {
     tags=["Worker"],
     description="Download the Meta JSON file associated with a specific job.",
     responses=make_responses(GET_METADATA))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def get_metadata(
         request: Request,
@@ -419,6 +426,7 @@ POST_RESULT_RESPONSES = {
                 "The uploaded file must be a `.zip`.",
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_RESULT_RESPONSES))
+@challenge_job_exists
 @challenge_worker_access_to_processing_job
 async def post_result(
     job_id: UUID,

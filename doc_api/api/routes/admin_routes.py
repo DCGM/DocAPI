@@ -27,7 +27,7 @@ GET_KEYS_RESPONSES = {
     AppCode.KEYS_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "The list of API keys was retrieved successfully.",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[List[base_objects.Key]],
         "model_data": List[base_objects.Key],
         "detail": "API keys retrieved successfully.",
     }
@@ -55,7 +55,7 @@ POST_KEY_RESPONSES = {
     AppCode.KEY_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "API key created successfully.",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.KeySecret],
         "model_data": base_objects.KeySecret,
         "detail": "API key created successfully.",
     },
@@ -117,7 +117,7 @@ POST_KEY_SECRET_RESPONSES = {
     AppCode.KEY_SECRET_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "New secret for the API key were created successfully.",
-        "model": DocAPIResponseOK,
+        "model": DocAPIResponseOK[base_objects.KeySecret],
         "model_data": base_objects.KeySecret,
         "detail": "New API key secret created successfully.",
     },
@@ -188,17 +188,17 @@ PATCH_KEY_RESPONSES = {
         "model": DocAPIResponseClientError,
         "detail": "At least one field must be provided to update the API key.",
     },
-    AppCode.KEY_ALREADY_EXISTS: {
-        "status": fastapi.status.HTTP_409_CONFLICT,
-        "description": "An API key with the specified label already exists.",
-        "model": DocAPIResponseClientError,
-        "detail": "An API key with the specified label already exists.",
-    },
     AppCode.KEY_NOT_FOUND: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
         "description": "The specified API key was not found.",
         "model": DocAPIResponseClientError,
         "detail": "The specified API key was not found.",
+    },
+    AppCode.KEY_ALREADY_EXISTS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "An API key with the specified label already exists.",
+        "model": DocAPIResponseClientError,
+        "detail": "An API key with the specified label already exists.",
     }
 }
 @admin_router.patch(
@@ -256,7 +256,6 @@ PATCH_JOB_RESPONSES = {
         "detail": "Job was updated successfully.",
     }
 }
-
 @admin_router.patch(
     "/jobs/{job_id}",
     summary="Update Job",
@@ -282,5 +281,127 @@ async def patch_job(
                 code=AppCode.JOB_UPDATED,
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
             ))
+
+    raise RouteInvariantError(request=request, code=code)
+
+
+POST_ENGINE_RESPONSES = {
+    AppCode.ENGINE_CREATED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "Engine created successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Engine created successfully.",
+    },
+    AppCode.ENGINE_ALREADY_EXISTS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Engine with the specified name and version already exists.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine with the specified name and version already exists.",
+    }
+}
+@admin_router.post(
+    "/engines",
+    summary="Create Engine",
+    response_model=DocAPIResponseOK[base_objects.Engine],
+    tags=["Admin"],
+    description="Create a new engine.",
+    status_code=fastapi.status.HTTP_201_CREATED)
+async def post_engine(
+        request: Request,
+        engine_new: base_objects.EngineNew,
+        key: model.Key = Depends(require_admin_key),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_engine, code = await admin_cruds.new_engine(db=db, engine_new=engine_new)
+
+    if code == AppCode.ENGINE_CREATED:
+        return validate_ok_response(DocAPIResponseOK[base_objects.Engine](
+            status=fastapi.status.HTTP_201_CREATED,
+            code=AppCode.ENGINE_CREATED,
+            detail=POST_ENGINE_RESPONSES[AppCode.ENGINE_CREATED]["detail"]
+        ))
+    elif code == AppCode.ENGINE_ALREADY_EXISTS:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.ENGINE_ALREADY_EXISTS,
+            detail=POST_ENGINE_RESPONSES[AppCode.ENGINE_ALREADY_EXISTS]["detail"]
+        )
+
+    raise RouteInvariantError(request=request, code=code)
+
+
+PATCH_ENGINE_RESPONSES = {
+    AppCode.ENGINE_UPDATED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Engine was updated successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Engine was updated successfully.",
+    },
+    AppCode.ENGINE_UPDATE_NO_FIELDS: {
+        "status": fastapi.status.HTTP_400_BAD_REQUEST,
+        "description": "No fields were provided to update the engine.",
+        "model": DocAPIResponseClientError,
+        "detail": "At least one field must be provided to update the engine.",
+    },
+    AppCode.ENGINE_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "The specified engine was not found.",
+        "model": DocAPIResponseClientError,
+        "detail": "The specified engine was not found.",
+    },
+    AppCode.ENGINE_ALREADY_EXISTS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "An engine with the specified name and version already exists.",
+        "model": DocAPIResponseClientError,
+        "detail": "An engine with the specified name and version already exists.",
+    }
+}
+@admin_router.patch(
+    "/engines/{name}/{version}",
+    summary="Update Engine",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["Admin"],
+    description="Update an existing engine.",
+    responses=make_responses(PATCH_ENGINE_RESPONSES))
+async def patch_engine(
+        request: Request,
+        name: str,
+        version: str,
+        engine_update: base_objects.EngineUpdate,
+        key: model.Key = Depends(require_admin_key),
+        db: AsyncSession = Depends(get_async_session)):
+
+    if engine_update.name is None and \
+       engine_update.version is None and \
+       engine_update.description is None and \
+       engine_update.definition is None and \
+       engine_update.default is None and \
+       engine_update.active is None:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_400_BAD_REQUEST,
+            code=AppCode.ENGINE_UPDATE_NO_FIELDS,
+            detail=PATCH_ENGINE_RESPONSES[AppCode.ENGINE_UPDATE_NO_FIELDS]["detail"]
+        )
+
+    code = await admin_cruds.update_engine(db=db, engine_name=name, engine_version=version, engine_update=engine_update)
+
+    if code == AppCode.ENGINE_UPDATED:
+        return validate_ok_response(DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.ENGINE_UPDATED,
+            detail=PATCH_ENGINE_RESPONSES[AppCode.ENGINE_UPDATED]["detail"],
+        ))
+    elif code == AppCode.ENGINE_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_NOT_FOUND,
+            detail=PATCH_ENGINE_RESPONSES[AppCode.ENGINE_NOT_FOUND]["detail"]
+        )
+    elif code == AppCode.ENGINE_ALREADY_EXISTS:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_409_CONFLICT,
+            code=AppCode.ENGINE_ALREADY_EXISTS,
+            detail=PATCH_ENGINE_RESPONSES[AppCode.ENGINE_ALREADY_EXISTS]["detail"]
+        )
 
     raise RouteInvariantError(request=request, code=code)

@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from doc_api.api.authentication import AUTHENTICATION_RESPONSES, issue_key_components, salted_hmac_sha256_hex, \
     parse_api_key
+from doc_api.api.guards.general_guards import JOB_EXISTS_GUARD_RESPONSES
 from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSES, USER_ACCESS_TO_JOB_GUARD_RESPONSES
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
@@ -332,6 +333,17 @@ def custom_openapi():
         schema=schema,
         route_predicate=_route_challenge_user_access_to_job,
         route_responses=USER_ACCESS_TO_JOB_GUARD_RESPONSES,
+    )
+
+    # --- job exists guard ---`
+    def _route_challenge_job_exists(route: APIRoute) -> bool:
+        return bool(getattr(route.endpoint, "__challenge_job_exists__", False))
+
+    inject_docs(
+        app=app,
+        schema=schema,
+        route_predicate=_route_challenge_job_exists,
+        route_responses=JOB_EXISTS_GUARD_RESPONSES,
     )
 
     # --- api key authentication ---

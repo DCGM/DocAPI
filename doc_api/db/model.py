@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
-from sqlalchemy import ForeignKey, DateTime, Text
+from sqlalchemy import ForeignKey, DateTime, Text, UniqueConstraint
 from sqlalchemy.types import String
 
 from datetime import datetime, timezone
@@ -27,6 +27,7 @@ class Job(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     owner_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=False)
     worker_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('keys.id'), index=True, nullable=True)
+    engine_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('engines.id'), index=True, nullable=True)
 
     definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
@@ -83,11 +84,12 @@ class Key(Base):
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
-class ProcessingProfile(Base):
-    __tablename__ = "processing_profiles"
+class Engine(Base):
+    __tablename__ = "engines"
+
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
 
-    label: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -98,3 +100,7 @@ class ProcessingProfile(Base):
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="unique_engine_name_version"),
+    )
