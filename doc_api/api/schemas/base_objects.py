@@ -195,6 +195,16 @@ class JobWithEngine(JobProper):
 
 
 class Job(JobWithEngine):
+    engine_id: Optional[UUID] = Field(
+        None,
+        examples=["a1b2c3d4-e5f6-47a8-9abc-def012345678"],
+        description="Unique identifier of the engine assigned to this job."
+    )
+    engine_files_updated: Optional[datetime] = Field(
+        None,
+        examples=["2025-10-15T09:15:00+00:00"],
+        description="UTC timestamp of the last time files related to the engine were updated."
+    )
     engine_definition: Optional[dict] = Field(
         None,
         examples=[{"param1": "value1", "param2": 42}],
@@ -488,6 +498,11 @@ class Engine(BaseModel):
         None,
         description="Timestamp of the last time this engine was used (in UTC). May be null if unused.",
         examples=["2025-10-22T11:30:00+00:00"],
+    )
+    files_updated: Optional[datetime] = Field(
+        None,
+        description="Timestamp of the last time files related to this engine were updated (in UTC).",
+        examples=["2025-10-15T09:15:00+00:00"],
     )
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")

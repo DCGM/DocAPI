@@ -209,7 +209,7 @@ async def test_user_to_readonly_job_access(client, admin_headers, worker_headers
 
     # Upload result
     r = await client.post(
-        f"/v1/jobs/{job_id}/result/",
+        f"/v1/jobs/{job_id}/result",
         headers=worker_headers,
         files={"file": ("result.zip", VALID_ZIP, "application/zip")},
     )

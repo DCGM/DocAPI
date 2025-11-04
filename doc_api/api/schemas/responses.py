@@ -92,6 +92,13 @@ class AppCode(str, enum.Enum):
     JOB_RESULT_REUPLOADED = 'JOB_RESULT_REUPLOADED'
     JOB_RESULT_MISSING = 'JOB_RESULT_MISSING'
 
+    JOB_ARTIFACTS_UPLOADED = 'JOB_ARTIFACTS_UPLOADED'
+    JOB_ARTIFACTS_REUPLOADED = 'JOB_ARTIFACTS_REUPLOADED'
+    JOB_ARTIFACTS_INVALID = 'JOB_ARTIFACTS_INVALID'
+
+    JOB_ARTIFACTS_RETRIEVED = 'JOB_ARTIFACTS_RETRIEVED'
+    JOB_ARTIFACTS_NOT_FOUND = 'JOB_ARTIFACTS_NOT_FOUND'
+
     ENGINE_CREATED = 'ENGINE_CREATED'
     ENGINE_NOT_FOUND = 'ENGINE_NOT_FOUND'
     ENGINE_RETRIEVED = 'ENGINE_RETRIEVED'
@@ -100,6 +107,15 @@ class AppCode(str, enum.Enum):
     ENGINE_ALREADY_EXISTS = 'ENGINE_ALREADY_EXISTS'
     ENGINE_UPDATED = 'ENGINE_UPDATED'
     ENGINE_UPDATE_NO_FIELDS = 'ENGINE_UPDATE_NO_FIELDS'
+
+    ENGINE_FILES_UPLOADED = 'ENGINE_FILES_UPLOADED'
+    ENGINE_FILES_REUPLOADED = 'ENGINE_FILES_REUPLOADED'
+    ENGINE_FILES_INVALID = 'ENGINE_FILES_INVALID'
+
+    ENGINE_FILES_RETRIEVED = 'ENGINE_FILES_RETRIEVED'
+    ENGINE_FILES_NOT_FOUND = 'ENGINE_FILES_NOT_FOUND'
+    ENGINE_FILES_GONE = 'ENGINE_FILES_GONE'
+
 
     KEYS_RETRIEVED = 'KEYS_RETRIEVED'
     KEY_ALREADY_EXISTS = 'KEY_ALREADY_EXISTS'
@@ -265,6 +281,18 @@ GENERAL_RESPONSES = {
         "description": "Invalid XML file.",
         "model": DocAPIResponseClientError,
         "detail": "Failed to parse the XML file.",
+    },
+    AppCode.ENGINE_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "Engine does not exist.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine does not exist.",
+    },
+    AppCode.ENGINE_ALREADY_EXISTS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "An engine with the specified name and version already exists.",
+        "model": DocAPIResponseClientError,
+        "detail": "An engine with the specified name and version already exists.",
     }
 }
 

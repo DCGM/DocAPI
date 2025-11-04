@@ -8,6 +8,7 @@ from fastapi import Depends, status, Request, Body
 from fastapi.responses import RedirectResponse
 
 from aiofiles import os as aiofiles_os
+from natsort import natsort_keygen, natsorted
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,129 @@ async def root():
     return RedirectResponse(url="/docs")
 
 
+ME_RESPONSES = {
+    AppCode.API_KEY_VALID: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "API key is valid.",
+        "model": DocAPIResponseOK[base_objects.Key],
+        "model_data": base_objects.Key,
+        "detail": "API key is valid.",
+    }
+}
+@root_router.get(
+    "/v1/me",
+    summary="Who am I?",
+    response_model=DocAPIResponseOK[base_objects.Key],
+    tags=["User"],
+    openapi_extra={"x-order": 1},
+    description="Validate your API key and get information about it.",
+    responses=make_responses(ME_RESPONSES)
+)
+async def me(key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER))):
+    return DocAPIResponseOK[base_objects.Key](
+        status=status.HTTP_200_OK,
+        code=AppCode.API_KEY_VALID,
+        detail=ME_RESPONSES[AppCode.API_KEY_VALID]["detail"],
+        data=key)
+
+
+GET_ENGINES_RESPONSES = {
+    AppCode.ENGINE_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Engines retrieved successfully.",
+        "model": DocAPIResponseOK[List[base_objects.Engine]],
+        "model_data": List[base_objects.Engine],
+        "detail": "Engines retrieved successfully.",
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Regular API keys are not allowed to filter by 'active'.",
+        "model": DocAPIResponseClientError,
+        "detail": "Regular API keys are not allowed to filter by 'active'."
+    },
+    AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION: {
+        "status": fastapi.status.HTTP_403_FORBIDDEN,
+        "description": "Regular API keys are not allowed to use 'show_definition'.",
+        "model": DocAPIResponseClientError,
+        "detail": "Regular API keys are not allowed to use 'show_definition'."
+    }
+}
+@root_router.get(
+    "/v1/engines",
+    summary="Get Engines",
+    response_model=DocAPIResponseOK[List[base_objects.Engine]],
+    tags=["User"],
+    openapi_extra={"x-order": 100},
+    description="Retrieve a list of all available engines.\n\n"
+                "You can filter engines by name, version, and default status.\n\n"
+                "`active` and `show_definition` are meant only for admins.",
+    responses=make_responses(GET_ENGINES_RESPONSES))
+async def list_engines(
+        request: Request,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+        default: Optional[bool] = None,
+        active: Optional[bool] = None,
+        show_definition: bool = False,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    if key.role == base_objects.KeyRole.ADMIN:
+        db_engines, code = await general_cruds.get_engines(db=db,
+                                                           engine_name=name,
+                                                           engine_version=version,
+                                                           default=default,
+                                                           active=active)
+    else:
+        if active is not None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE,
+                detail=GET_ENGINES_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE]["detail"]
+            )
+        if show_definition is not None:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_403_FORBIDDEN,
+                code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION,
+                detail=GET_ENGINES_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION]["detail"]
+            )
+        db_engines, code = await general_cruds.get_engines(db=db,
+                                                           engine_name=name,
+                                                           engine_version=version,
+                                                           default=default,
+                                                           active=True)
+
+    if code == AppCode.ENGINES_RETRIEVED:
+        engines: List[base_objects.Engine] = []
+        for db_engine in db_engines:
+            engine = base_objects.Engine.model_validate(db_engine).model_dump()
+            if key.role != base_objects.KeyRole.ADMIN:
+                engine.pop("id")
+                engine.pop("active", None)
+                engine.pop("definition", None)
+                engine.pop("created_date", None)
+                engine.pop("last_used", None)
+                engine.pop("files_updated", None)
+            else:
+                if not show_definition:
+                    engine.pop("definition", None)
+            engines.append(base_objects.Engine(**engine))
+
+        # Natural sort by name (primary) then version (secondary)
+        k_name = natsort_keygen(key=lambda e: e.name)
+        k_version = natsort_keygen(key=lambda e: e.version)
+        engines = natsorted(engines, key=lambda e: (k_name(e), k_version(e)))
+
+        return validate_ok_response(DocAPIResponseOK[List[base_objects.Engine]](
+            status=status.HTTP_200_OK,
+            code=AppCode.ENGINES_RETRIEVED,
+            detail=GET_ENGINES_RESPONSES[AppCode.ENGINE_RETRIEVED]["detail"],
+            data=engines,
+        ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
+
+    raise RouteInvariantError(code=code, request=request)
+
+
 GET_JOB_RESPONSES = {
     AppCode.JOB_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
@@ -50,6 +174,7 @@ GET_JOB_RESPONSES = {
     summary="Get Job",
     response_model=DocAPIResponseOK[base_objects.Job],
     tags=["User"],
+    openapi_extra={"x-order": 103},
     description="Retrieve the details of a specific job by its ID.",
     responses=make_responses(GET_JOB_RESPONSES))
 @challenge_job_exists
@@ -75,7 +200,7 @@ async def get_job(
             code=AppCode.JOB_RETRIEVED,
             detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
             data=data
-        ), exclude_none=True)
+        ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
 
     if job_code != AppCode.JOB_RETRIEVED:
         raise RouteInvariantError(code=job_code, request=request)
@@ -97,13 +222,19 @@ def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: mo
     if db_engine is None:
         data = base_objects.Job(**job, images=images)
     else:
+        engine_id = db_engine.id
+        engine_files_updated = db_engine.files_updated
         engine_definition = db_engine.definition
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+            engine_id = None
             engine_definition = None
+            engine_files_updated = None
         data = base_objects.Job(**job,
                                 images=images,
                                 engine_name=db_engine.name,
                                 engine_version=db_engine.version,
+                                engine_id=engine_id,
+                                engine_files_updated=engine_files_updated,
                                 engine_definition=engine_definition)
 
     return data
@@ -196,6 +327,7 @@ PATCH_JOB_RESPONSES = {
     summary="Update Job",
     response_model=DocAPIResponseOK[NoneType] | DocAPIResponseOK[base_objects.JobLease],
     tags=["User"],
+    openapi_extra={"x-order": 104},
     description="Update the status of a specific job. "
                 "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
     responses=make_responses(PATCH_JOB_RESPONSES))
@@ -382,28 +514,3 @@ async def patch_job(
                 )
 
     raise RouteInvariantError(code=code_get_job if code_update_job is None else code_update_job, request=request)
-
-
-ME_RESPONSES = {
-    AppCode.API_KEY_VALID: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "API key is valid.",
-        "model": DocAPIResponseOK[base_objects.Key],
-        "model_data": base_objects.Key,
-        "detail": "API key is valid.",
-    }
-}
-@root_router.get(
-    "/v1/me",
-    summary="Who am I?",
-    response_model=DocAPIResponseOK[base_objects.Key],
-    tags=["User"],
-    description="Validate your API key and get information about it.",
-    responses=make_responses(ME_RESPONSES)
-)
-async def me(key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER))):
-    return DocAPIResponseOK[base_objects.Key](
-        status=status.HTTP_200_OK,
-        code=AppCode.API_KEY_VALID,
-        detail=ME_RESPONSES[AppCode.API_KEY_VALID]["detail"],
-        data=key)

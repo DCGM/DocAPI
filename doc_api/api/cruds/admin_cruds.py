@@ -331,3 +331,23 @@ async def update_engine(*, db: AsyncSession, engine_name: str, engine_version: s
     except exc.SQLAlchemyError as e:
         raise DBError("Failed updating engine") from e
 
+
+async def update_engine_files_updated(*, db: AsyncSession, engine_id: UUID) -> AppCode:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Engine).where(model.Engine.id == engine_id).with_for_update()
+            )
+            db_engine = result.scalar_one_or_none()
+
+            if db_engine is None:
+                return AppCode.ENGINE_NOT_FOUND
+
+            from datetime import datetime, timezone
+            db_engine.files_updated = datetime.now(timezone.utc)
+
+            return AppCode.ENGINE_UPDATED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed updating engine files_updated timestamp") from e
+

@@ -26,8 +26,7 @@ from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
 from doc_api.db import model
 from doc_api.config import config
 
-from uuid import UUID
-
+from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +417,7 @@ POST_RESULT_RESPONSES = {
     },
 }
 @root_router.post(
-    "/v1/jobs/{job_id}/result/",
+    "/v1/jobs/{job_id}/result",
     response_model=DocAPIResponseOK,
     summary="Upload Result",
     tags=["Worker"],
@@ -447,12 +446,13 @@ async def post_result(
         try:
             with zipfile.ZipFile(tmp_path):
                 pass
-        except zipfile.BadZipFile:
+        except zipfile.BadZipFile as e:
             await aiofiles_os.remove(tmp_path)
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 code=AppCode.JOB_RESULT_INVALID,
                 detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
+                details={"reason": str(e)}
             )
 
     already_exists = await aiofiles_os.path.exists(final_path)
@@ -471,3 +471,142 @@ async def post_result(
             detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
         ))
 
+
+POST_ARTIFACTS_RESPONSES = {
+    AppCode.JOB_ARTIFACTS_UPLOADED: {
+        "status": fastapi.status.HTTP_201_CREATED,
+        "description": "Artifacts ZIP archive uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Artifacts ZIP archive uploaded successfully.",
+    },
+    AppCode.JOB_ARTIFACTS_REUPLOADED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Artifacts ZIP archive re-uploaded successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Artifacts ZIP archive re-uploaded successfully.",
+    },
+    AppCode.JOB_ARTIFACTS_INVALID: {
+        "status": fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "description": "The uploaded file is not a valid ZIP archive.",
+        "model": DocAPIResponseClientError,
+        "detail": "The uploaded file is not a valid ZIP archive.",
+    },
+}
+@root_router.post(
+    "/v1/jobs/{job_id}/artifacts",
+    response_model=DocAPIResponseOK,
+    summary="Upload Artifacts",
+    tags=["Worker"],
+    description="Upload the artifacts ZIP archive for a specific job. "
+                "The uploaded file must be a `.zip`.",
+    status_code=fastapi.status.HTTP_201_CREATED,
+    responses=make_responses(POST_ARTIFACTS_RESPONSES))
+@challenge_job_exists
+@challenge_worker_access_to_processing_job
+async def post_artifacts(
+    job_id: UUID,
+    file: UploadFile = File(..., description="ZIP archive containing the artifacts of the job processing."),
+    key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+    db: AsyncSession = Depends(get_async_session),
+):
+
+    await aiofiles_os.makedirs(config.ARTIFACTS_DIR, exist_ok=True)
+    final_path = os.path.join(config.ARTIFACTS_DIR, f"{job_id}.zip")
+    tmp_path = final_path + ".validating"
+
+    async with aiofiles.open(tmp_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            await f.write(chunk)
+
+    if config.ARTIFACTS_ZIP_VALIDATION:
+        try:
+            with zipfile.ZipFile(tmp_path):
+                pass
+        except zipfile.BadZipFile as e:
+            await aiofiles_os.remove(tmp_path)
+            raise DocAPIClientErrorException(
+                status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                code=AppCode.JOB_ARTIFACTS_INVALID,
+                detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_INVALID]["detail"],
+                details={"reason": str(e)}
+            )
+
+    already_exists = await aiofiles_os.path.exists(final_path)
+    os.replace(tmp_path, final_path)
+
+    if already_exists:
+        return validate_ok_response(DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_200_OK,
+            code=AppCode.JOB_ARTIFACTS_REUPLOADED,
+            detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_REUPLOADED]["detail"]
+        ))
+    else:
+        return validate_ok_response(DocAPIResponseOK[NoneType](
+            status=fastapi.status.HTTP_201_CREATED,
+            code=AppCode.JOB_ARTIFACTS_UPLOADED,
+            detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_UPLOADED]["detail"]
+        ))
+
+
+GET_ENGINE_FILES_RESPONSES = {
+    AppCode.ENGINE_FILES_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "ZIP archive containing the engine files.",
+        "content_type": "application/zip",
+        "example_value": "(binary ZIP file content)"
+    },
+    AppCode.ENGINE_FILES_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "Engine not found.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine not found."
+    },
+    AppCode.ENGINE_FILES_GONE: {
+        "status": fastapi.status.HTTP_410_GONE,
+        "description": "Engine files were probably deleted from the server.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine files were probably deleted from the server. Consider setting the job state to error."
+    },
+    AppCode.ENGINE_NOT_FOUND: GENERAL_RESPONSES[AppCode.ENGINE_NOT_FOUND]
+}
+@root_router.get(
+    "/v1/engines/{engine_id}/files",
+    response_class=FileResponse,
+    summary="Download Engine Files",
+    tags=["Worker"],
+    description="Download the engine files ZIP archive.",
+    responses=make_responses(GET_ENGINE_FILES_RESPONSES))
+async def get_engine_files(
+        request: Request,
+        engine_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_engine, code = await general_cruds.get_engine(db=db, engine_id=engine_id)
+
+    if code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is not None:
+        engine_files_path = os.path.join(config.ENGINES_DIR, f"{db_engine.id}.zip")
+        if not await aiofiles_os.path.exists(engine_files_path):
+            raise DocAPIClientErrorException(
+                status=fastapi.status.HTTP_410_GONE,
+                code=AppCode.ENGINE_FILES_GONE,
+                detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
+            )
+        return FileResponse(engine_files_path, media_type="application/zip",
+                            filename=f"{db_engine.id}.zip")
+
+    elif code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is None:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_FILES_NOT_FOUND,
+            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_NOT_FOUND]["detail"]
+        )
+
+    elif code == AppCode.ENGINE_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_FILES_GONE,
+            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
+        )
+
+    raise RouteInvariantError(code=code, request=request)

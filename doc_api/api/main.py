@@ -278,17 +278,25 @@ async def unhandled(request: Request, exc: Exception):
     ))
 
 
+def _route_order(r) -> tuple[int, str]:
+    if isinstance(r, APIRoute):
+        order = (r.openapi_extra or {}).get("x-order", 1000)
+        return order, r.path
+    # Non-API routes go to the end
+    return 10_000, getattr(r, "path", "")
+
 
 # --- OpenAPI customization --- inject guard docs, validation docs, roles docs ---
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
 
+    routes_sorted = sorted(app.routes, key=_route_order)
     schema = get_openapi(
         title=app.title,
         version=app.version,
         description=app.description,
-        routes=app.routes
+        routes=routes_sorted
     )
 
     # --- worker processing job guard ---
@@ -394,6 +402,7 @@ def custom_openapi():
     schema["paths"] = filtered_paths
 
     app.openapi_schema = schema
+
     return app.openapi_schema
 
 
