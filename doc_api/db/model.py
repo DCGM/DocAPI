@@ -100,6 +100,7 @@ class Engine(Base):
 
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    files_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     __table_args__ = (
         UniqueConstraint("name", "version", name="unique_engine_name_version"),

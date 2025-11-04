@@ -53,6 +53,8 @@ class Config:
         self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
         self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
+        self.ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", os.path.join(self.BASE_DIR, "artifacts"))
+        self.ENGINES_DIR = os.getenv("ENGINES_DIR", os.path.join(self.BASE_DIR, "engines"))
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
         # if True, allow alembic to upgrade existing DB
@@ -76,6 +78,8 @@ class Config:
         # Per-check toggles for ALTO & PAGE XML validation (all default to False)
         # Enable by setting env vars to one of TRUE_VALUES: {"true", "1"} (case-insensitive).
         self.RESULT_ZIP_VALIDATION = self._env_bool("RESULT_ZIP_VALIDATION", True)
+        self.ARTIFACTS_ZIP_VALIDATION = self._env_bool("ARTIFACTS_ZIP_VALIDATION", True)
+        self.ENGINE_FILES_ZIP_VALIDATION = self._env_bool("ENGINE_FILES_ZIP_VALIDATION", True)
         self.ALTO_VALIDATION = {
             "root": self._env_bool("ALTO_VALIDATE_ROOT", True),
             "namespace": self._env_bool("ALTO_VALIDATE_NAMESPACE", False),
@@ -252,6 +256,8 @@ class Config:
     def create_dirs(self):
         os.makedirs(self.JOBS_DIR, exist_ok=True)
         os.makedirs(self.RESULTS_DIR, exist_ok=True)
+        os.makedirs(self.ARTIFACTS_DIR, exist_ok=True)
+        os.makedirs(self.ENGINES_DIR, exist_ok=True)
         os.makedirs(self.LOGGING_DIR, exist_ok=True)
 
 

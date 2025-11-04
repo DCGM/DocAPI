@@ -179,6 +179,27 @@ async def get_engine(*, db: AsyncSession, engine_id: UUID) -> Tuple[Optional[mod
         raise DBError(f"Failed reading engine.") from e
 
 
+async def get_engine_by_name_and_version(*, db: AsyncSession,
+                                         engine_name: str,
+                                         engine_version: str) -> Tuple[Optional[model.Engine], AppCode]:
+    try:
+        async with db.begin():
+            result = await db.execute(
+                select(model.Engine).
+                where(model.Engine.name == engine_name).
+                where(model.Engine.version == engine_version)
+            )
+            db_engine = result.scalar_one_or_none()
+
+            if db_engine is None:
+                return None, AppCode.ENGINE_NOT_FOUND
+
+            return db_engine, AppCode.ENGINE_RETRIEVED
+
+    except exc.SQLAlchemyError as e:
+        raise DBError(f"Failed reading engine.") from e
+
+
 async def get_engines(*, db: AsyncSession,
                       engine_name: Optional[str],
                       engine_version: Optional[str],

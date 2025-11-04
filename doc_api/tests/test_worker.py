@@ -1,5 +1,7 @@
 import logging
 import os
+import shutil
+
 import pytest
 
 from doc_api.api.schemas import base_objects
@@ -204,6 +206,8 @@ async def test_get_job_200_with_engine(client, worker_headers, lease_job_with_en
     assert job["engine_name"] == engine["name"]
     assert job["engine_version"] == engine["version"]
     assert job["engine_definition"] == engine["definition"]
+    assert "engine_id" in job
+    assert "engine_files_updated" in job
 
 
 #
@@ -621,7 +625,99 @@ async def test_get_metadata_410(client, worker_headers, lease_job, payload):
 
 
 #
-# POST /v1/jobs/{job_id}/result/ - 201, 200, 415
+# GET /v1/engines/{engine_id}/files - 200, 404, 410
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ENGINE_FILES_RETRIEVED], indirect=True)
+async def test_get_engine_files_200(client, worker_headers, lease_job_with_uploaded_engine, payload):
+    engine = lease_job_with_uploaded_engine["engine"]
+    job = lease_job_with_uploaded_engine["created_job"]
+
+    r = await client.get(
+        f"/v1/jobs/{job['id']}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    job = body["data"]
+
+    r = await client.get(
+        f"/v1/engines/{job['engine_id']}/files",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+
+    # check for valid zip content
+    assert r.headers["Content-Disposition"] == f'attachment; filename="{job["engine_id"]}.zip"'
+    assert r.headers["Content-Type"] == "application/zip"
+    assert r.content == VALID_ZIP
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ENGINE_FILES_NOT_FOUND], indirect=True)
+async def test_get_engine_files_404(client, worker_headers, lease_job_with_engine, payload):
+    job_id = lease_job_with_engine["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/jobs/{job_id}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+
+    job = body["data"]
+
+    r = await client.get(
+        f"/v1/engines/{job['engine_id']}/files",
+        headers=worker_headers,
+    )
+    assert r.status_code == 404, r.text
+    body = r.json()
+    assert body["status"] == 404
+    assert body["code"] == AppCode.ENGINE_FILES_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ENGINE_FILES_GONE], indirect=True)
+async def test_get_engine_files_410(client, worker_headers, lease_job_with_uploaded_engine, payload):
+    engine = lease_job_with_uploaded_engine["engine"]
+    job = lease_job_with_uploaded_engine["created_job"]
+
+    r = await client.get(
+        f"/v1/jobs/{job['id']}",
+        headers=worker_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_RETRIEVED.value
+    job = body["data"]
+
+    # Delete engine files to simulate gone engine
+    engine_path = os.path.join(config.ENGINES_DIR, f"{job['engine_id']}.zip")
+
+    assert os.path.exists(engine_path), (f"Engine files should exist at {engine_path}, "
+                                         f"this will only pass if testing locally with BASE_DIR setup.")
+
+    os.remove(engine_path)
+
+    r = await client.get(
+        f"/v1/engines/{job['engine_id']}/files",
+        headers=worker_headers,
+    )
+    assert r.status_code == 410, r.text
+    body = r.json()
+    assert body["status"] == 410
+    assert body["code"] == AppCode.ENGINE_FILES_GONE.value
+
+
+#
+# POST /v1/jobs/{job_id}/result - 201, 200, 415
 #
 
 @pytest.mark.asyncio
@@ -652,7 +748,7 @@ async def test_post_job_result_415(client, worker_headers, lease_job, payload):
     job_id = lease_job["lease"]["id"]
 
     r = await client.post(
-        f"/v1/jobs/{job_id}/result/",
+        f"/v1/jobs/{job_id}/result",
         headers=worker_headers,
         files={"file": ("result.txt", b"This is not a zip file.", "text/plain")},
     )
@@ -661,6 +757,48 @@ async def test_post_job_result_415(client, worker_headers, lease_job, payload):
     body = r.json()
     assert body["status"] == 415
     assert body["code"] == AppCode.JOB_RESULT_INVALID.value
+
+
+#
+# POST /v1/jobs/{job_id}/artifacts - 201, 200, 415
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_UPLOADED.value], indirect=True)
+async def test_post_job_artifacts_201(client, worker_headers, job_with_artifacts, payload):
+    pass
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_REUPLOADED.value], indirect=True)
+async def test_post_job_artifacts_200(client, worker_headers, job_with_artifacts, payload):
+    job_id = job_with_artifacts["lease"]["id"]
+
+    r = await client.post(
+        f"/v1/jobs/{job_id}/artifacts",
+        headers=worker_headers,
+        files={"file": ("artifacts.zip", VALID_ZIP, "application/zip")},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == 200
+    assert body["code"] == AppCode.JOB_ARTIFACTS_REUPLOADED.value
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_INVALID], indirect=True)
+async def test_post_job_artifacts_415(client, worker_headers, lease_job, payload):
+    job_id = lease_job["lease"]["id"]
+
+    r = await client.post(
+        f"/v1/jobs/{job_id}/artifacts",
+        headers=worker_headers,
+        files={"file": ("artifacts.txt", b"This is not a zip file.", "text/plain")},
+    )
+
+    assert r.status_code == 415, r.text
+    body = r.json()
+    assert body["status"] == 415
+    assert body["code"] == AppCode.JOB_ARTIFACTS_INVALID.value
 
 
 #

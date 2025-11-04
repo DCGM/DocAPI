@@ -175,6 +175,11 @@ async def job_with_required_uploads_by_payload_name(client, user_headers, create
 async def job_with_engine_with_required_uploads_by_payload_name(client, user_headers, created_job_with_engine):
     return await _job_with_required_uploads_by_payload_name(client, user_headers, created_job_with_engine)
 
+@pytest_asyncio.fixture
+async def job_with_uploaded_engine_with_required_uploads_by_payload_name(client, user_headers, created_job_with_uploaded_engine):
+    return await _job_with_required_uploads_by_payload_name(client, user_headers, created_job_with_uploaded_engine)
+
+
 async def _job_with_required_uploads_by_payload_name(client, user_headers, created_job):
     job = created_job["created_job"]
     payload = created_job["payload"]
@@ -278,6 +283,10 @@ async def lease_job(client, worker_headers, job_with_required_uploads_by_payload
 async def lease_job_with_engine(client, worker_headers, job_with_engine_with_required_uploads_by_payload_name):
     return await _lease_job(client, worker_headers, job_with_engine_with_required_uploads_by_payload_name)
 
+@pytest_asyncio.fixture
+async def lease_job_with_uploaded_engine(client, worker_headers, job_with_uploaded_engine_with_required_uploads_by_payload_name):
+    return await _lease_job(client, worker_headers, job_with_uploaded_engine_with_required_uploads_by_payload_name)
+
 async def _lease_job(client, worker_headers, job_with_required_uploads_by_payload_name):
     r = await client.post(
         "/v1/jobs/lease",
@@ -371,6 +380,24 @@ async def job_with_result(client, worker_headers, lease_job):
     body = r.json()
     assert body["status"] == 201
     assert body["code"] == AppCode.JOB_RESULT_UPLOADED.value
+
+    return lease_job
+
+
+@pytest_asyncio.fixture
+async def job_with_artifacts(client, worker_headers, lease_job):
+    job_id = lease_job["created_job"]["id"]
+
+    r = await client.post(
+        f"/v1/jobs/{job_id}/artifacts",
+        headers=worker_headers,
+        files={"file": ("result.zip", VALID_ZIP, "application/zip")},
+    )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == 201
+    assert body["code"] == AppCode.JOB_ARTIFACTS_UPLOADED.value
 
     return lease_job
 
@@ -527,3 +554,21 @@ async def created_job_with_engine(client, user_headers, admin_headers, created_e
     body = r.json()
     assert body["status"] == 200
     assert body["code"] == AppCode.JOB_UPDATED.value
+
+
+@pytest_asyncio.fixture
+async def created_job_with_uploaded_engine(client, user_headers, admin_headers, created_job_with_engine, payload):
+    engine = created_job_with_engine["engine"]
+    name = engine["name"]
+    version = engine["version"]
+
+    r = await client.put(
+        f"/v1/admin/engines/{name}/{version}/files",
+        headers=admin_headers,
+        files={"file": ("engine.zip", VALID_ZIP, "application/zip")},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_FILES_UPLOADED.value
+
+    yield created_job_with_engine

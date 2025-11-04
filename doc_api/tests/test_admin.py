@@ -4,6 +4,7 @@ import pytest
 
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
+from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, VALID_ZIP
 
 
 #
@@ -706,3 +707,145 @@ async def test_patch_engine_409(client, admin_headers, created_engine, dummy):
     assert r.status_code == 409, r.text
     body = r.json()
     assert body["code"] == AppCode.ENGINE_ALREADY_EXISTS.value
+
+
+#
+# PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 415
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_FILES_UPLOADED])
+async def test_put_engine_files_201(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    r = await client.put(
+        f"/v1/admin/engines/{name}/{version}/files",
+        headers=admin_headers,
+        files={
+            "file": ("engine-files.zip", VALID_ZIP, "application/zip")
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_FILES_UPLOADED.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_FILES_REUPLOADED])
+async def test_put_engine_files_200(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    r = await client.put(
+        f"/v1/admin/engines/{name}/{version}/files",
+        headers=admin_headers,
+        files={
+            "file": ("engine-files.zip", VALID_ZIP, "application/zip")
+        }
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_FILES_UPLOADED.value
+
+    r = await client.get(
+        f"/v1/engines",
+        params={
+            "name": name,
+            "version": version,
+            "show_definition": True
+        },
+        headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    old_files_updated = engine["files_updated"]
+
+
+    r = await client.put(
+        f"/v1/admin/engines/{name}/{version}/files",
+        headers=admin_headers,
+        files={
+            "file": ("engine-files.zip", VALID_ZIP, "application/zip")
+        }
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_FILES_REUPLOADED.value
+
+    r = await client.get(
+        f"/v1/engines",
+        params={
+            "name": name,
+            "version": version,
+            "show_definition": True
+        },
+        headers=admin_headers
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINES_RETRIEVED.value
+    data = body["data"]
+    assert len(data) == 1
+    engine = data[0]
+    new_files_updated = engine["files_updated"]
+    assert new_files_updated > old_files_updated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_FILES_INVALID])
+async def test_put_engine_files_415(client, admin_headers, created_engine, dummy):
+    name = created_engine["name"]
+    version = created_engine["version"]
+
+    r = await client.put(
+        f"/v1/admin/engines/{name}/{version}/files",
+        headers=admin_headers,
+        files={
+            "file": ("engine-files.txt", b"this is not a zip file", "text/plain")
+        }
+    )
+    assert r.status_code == 415, r.text
+    body = r.json()
+    assert body["code"] == AppCode.ENGINE_FILES_INVALID.value
+
+
+#
+# GET /v1/admin/jobs/{job_id}/artifacts - 200, 404
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_RETRIEVED.value], indirect=True)
+async def test_get_artifacts_200(client, admin_headers, job_with_artifacts, payload):
+    job_id = job_with_artifacts["created_job"]["id"]
+    r = await client.get(
+        f"/v1/admin/jobs/{job_id}/artifacts",
+        headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+
+    #check for zip file response
+    assert r.headers["content-type"] == "application/zip"
+    assert "attachment; filename=" in r.headers["content-disposition"]
+    assert r.content is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_NOT_FOUND.value], indirect=True)
+async def test_get_artifacts_404(client, admin_headers, job_with_result, payload):
+    job_id = job_with_result["created_job"]["id"]
+
+    r = await client.get(
+        f"/v1/admin/jobs/{job_id}/artifacts",
+        headers=admin_headers
+    )
+    assert r.status_code == 404, r.text
+    body = r.json()
+    assert body["code"] == AppCode.JOB_ARTIFACTS_NOT_FOUND.value
+
+
