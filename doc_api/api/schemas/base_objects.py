@@ -184,7 +184,7 @@ class JobProper(BaseModel):
 class JobWithEngine(JobProper):
     engine_name: Optional[str] = Field(
         None,
-        examples=["OCR Engine X"],
+        examples=["Engine A"],
         description="Name of the engine assigned to this job."
     )
     engine_version: Optional[str] = Field(
@@ -462,7 +462,7 @@ class Engine(BaseModel):
     name: str = Field(
         ...,
         description="Name of the engine.",
-        examples=["OCR Engine X"],
+        examples=["Engine A"],
     )
     version: str = Field(
         ...,
@@ -512,7 +512,7 @@ class EngineNew(BaseModel):
     name: str = Field(
         ...,
         description="Name of the engine.",
-        examples=["OCR Engine X"],
+        examples=["Engine A"],
     )
     version: str = Field(
         ...,
@@ -547,7 +547,7 @@ class EngineUpdate(BaseModel):
     name: Optional[str] = Field(
         None,
         description="Name of the engine.",
-        examples=["OCR Engine X"],
+        examples=["Engine A"],
     )
     version: Optional[str] = Field(
         None,

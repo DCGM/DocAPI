@@ -27,6 +27,8 @@ services:
         The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.
 
         Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.
+        
+        Optionally, you can specify `engine_name` to select a specific processing engine. Default engine will be used if not specified.
       JOB_DEFINITION_EXAMPLES: |
         {
           "IMAGE job": {
@@ -39,7 +41,8 @@ services:
               ],
               "meta_json_required": false,
               "alto_required": false,
-              "page_required": false
+              "page_required": false,
+              "engine_name": "Engine A"
             }
           }
         }
