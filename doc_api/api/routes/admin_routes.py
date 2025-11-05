@@ -31,34 +31,6 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 
-GET_KEYS_RESPONSES = {
-    AppCode.KEYS_RETRIEVED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "The list of API keys was retrieved successfully.",
-        "model": DocAPIResponseOK[List[base_objects.Key]],
-        "model_data": List[base_objects.Key],
-        "detail": "API keys retrieved successfully.",
-    }
-}
-@admin_router.get(
-    "/keys",
-    summary="Get Keys",
-    response_model=DocAPIResponseOK[List[base_objects.Key]],
-    tags=["Admin"],
-    description="Retrieve a list of all API keys in the system.",
-    responses=make_responses(GET_KEYS_RESPONSES))
-async def get_keys(
-        key: model.Key = Depends(require_admin_key),
-        db: AsyncSession = Depends(get_async_session)):
-    db_keys, code = await admin_cruds.get_keys(db=db)
-    return DocAPIResponseOK[List[base_objects.Key]](
-        status=fastapi.status.HTTP_200_OK,
-        code=AppCode.KEYS_RETRIEVED,
-        detail="API keys retrieved successfully.",
-        data=db_keys
-    )
-
-
 POST_KEY_RESPONSES = {
     AppCode.KEY_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
@@ -85,6 +57,7 @@ POST_KEY_RESPONSES = {
     summary="Create Key",
     response_model=DocAPIResponseOK[base_objects.KeySecret],
     tags=["Admin"],
+    openapi_extra={"x-order": 300},
     description="Create a new API key with the specified label and role.",
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_KEY_RESPONSES))
@@ -147,6 +120,7 @@ POST_KEY_SECRET_RESPONSES = {
     summary="Create Key Secret",
     response_model=DocAPIResponseOK[base_objects.KeySecret],
     tags=["Admin"],
+    openapi_extra={"x-order": 301},
     description="Create new secrets for an existing API key. The old secrets will be invalidated.",
     status_code=fastapi.status.HTTP_201_CREATED,
     responses=make_responses(POST_KEY_SECRET_RESPONSES))
@@ -214,6 +188,7 @@ PATCH_KEY_RESPONSES = {
     summary="Update Key",
     response_model=DocAPIResponseOK[NoneType],
     tags=["Admin"],
+    openapi_extra={"x-order": 302},
     description="Update the label, role, or active status of an existing API key.",
     responses=make_responses(PATCH_KEY_RESPONSES))
 async def patch_key(
@@ -256,41 +231,33 @@ async def patch_key(
     raise RouteInvariantError(request=request, code=code)
 
 
-PATCH_JOB_RESPONSES = {
-    AppCode.JOB_UPDATED: {
+GET_KEYS_RESPONSES = {
+    AppCode.KEYS_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
-        "description": "Job was updated successfully.",
-        "model": DocAPIResponseOK,
-        "detail": "Job was updated successfully.",
+        "description": "The list of API keys was retrieved successfully.",
+        "model": DocAPIResponseOK[List[base_objects.Key]],
+        "model_data": List[base_objects.Key],
+        "detail": "API keys retrieved successfully.",
     }
 }
-@admin_router.patch(
-    "/jobs/{job_id}",
-    summary="Update Job",
-    response_model=DocAPIResponseOK[NoneType],
+@admin_router.get(
+    "/keys",
+    summary="Get Keys",
+    response_model=DocAPIResponseOK[List[base_objects.Key]],
     tags=["Admin"],
-    description="Force update fields of an existing job. Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
-    responses=make_responses(PATCH_JOB_RESPONSES))
-async def patch_job(
-        request: Request,
-        job_id: UUID,
-        job_update: base_objects.JobUpdate,
-        append_logs: bool = True,
+    openapi_extra={"x-order": 303},
+    description="Retrieve a list of all API keys in the system.",
+    responses=make_responses(GET_KEYS_RESPONSES))
+async def get_keys(
         key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
-
-    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
-
-    if code == AppCode.JOB_RETRIEVED:
-        code = await admin_cruds.update_job(db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
-        if code == AppCode.JOB_UPDATED:
-            return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=fastapi.status.HTTP_200_OK,
-                code=AppCode.JOB_UPDATED,
-                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
-            ))
-
-    raise RouteInvariantError(request=request, code=code)
+    db_keys, code = await admin_cruds.get_keys(db=db)
+    return DocAPIResponseOK[List[base_objects.Key]](
+        status=fastapi.status.HTTP_200_OK,
+        code=AppCode.KEYS_RETRIEVED,
+        detail="API keys retrieved successfully.",
+        data=db_keys
+    )
 
 
 POST_ENGINE_RESPONSES = {
@@ -307,6 +274,7 @@ POST_ENGINE_RESPONSES = {
     summary="Create Engine",
     response_model=DocAPIResponseOK[base_objects.Engine],
     tags=["Admin"],
+    openapi_extra={"x-order": 304},
     description="Create a new engine.",
     status_code=fastapi.status.HTTP_201_CREATED)
 async def post_engine(
@@ -354,6 +322,7 @@ PATCH_ENGINE_RESPONSES = {
     summary="Update Engine",
     response_model=DocAPIResponseOK[NoneType],
     tags=["Admin"],
+    openapi_extra={"x-order": 305},
     description="Update an existing engine.",
     responses=make_responses(PATCH_ENGINE_RESPONSES))
 async def patch_engine(
@@ -426,6 +395,7 @@ POST_ENGINE_FILES_RESPONSES = {
     response_model=DocAPIResponseOK,
     summary="Upload Engine Files",
     tags=["Admin"],
+    openapi_extra={"x-order": 306},
     description="Upload the engine files ZIP archive. "
                 "The uploaded file must be a `.zip`.",
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -510,6 +480,7 @@ GET_ARTIFACTS_RESPONSES = {
     summary="Download Artifacts",
     response_class=FileResponse,
     tags=["Admin"],
+    openapi_extra={"x-order": 307},
     description="Retrieve artifacts for a job.",
     responses=make_responses(GET_ARTIFACTS_RESPONSES))
 @challenge_job_exists
@@ -532,3 +503,41 @@ async def get_artifacts(
             media_type="application/zip",
             filename=f"{job_id}.zip",
         )
+
+
+PATCH_JOB_RESPONSES = {
+    AppCode.JOB_UPDATED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job was updated successfully.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was updated successfully.",
+    }
+}
+@admin_router.patch(
+    "/jobs/{job_id}",
+    summary="Update Job",
+    response_model=DocAPIResponseOK[NoneType],
+    tags=["Admin"],
+    openapi_extra={"x-order": 308},
+    description="Force update fields of an existing job. Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
+    responses=make_responses(PATCH_JOB_RESPONSES))
+async def patch_job(
+        request: Request,
+        job_id: UUID,
+        job_update: base_objects.JobUpdate,
+        append_logs: bool = True,
+        key: model.Key = Depends(require_admin_key),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_RETRIEVED:
+        code = await admin_cruds.update_job(db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
+        if code == AppCode.JOB_UPDATED:
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=fastapi.status.HTTP_200_OK,
+                code=AppCode.JOB_UPDATED,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
+            ))
+
+    raise RouteInvariantError(request=request, code=code)

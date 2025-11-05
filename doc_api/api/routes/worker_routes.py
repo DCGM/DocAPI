@@ -51,6 +51,8 @@ POST_LEASE_RESPONSES = {
     summary="Request Lease",
     response_model=DocAPIResponseOK[base_objects.JobLease],
     tags=["Worker"],
+    openapi_extra={"x-order": 200},
+    operation_id="w0200",
     description=f"Request a job lease for processing. If a job is available, it will be assigned to the worker along with a lease time. "
                 f"If no jobs are available, a response indicating an empty queue will be returned.",
     responses=make_responses(POST_LEASE_RESPONSES))
@@ -94,6 +96,8 @@ PATCH_LEASE_EXTENDED_RESPONSES = {
     response_model=DocAPIResponseOK[base_objects.JobLease],
     summary="Extend Lease",
     tags=["Worker"],
+    openapi_extra={"x-order": 201},
+    operation_id="w0201",
     description="Extend the lease time for a specific job that is currently being processed by the worker.",
     responses=make_responses(PATCH_LEASE_EXTENDED_RESPONSES))
 @challenge_job_exists
@@ -129,6 +133,8 @@ DELETE_LEASE_RESPONSES = {
     status_code=fastapi.status.HTTP_204_NO_CONTENT,
     summary="Release Lease",
     tags=["Worker"],
+    openapi_extra={"x-order": 202},
+    operation_id="w0202",
     description="Release the lease for a specific job that is currently being processed by the worker.",
     responses=make_responses(DELETE_LEASE_RESPONSES))
 @challenge_job_exists
@@ -147,6 +153,72 @@ async def delete_lease(
             code=AppCode.JOB_LEASE_RELEASED,
             detail=""
         ))
+
+    raise RouteInvariantError(code=code, request=request)
+
+
+GET_ENGINE_FILES_RESPONSES = {
+    AppCode.ENGINE_FILES_RETRIEVED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "ZIP archive containing the engine files.",
+        "content_type": "application/zip",
+        "example_value": "(binary ZIP file content)"
+    },
+    AppCode.ENGINE_FILES_NOT_FOUND: {
+        "status": fastapi.status.HTTP_404_NOT_FOUND,
+        "description": "Engine not found.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine not found."
+    },
+    AppCode.ENGINE_FILES_GONE: {
+        "status": fastapi.status.HTTP_410_GONE,
+        "description": "Engine files were probably deleted from the server.",
+        "model": DocAPIResponseClientError,
+        "detail": "Engine files were probably deleted from the server. Consider setting the job state to error."
+    },
+    AppCode.ENGINE_NOT_FOUND: GENERAL_RESPONSES[AppCode.ENGINE_NOT_FOUND]
+}
+@root_router.get(
+    "/v1/engines/{engine_id}/files",
+    response_class=FileResponse,
+    summary="Download Engine Files",
+    tags=["Worker"],
+    openapi_extra={"x-order": 203},
+    operation_id="w0203",
+    description="Download the engine files ZIP archive.",
+    responses=make_responses(GET_ENGINE_FILES_RESPONSES))
+async def get_engine_files(
+        request: Request,
+        engine_id: UUID,
+        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
+        db: AsyncSession = Depends(get_async_session)):
+
+    db_engine, code = await general_cruds.get_engine(db=db, engine_id=engine_id)
+
+    if code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is not None:
+        engine_files_path = os.path.join(config.ENGINES_DIR, f"{db_engine.id}.zip")
+        if not await aiofiles_os.path.exists(engine_files_path):
+            raise DocAPIClientErrorException(
+                status=fastapi.status.HTTP_410_GONE,
+                code=AppCode.ENGINE_FILES_GONE,
+                detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
+            )
+        return FileResponse(engine_files_path, media_type="application/zip",
+                            filename=f"{db_engine.id}.zip")
+
+    elif code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is None:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_FILES_NOT_FOUND,
+            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_NOT_FOUND]["detail"]
+        )
+
+    elif code == AppCode.ENGINE_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.ENGINE_FILES_GONE,
+            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
+        )
 
     raise RouteInvariantError(code=code, request=request)
 
@@ -171,6 +243,8 @@ GET_IMAGE_RESPONSES = {
     response_class=FileResponse,
     summary="Download IMAGE",
     tags=["Worker"],
+    openapi_extra={"x-order": 204},
+    operation_id="w0204",
     description="Download the IMAGE file associated with a specific image of a job.",
     responses=make_responses(GET_IMAGE_RESPONSES))
 @challenge_job_exists
@@ -230,6 +304,8 @@ GET_ALTO_RESPONSES = {
     response_class=FileResponse,
     summary="Download ALTO XML",
     tags=["Worker"],
+    openapi_extra={"x-order": 205},
+    operation_id="w0205",
     description="Download the ALTO XML file associated with a specific image of a job.",
     responses=make_responses(GET_ALTO_RESPONSES))
 @challenge_job_exists
@@ -297,6 +373,8 @@ GET_PAGE_RESPONSES = {
     response_class=FileResponse,
     summary="Download PAGE XML",
     tags=["Worker"],
+    openapi_extra={"x-order": 206},
+    operation_id="w0206",
     description="Download the PAGE XML file associated with a specific image of a job.",
     responses=make_responses(GET_PAGE_RESPONSES))
 @challenge_job_exists
@@ -364,6 +442,8 @@ GET_METADATA = {
     response_class=FileResponse,
     summary="Download Meta JSON",
     tags=["Worker"],
+    openapi_extra={"x-order": 207},
+    operation_id="w0207",
     description="Download the Meta JSON file associated with a specific job.",
     responses=make_responses(GET_METADATA))
 @challenge_job_exists
@@ -421,6 +501,8 @@ POST_RESULT_RESPONSES = {
     response_model=DocAPIResponseOK,
     summary="Upload Result",
     tags=["Worker"],
+    openapi_extra={"x-order": 208},
+    operation_id="w0208",
     description="Upload the result ZIP archive for a specific job. "
                 "The uploaded file must be a `.zip`.",
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -497,6 +579,8 @@ POST_ARTIFACTS_RESPONSES = {
     response_model=DocAPIResponseOK,
     summary="Upload Artifacts",
     tags=["Worker"],
+    openapi_extra={"x-order": 209},
+    operation_id="w0209",
     description="Upload the artifacts ZIP archive for a specific job. "
                 "The uploaded file must be a `.zip`.",
     status_code=fastapi.status.HTTP_201_CREATED,
@@ -546,67 +630,3 @@ async def post_artifacts(
             code=AppCode.JOB_ARTIFACTS_UPLOADED,
             detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_UPLOADED]["detail"]
         ))
-
-
-GET_ENGINE_FILES_RESPONSES = {
-    AppCode.ENGINE_FILES_RETRIEVED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "ZIP archive containing the engine files.",
-        "content_type": "application/zip",
-        "example_value": "(binary ZIP file content)"
-    },
-    AppCode.ENGINE_FILES_NOT_FOUND: {
-        "status": fastapi.status.HTTP_404_NOT_FOUND,
-        "description": "Engine not found.",
-        "model": DocAPIResponseClientError,
-        "detail": "Engine not found."
-    },
-    AppCode.ENGINE_FILES_GONE: {
-        "status": fastapi.status.HTTP_410_GONE,
-        "description": "Engine files were probably deleted from the server.",
-        "model": DocAPIResponseClientError,
-        "detail": "Engine files were probably deleted from the server. Consider setting the job state to error."
-    },
-    AppCode.ENGINE_NOT_FOUND: GENERAL_RESPONSES[AppCode.ENGINE_NOT_FOUND]
-}
-@root_router.get(
-    "/v1/engines/{engine_id}/files",
-    response_class=FileResponse,
-    summary="Download Engine Files",
-    tags=["Worker"],
-    description="Download the engine files ZIP archive.",
-    responses=make_responses(GET_ENGINE_FILES_RESPONSES))
-async def get_engine_files(
-        request: Request,
-        engine_id: UUID,
-        key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
-        db: AsyncSession = Depends(get_async_session)):
-
-    db_engine, code = await general_cruds.get_engine(db=db, engine_id=engine_id)
-
-    if code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is not None:
-        engine_files_path = os.path.join(config.ENGINES_DIR, f"{db_engine.id}.zip")
-        if not await aiofiles_os.path.exists(engine_files_path):
-            raise DocAPIClientErrorException(
-                status=fastapi.status.HTTP_410_GONE,
-                code=AppCode.ENGINE_FILES_GONE,
-                detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
-            )
-        return FileResponse(engine_files_path, media_type="application/zip",
-                            filename=f"{db_engine.id}.zip")
-
-    elif code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is None:
-        raise DocAPIClientErrorException(
-            status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.ENGINE_FILES_NOT_FOUND,
-            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_NOT_FOUND]["detail"]
-        )
-
-    elif code == AppCode.ENGINE_NOT_FOUND:
-        raise DocAPIClientErrorException(
-            status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.ENGINE_FILES_GONE,
-            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
-        )
-
-    raise RouteInvariantError(code=code, request=request)
