@@ -8,7 +8,7 @@ import glob
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import cv2
 
@@ -81,6 +81,32 @@ class DocWorker(ABC):
             True if processing succeeded, False otherwise
         """
         pass
+    
+    def _report_error(self, error: Union[AdapterResponse, str], user_msg: str, job_id: Optional[str] = None) -> None:
+        """
+        Report an error by logging technical details and notifying the API with user-friendly message.
+        
+        Args:
+            error: Either an AdapterResponse with failure details or a string with error message
+            user_msg: User-friendly error message for the log_user field
+            job_id: Optional job ID to report the error for (uses current_job.id if not provided)
+        """
+        job_id = job_id or (self.current_job.id if self.current_job else None)
+        
+        if isinstance(error, AdapterResponse):
+            # Build technical log from AdapterResponse
+            tech_log = f"{user_msg} for job {job_id}. Status: {error.status}, Code: {error.code}"
+            if error.response:
+                tech_log += f", Response: {error.response.text}"
+            logger.error(tech_log)
+        else:
+            # Error is a string message
+            tech_log = f"{user_msg} for job {job_id}: {error}"
+            logger.error(tech_log)
+        
+        # Report failure to API
+        if job_id:
+            self.adapter.patch_job_fail(log=tech_log, log_user=user_msg, job_id=job_id)
     
     def request_job(self) -> Optional[AdapterResponse[Job]]:
         """
@@ -195,83 +221,76 @@ class DocWorker(ABC):
             None if all files downloaded successfully,
             AdapterResponse[None] with failure details if any download failed
         """
-        try:
-            job_dir = os.path.join(self.jobs_dir, f"{job.started_date.isoformat() if job.started_date else 'unknown'}.{job.id}")
-            os.makedirs(job_dir, exist_ok=True)
+        job_dir = os.path.join(self.jobs_dir, f"{job.started_date.isoformat() if job.started_date else 'unknown'}.{job.id}")
+        os.makedirs(job_dir, exist_ok=True)
+        
+        # Create subdirectories for different file types
+        images_dir = os.path.join(job_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
+        
+        if job.alto_required:
+            altos_dir = os.path.join(job_dir, "alto")
+            os.makedirs(altos_dir, exist_ok=True)
             
-            # Create subdirectories for different file types
-            images_dir = os.path.join(job_dir, "images")
-            os.makedirs(images_dir, exist_ok=True)
+        if job.page_required:
+            pages_dir = os.path.join(job_dir, "page_xml")
+            os.makedirs(pages_dir, exist_ok=True)
+        
+        # Download images and associated files
+        for image in job.images:
+            image_id = str(image.id)
             
+            # Download image
+            logger.info(f"Downloading image {image.name} (ID: {image_id})...")
+            image_response = self.adapter.get_image(image_id, job.id)
+            if not image_response.is_success:
+                return image_response
+                
+            # Save image (adapter returns cv2 image array, we need to save it)
+            image_path = os.path.join(images_dir, f"{image.name}")
+            cv2.imwrite(image_path, image_response.data)
+            logger.info(f"Saved image to {image_path}")
+            
+            # Download ALTO if required
             if job.alto_required:
-                altos_dir = os.path.join(job_dir, "alto")
-                os.makedirs(altos_dir, exist_ok=True)
-                
+                logger.info(f"Downloading ALTO for {image.name}...")
+                alto_response = self.adapter.get_alto(image_id, job.id)
+                if not alto_response.is_success:
+                    return alto_response
+                    
+                alto_path = os.path.join(altos_dir, f"{os.path.splitext(image.name)[0]}.xml")
+                with open(alto_path, 'w', encoding='utf-8') as f:
+                    f.write(alto_response.data)
+                logger.info(f"Saved ALTO to {alto_path}")
+            
+            # Download PAGE if required  
             if job.page_required:
-                pages_dir = os.path.join(job_dir, "page_xml")
-                os.makedirs(pages_dir, exist_ok=True)
-            
-            # Download images and associated files
-            for image in job.images:
-                image_id = str(image.id)
-                
-                # Download image
-                logger.info(f"Downloading image {image.name} (ID: {image_id})...")
-                image_response = self.adapter.get_image(image_id, job.id)
-                if not image_response.is_success:
-                    return image_response
+                logger.info(f"Downloading PAGE for {image.name}...")
+                page_response = self.adapter.get_page(image_id, job.id)
+                if not page_response.is_success:
+                    return page_response
                     
-                # Save image (adapter returns cv2 image array, we need to save it)
-                image_path = os.path.join(images_dir, f"{image.name}")
-                cv2.imwrite(image_path, image_response.data)
-                logger.info(f"Saved image to {image_path}")
+                page_path = os.path.join(pages_dir, f"{os.path.splitext(image.name)[0]}.xml")
+                with open(page_path, 'w', encoding='utf-8') as f:
+                    f.write(page_response.data)
+                logger.info(f"Saved PAGE to {page_path}")
+        
+        # Download meta JSON if required
+        if job.meta_json_required:
+            logger.info("Downloading meta JSON...")
+            meta_response = self.adapter.get_meta_json(job.id)
+            if not meta_response.is_success:
+                return meta_response
                 
-                # Download ALTO if required
-                if job.alto_required:
-                    logger.info(f"Downloading ALTO for {image.name}...")
-                    alto_response = self.adapter.get_alto(image_id, job.id)
-                    if not alto_response.is_success:
-                        return alto_response
-                        
-                    alto_path = os.path.join(altos_dir, f"{os.path.splitext(image.name)[0]}.xml")
-                    with open(alto_path, 'w', encoding='utf-8') as f:
-                        f.write(alto_response.data)
-                    logger.info(f"Saved ALTO to {alto_path}")
-                
-                # Download PAGE if required  
-                if job.page_required:
-                    logger.info(f"Downloading PAGE for {image.name}...")
-                    page_response = self.adapter.get_page(image_id, job.id)
-                    if not page_response.is_success:
-                        return page_response
-                        
-                    page_path = os.path.join(pages_dir, f"{os.path.splitext(image.name)[0]}.xml")
-                    with open(page_path, 'w', encoding='utf-8') as f:
-                        f.write(page_response.data)
-                    logger.info(f"Saved PAGE to {page_path}")
+            meta_path = os.path.join(job_dir, "meta.json")
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                f.write(meta_response.data)
+            logger.info(f"Saved meta JSON to {meta_path}")
+        
+        logger.info(f"All job data downloaded successfully to {job_dir}")
+        return None
             
-            # Download meta JSON if required
-            if job.meta_json_required:
-                logger.info("Downloading meta JSON...")
-                meta_response = self.adapter.get_meta_json(job.id)
-                if not meta_response.is_success:
-                    return meta_response
-                    
-                meta_path = os.path.join(job_dir, "meta.json")
-                with open(meta_path, 'w', encoding='utf-8') as f:
-                    f.write(meta_response.data)
-                logger.info(f"Saved meta JSON to {meta_path}")
-            
-            logger.info(f"All job data downloaded successfully to {job_dir}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"Exception during job data download for job {job.id}: {str(e)}", exc_info=True)
-            return AdapterResponse[None](
-                data=None,
-                status=0,
-                message=f"Exception during job data download: {str(e)}"
-            )
+    
     
     def _zip_results(self, results_dir: str) -> Optional[str]:
         """
@@ -352,70 +371,45 @@ class DocWorker(ABC):
             try:
                 engine_response = self._check_and_download_engine_files(job)
                 if engine_response is not None and not engine_response.is_success:
-                    error_msg = "Failed to download or prepare engine files"
-                    tech_log = f"{error_msg} for job {job.id}. Status: {engine_response.status}, Code: {engine_response.code}"
-                    if engine_response.response:
-                        tech_log += f", Response: {engine_response.response.text}"
-                    logger.error(tech_log)
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                    self._report_error(engine_response, "Failed to download or prepare engine files")
                     return None
             except Exception as e:
-                error_msg = "Failed to download or prepare engine files"
-                tech_log = f"{error_msg} for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Failed to download or prepare engine files")
                 return None
             
             # Download all job data
             try:
                 download_response = self._download_job_data(job)
                 if download_response is not None:  # Failed download
-                    error_msg = "Failed to download job data from server"
-                    error_details = f"Status: {download_response.status}, Code: {download_response.code}"
-                    if download_response.response:
-                        error_details += f", Response: {download_response.response.text}"
-                    tech_log = f"{error_msg} for job {job.id}. {error_details}"
-                    logger.error(tech_log)
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                    self._report_error(download_response, "Failed to download job data from server")
                     return None
             except Exception as e:
-                error_msg = "Failed to download job data from server"
-                tech_log = f"{error_msg} for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Failed to download job data from server")
                 return None
             
             # Create results directory
             try:
                 job_dir = self.get_job_data_path()
                 if not job_dir:
-                    error_msg = "Unable to create job workspace directory"
-                    tech_log = f"Failed to get job data path for job {job.id}"
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                    self._report_error("Failed to get job data path", "Unable to create job workspace directory")
                     return None
                     
                 results_dir = os.path.join(job_dir, "results")
                 os.makedirs(results_dir, exist_ok=True)
             except Exception as e:
-                error_msg = "Unable to create job workspace directory"
-                tech_log = f"Failed to create results directory for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Unable to create job workspace directory")
                 return None
             
             # Process the job data
             try:
                 logger.info(f"Processing job {job.id}...")
-                if not self.process_job(results_dir):
-                    error_msg = "Processing failed due to an internal error"
-                    tech_log = f"Job processing failed for job {job.id}"
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                process_job_response = self.process_job(results_dir)
+                if process_job_response is not None:
+                    self._report_error("Job processing failed", "Processing failed due to an internal error")
                     return None
+
             except Exception as e:
-                error_msg = "Processing failed due to an internal error"
-                tech_log = f"Job processing failed for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Processing failed due to an internal error")
                 return None
             
             # Zip the results
@@ -423,40 +417,27 @@ class DocWorker(ABC):
                 logger.info(f"Zipping results for job {job.id}...")
                 zip_path = self._zip_results(results_dir)
                 if not zip_path:
-                    error_msg = "Failed to package processing results"
-                    tech_log = f"Failed to zip results for job {job.id}"
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                    self._report_error("Failed to zip results", "Failed to package processing results")
                     return None
             except Exception as e:
-                error_msg = "Failed to package processing results"
-                tech_log = f"Failed to zip results for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Failed to package processing results")
                 return None
             
             # Upload the results
             try:
                 logger.info(f"Uploading results for job {job.id}...")
                 if not self._upload_results(zip_path):
-                    error_msg = "Failed to upload results to server"
-                    tech_log = f"Failed to upload results for job {job.id}"
-                    self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                    self._report_error("Failed to upload results", "Failed to upload results to server")
                     return None
             except Exception as e:
-                error_msg = "Failed to upload results to server"
-                tech_log = f"Failed to upload results for job {job.id}: {str(e)}"
-                logger.error(tech_log, exc_info=True)
-                self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+                self._report_error(str(e), "Failed to upload results to server")
                 return None
                 
             logger.info(f"Job {job.id} fully processed and uploaded successfully")
             return job
             
         except Exception as e:
-            error_msg = "An unexpected error occurred during processing"
-            tech_log = f"Unexpected error in job pipeline for job {job.id}: {str(e)}"
-            logger.error(tech_log, exc_info=True)
-            self.adapter.patch_job_fail(log=tech_log, log_user=error_msg, job_id=job.id)
+            self._report_error(str(e), "An unexpected error occurred during processing")
             return None
     
     def get_job_data_path(self) -> Optional[str]:
