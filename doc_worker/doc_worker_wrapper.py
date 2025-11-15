@@ -158,8 +158,9 @@ class DocWorkerWrapper(ABC):
         # Add exception details if present
         if response.exception:
             tech_log += f". Exception: {type(response.exception).__name__}: {str(response.exception)}"
-        
-        logger.error(tech_log)
+            logger.exception(tech_log)
+        else:
+            logger.error(tech_log)
         
         # Report failure to API
         if job_id:
@@ -539,8 +540,8 @@ class DocWorkerWrapper(ABC):
                     if job_dir_to_remove and os.path.exists(job_dir_to_remove):
                         shutil.rmtree(job_dir_to_remove)
                         logger.debug(f"Cleaned up job directory: {job_dir_to_remove}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up job directory: {e}")
+                except Exception:
+                    logger.exception("Failed to clean up job directory")
                 
             logger.info(f"Job {self.current_job.id} processed successfully")
             return self.current_job
@@ -579,8 +580,8 @@ class DocWorkerWrapper(ABC):
                     
         except KeyboardInterrupt:
             logger.info("Worker shutting down gracefully")
-        except Exception as e:
-            logger.exception(f"Unexpected error in worker loop: {e}")
+        except Exception:
+            logger.exception("Unexpected error in worker loop")
     
 
     def get_job_data_path(self) -> Optional[str]:

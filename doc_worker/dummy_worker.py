@@ -97,6 +97,7 @@ class DummyWorker(DocWorkerWrapper):
             return WorkerResponse.ok()
             
         except Exception as e:
+            logger.exception("Dummy processing failed")
             return WorkerResponse.fail("Dummy processing failed", exception=e)
 
 
