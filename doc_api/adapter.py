@@ -395,16 +395,21 @@ class Adapter:
 
         return adapter_response
 
-    def patch_job_progress_update(self, progress: float, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs/{job_id}") -> AdapterResponse[JobLease]:
+    def patch_job_progress_update(self, progress: float = None, log: str = None, log_user: str = None, job_id = None, route="/v1/jobs/{job_id}") -> AdapterResponse[JobLease]:
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route.format(job_id=job_id))
-        
-        data = {"progress": progress}
+
+        data = {}
+        if progress is not None:
+            data["progress"] = progress
         if log is not None:
             data["log"] = log
         if log_user is not None:
             data["log_user"] = log_user
+
+        if not data:
+            raise ValueError("At least one of progress, log, or log_user must be provided for progress update.")
             
         response = self.connector.patch(url, json=data)
 

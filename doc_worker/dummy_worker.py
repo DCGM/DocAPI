@@ -81,13 +81,11 @@ class DummyWorker(DocWorkerWrapper):
                 logger.debug(f"Copied engine files to {dest_engine}")
 
             self.update_job_progress(
-                job.id,
                 log="Successfully copied all data to results",
                 log_user="Successfully copied all data to results"
             )
             
             self.update_job_progress(
-                job.id,
                 log="Dummy processing completed successfully",
                 log_user="Dummy processing completed successfully"
             )
