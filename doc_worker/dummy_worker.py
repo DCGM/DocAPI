@@ -10,7 +10,7 @@ import os
 import shutil
 from typing import Optional
 
-from doc_worker.doc_worker import DocWorker, WorkerResponse
+from .doc_worker import DocWorker, WorkerResponse
 from doc_api.api.schemas.base_objects import Job
 from doc_api.connector import Connector
 
@@ -93,7 +93,7 @@ class DummyWorker(DocWorker):
             )
             
             logger.info("Dummy processing completed successfully")
-            
+
             return WorkerResponse.ok()
             
         except Exception as e:
