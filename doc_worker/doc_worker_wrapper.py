@@ -48,7 +48,7 @@ class WorkerResponse:
         return cls(success=False, error_message=error_message, error_adapter_response=adapter_response, exception=exception)
 
 
-class DocWorker(ABC):
+class DocWorkerWrapper(ABC):
     """
     A worker wrapper that handles job leasing and downloading all required data.
     
