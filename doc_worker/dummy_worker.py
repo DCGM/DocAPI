@@ -10,7 +10,7 @@ import os
 import shutil
 from typing import Optional
 
-from doc_worker.doc_worker import DocWorker, WorkerResponse
+from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 from doc_api.api.schemas.base_objects import Job
 from doc_api.connector import Connector
 
@@ -18,7 +18,7 @@ from doc_api.connector import Connector
 logger = logging.getLogger(__name__)
 
 
-class DummyWorker(DocWorker):
+class DummyWorker(DocWorkerWrapper):
     """
     A dummy worker that copies all job data to results without processing.
     
