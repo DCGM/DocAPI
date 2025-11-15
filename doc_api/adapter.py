@@ -132,7 +132,7 @@ class Adapter:
         adapter_response = AdapterResponse[np.ndarray](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Image '{image_id}' for job '{job_id}' successfully downloaded.")
+            logger.debug(f"Image '{image_id}' for job '{job_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading image '{image_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -151,7 +151,7 @@ class Adapter:
         adapter_response = AdapterResponse[str](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"ALTO '{image_id}' for job '{job_id}' successfully downloaded.")
+            logger.debug(f"ALTO '{image_id}' for job '{job_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading ALTO '{image_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -170,7 +170,7 @@ class Adapter:
         adapter_response = AdapterResponse[str](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"PAGE '{image_id}' for job '{job_id}' successfully downloaded.")
+            logger.debug(f"PAGE '{image_id}' for job '{job_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading PAGE '{image_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -189,7 +189,7 @@ class Adapter:
         adapter_response = AdapterResponse[str](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Meta JSON for job '{job_id}' successfully downloaded.")
+            logger.debug(f"Meta JSON for job '{job_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading Meta JSON for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -208,7 +208,7 @@ class Adapter:
         adapter_response = AdapterResponse[bytes](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Result for job '{job_id}' successfully downloaded.")
+            logger.debug(f"Result for job '{job_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading result for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -225,7 +225,7 @@ class Adapter:
         adapter_response = AdapterResponse[bytes](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Engine files '{engine_id}' successfully downloaded.")
+            logger.debug(f"Engine files '{engine_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading engine files '{engine_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -243,7 +243,7 @@ class Adapter:
         adapter_response = AdapterResponse[Job](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Job '{result.id}' successfully created.")
+            logger.debug(f"Job '{result.id}' successfully created.")
             if set_if_successful:
                 self.job = result
         else:
@@ -273,17 +273,20 @@ class Adapter:
 
         return adapter_response
 
-    def post_artifacts(self, job_id, artifacts_bytes, route="/v1/jobs/{job_id}/artifacts") -> AdapterResponse[None]:
+    def post_artifacts(self, result_path, job_id=None, route="/v1/jobs/{job_id}/artifacts") -> AdapterResponse[None]:
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route.format(job_id=job_id))
 
-        response = self.connector.post(url, files={"file": ("artifacts.zip", artifacts_bytes, "application/zip")})
+        with open(result_path, 'rb') as file:
+            result_bytes = file.read()
+
+        response = self.connector.post(url, files={"file": ("result.zip", result_bytes, "application/zip")})
 
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Artifacts for job '{job_id}' successfully uploaded.")
+            logger.debug(f"Artifacts for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading artifacts for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -302,7 +305,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Result for job '{job_id}' successfully uploaded.")
+            logger.debug(f"Result for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading result for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -317,7 +320,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Job '{job_id}' successfully marked as finished.")
+            logger.debug(f"Job '{job_id}' successfully marked as finished.")
         else:
             logger.error(f"Marking job '{job_id}' as finished failed. Response: {response.status_code} {response.text}")
 
@@ -332,7 +335,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Job '{job_id}' successfully cancelled.")
+            logger.debug(f"Job '{job_id}' successfully cancelled.")
         else:
             logger.error(f"Cancelling job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -354,7 +357,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Job '{job_id}' successfully marked as failed.")
+            logger.debug(f"Job '{job_id}' successfully marked as failed.")
         else:
             logger.error(f"Marking job '{job_id}' as failed failed. Response: {response.status_code} {response.text}")
 
@@ -374,7 +377,7 @@ class Adapter:
         adapter_response = AdapterResponse[JobLease](data=result, status=response.status_code, response=response)
         
         if adapter_response.is_success:
-            logger.info(f"Job lease '{job_id}' successfully extended.")
+            logger.debug(f"Job lease '{job_id}' successfully extended.")
         else:
             logger.error(f"Extending job lease '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -389,7 +392,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Job lease '{job_id}' successfully released.")
+            logger.debug(f"Job lease '{job_id}' successfully released.")
         else:
             logger.error(f"Releasing job lease '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -423,7 +426,7 @@ class Adapter:
         adapter_response = AdapterResponse[JobLease](data=result, status=response.status_code, response=response, no_data_response=(result is None))
         
         if adapter_response.is_success:
-            logger.info(f"Job '{job_id}' progress successfully updated.")
+            logger.debug(f"Job '{job_id}' progress successfully updated.")
         else:
             logger.error(f"Updating job '{job_id}' progress failed. Response: {response.status_code} {response.text}")
 
@@ -442,7 +445,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Image '{image_name}' for job '{job_id}' successfully uploaded.")
+            logger.debug(f"Image '{image_name}' for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading image '{image_name}' for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -461,7 +464,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
 
         if adapter_response.is_success:
-            logger.info(f"ALTO '{image_name}' for job '{job_id}' successfully uploaded.")
+            logger.debug(f"ALTO '{image_name}' for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading ALTO '{image_name}' for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -481,7 +484,7 @@ class Adapter:
 
         
         if adapter_response.is_success:
-            logger.info(f"PAGE '{image_name}' for job '{job_id}' successfully uploaded.")
+            logger.debug(f"PAGE '{image_name}' for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading PAGE '{image_name}' for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
@@ -500,7 +503,7 @@ class Adapter:
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         
         if adapter_response.is_success:
-            logger.info(f"Meta JSON for job '{job_id}' successfully uploaded.")
+            logger.debug(f"Meta JSON for job '{job_id}' successfully uploaded.")
         else:
             logger.error(f"Uploading Meta JSON for job '{job_id}' failed. Response: {response.status_code} {response.text}")
 
