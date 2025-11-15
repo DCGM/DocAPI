@@ -389,11 +389,8 @@ class DocWorkerWrapper(ABC):
             return WorkerResponse.fail("Failed to get job data path")
             
         zip_path = os.path.join(job_dir, "results.zip")
-        
-        with open(zip_path, 'rb') as f:
-            zip_data = f.read()
             
-        upload_response = self.adapter.post_result(self.current_job.id, zip_data)
+        upload_response = self.adapter.post_result(zip_path)
         if upload_response.is_success:
             logger.debug(f"Results uploaded successfully for job {self.current_job.id}")
             return WorkerResponse.ok()
@@ -559,7 +556,7 @@ class DocWorkerWrapper(ABC):
             logger.info(f"Job {self.current_job.id} processed successfully")
 
             job = self.current_job
-            
+
             self.current_job = None
             self.current_lease = None
 
