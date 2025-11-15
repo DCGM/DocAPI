@@ -99,7 +99,7 @@ class Adapter:
 
         return adapter_response
 
-    def get_job(self, job_id=None, set_if_successful=False, route="/v1/jobs/") -> AdapterResponse[Job]:
+    def get_job(self, job_id=None, set_job_if_successful=False, route="/v1/jobs/") -> AdapterResponse[Job]:
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route, job_id)
@@ -112,7 +112,7 @@ class Adapter:
 
         adapter_response = AdapterResponse[Job](data=result, status=response.status_code, response=response)
         
-        if adapter_response.is_success and set_if_successful:
+        if adapter_response.is_success and set_job_if_successful:
             self.job = result
         elif not adapter_response.is_success:
             logger.warning(f"Response: {response.status_code} {response.text}")

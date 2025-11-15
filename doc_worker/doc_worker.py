@@ -48,7 +48,7 @@ class WorkerResponse:
         return cls(success=False, error_message=error_message, error_adapter_response=adapter_response, exception=exception)
 
 
-class DocWorkerWrapper(ABC):
+class DocWorker(ABC):
     """
     A worker wrapper that handles job leasing and downloading all required data.
     
@@ -158,9 +158,8 @@ class DocWorkerWrapper(ABC):
         # Add exception details if present
         if response.exception:
             tech_log += f". Exception: {type(response.exception).__name__}: {str(response.exception)}"
-            logger.exception(tech_log)
-        else:
-            logger.error(tech_log)
+        
+        logger.error(tech_log)
         
         # Report failure to API
         if job_id:
@@ -393,7 +392,7 @@ class DocWorkerWrapper(ABC):
         with open(zip_path, 'rb') as f:
             zip_data = f.read()
             
-        upload_response = self.adapter.post_result(self.current_job.id, zip_data)
+        upload_response = self.adapter.post_artifacts(self.current_job.id, zip_data)
         if upload_response.is_success:
             logger.debug(f"Results uploaded successfully for job {self.current_job.id}")
             return WorkerResponse.ok()
@@ -534,36 +533,17 @@ class DocWorkerWrapper(ABC):
                 self._report_error(response)
                 return None
             
-            # Finish the job
-            try:
-                logger.debug(f"Finishing job {self.current_job.id}...")
-                finish_response = self.adapter.patch_job_finish()
-                if not finish_response.is_success:
-                    response = WorkerResponse.fail("Failed to mark job as finished", error_adapter_response=finish_response)
-                    self._report_error(response)
-                    return None
-            except Exception as e:
-                response = WorkerResponse.fail("Failed to mark job as finished", exception=e)
-                self._report_error(response)
-                return None
-            
             if self.cleanup_job_dir:
                 try:
                     job_dir_to_remove = self.get_job_data_path()
                     if job_dir_to_remove and os.path.exists(job_dir_to_remove):
                         shutil.rmtree(job_dir_to_remove)
                         logger.debug(f"Cleaned up job directory: {job_dir_to_remove}")
-                except Exception:
-                    logger.exception("Failed to clean up job directory")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up job directory: {e}")
                 
             logger.info(f"Job {self.current_job.id} processed successfully")
-
-            job = self.current_job
-            
-            self.current_job = None
-            self.current_lease = None
-
-            return job
+            return self.current_job
             
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully by releasing the lease instead of failing the job
@@ -599,8 +579,8 @@ class DocWorkerWrapper(ABC):
                     
         except KeyboardInterrupt:
             logger.info("Worker shutting down gracefully")
-        except Exception:
-            logger.exception("Unexpected error in worker loop")
+        except Exception as e:
+            logger.exception(f"Unexpected error in worker loop: {e}")
     
 
     def get_job_data_path(self) -> Optional[str]:
