@@ -172,7 +172,7 @@ def main():
         parser.error("Either --base-dir or both --jobs-dir and --engines-dir must be specified")
     
     # Create connector
-    connector = Connector(worker_key=args.api_key)
+    connector = Connector(api_key=args.api_key)
     
     # Create and start worker
     worker = DummyWorker(

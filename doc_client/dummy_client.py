@@ -24,16 +24,15 @@ class DummyClient(DocClientWrapper):
     Useful for testing the client pipeline and API integration.
     """
     
-    def process_result(self, job: Job, results_dir: str) -> None:
+    def process_result(self, job: Job, result_dir: str) -> None:
         """
         Log the completion of result processing.
         
         Args:
             job: The job object containing job metadata
-            results_dir: Directory path containing the downloaded and extracted results
+            result_dir: Directory path containing the downloaded and extracted results
         """
-        logger.info(f"Results for job {job.id} saved to {results_dir}")
-        logger.info("Dummy client processing completed")
+        logger.info(f"Results for job {job.id} saved to {result_dir}")
 
 
 def main():
@@ -62,7 +61,7 @@ def main():
         help="Directory containing images to process"
     )
     parser.add_argument(
-        "--results-dir",
+        "--result-dir",
         required=True,
         help="Directory where results should be saved"
     )
@@ -110,7 +109,7 @@ def main():
     )
     
     # Create connector
-    connector = Connector(client_key=args.api_key)
+    connector = Connector(api_key=args.api_key)
     
     # Create client
     client = DummyClient(
@@ -129,13 +128,13 @@ def main():
         logger.info(f"Meta file: {args.meta_file}")
     if args.engine_name:
         logger.info(f"Engine: {args.engine_name}")
-    logger.info(f"Results directory: {args.results_dir}")
+    logger.info(f"Results directory: {args.result_dir}")
 
     
     # Run the job pipeline
     job = client.run_job_pipeline(
         images_dir=args.images_dir,
-        results_dir=args.results_dir,
+        result_dir=args.result_dir,
         alto_dir=args.alto_dir,
         page_xml_dir=args.page_xml_dir,
         meta_file=args.meta_file,
@@ -143,10 +142,8 @@ def main():
     )
     
     if job:
-        logger.info(f"Job {job.id} completed successfully")
         return 0
     else:
-        logger.error("Job processing failed")
         return 1
 
 
