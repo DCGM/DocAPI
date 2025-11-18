@@ -7,8 +7,8 @@ class AuthenticationError(Exception):
 
 
 class Connector:
-    def __init__(self, worker_key, user_agent="DocAPI-Client/1.0.0"):
-        self.worker_key = worker_key
+    def __init__(self, api_key, user_agent="DocAPI-Client/1.0.0"):
+        self.api_key = api_key
         self.user_agent = user_agent
 
         # Create and configure session for connection reuse
@@ -31,7 +31,7 @@ class Connector:
         return self.session.patch(url, json=json)
 
     def _get_auth_header(self):
-        return {'X-API-Key': self.worker_key}
+        return {'X-API-Key': self.api_key}
 
     def _get_user_agent_header(self):
         return {'User-Agent': self.user_agent}

@@ -40,7 +40,7 @@ class DocClientWrapper(ABC):
         self.polling_interval = polling_interval
         self.current_job: Optional[Job] = None
     
-    def process_result(self, job: Job, results_dir: str) -> None:
+    def process_result(self, job: Job, result_dir: str) -> None:
         """
         Process the downloaded results.
         
@@ -49,14 +49,14 @@ class DocClientWrapper(ABC):
         
         Args:
             job: The job object containing job metadata
-            results_dir: Directory path containing the downloaded and extracted results
+            result_dir: Directory path containing the downloaded and extracted results
         """
         pass
     
     def run_job_pipeline(
             self,
             images_dir: str,
-            results_dir: str,
+            result_dir: str,
             alto_dir: Optional[str] = None,
             page_xml_dir: Optional[str] = None,
             meta_file: Optional[str] = None,
@@ -66,7 +66,7 @@ class DocClientWrapper(ABC):
         
         Args:
             images_dir: Directory containing images to process (required)
-            results_dir: Directory where results should be saved (required)
+            result_dir: Directory where results should be saved (required)
             alto_dir: Optional directory containing ALTO XML files
             page_xml_dir: Optional directory containing PAGE XML files
             meta_file: Optional path to meta.json file
@@ -80,7 +80,7 @@ class DocClientWrapper(ABC):
             logger.error(f"Images directory does not exist: {images_dir}")
             return None
         
-        os.makedirs(results_dir, exist_ok=True)
+        os.makedirs(result_dir, exist_ok=True)
         
         # Validate optional directories and files
         if alto_dir and not os.path.isdir(alto_dir):
@@ -151,15 +151,15 @@ class DocClientWrapper(ABC):
             
             # Download and extract results
             logger.debug("Downloading results...")
-            if not self._download_and_extract_results(results_dir):
+            if not self._download_and_extract_results(result_dir):
                 logger.error("Failed to download results")
                 return None
             
-            logger.debug(f"Results downloaded and extracted to: {results_dir}")
+            logger.debug(f"Results downloaded and extracted to: {result_dir}")
             
             # Process results (can be overridden by subclass)
             logger.debug("Processing results...")
-            self.process_result(completed_job, results_dir)
+            self.process_result(completed_job, result_dir)
             
             logger.info(f"Job {completed_job.id} completed successfully")
 
@@ -246,7 +246,7 @@ class DocClientWrapper(ABC):
         if engine_name:
             job_definition["engine_name"] = engine_name
         
-        response = self.adapter.post_job(job_definition=job_definition, set_if_successful=True)
+        response = self.adapter.post_job(job_definition, set_if_successful=True)
         if response.is_success and response.data:
             self.current_job = response.data
             return response.data
@@ -280,24 +280,22 @@ class DocClientWrapper(ABC):
         # Upload each image and associated files
         for image_file in image_files:
             image_path = os.path.join(images_dir, image_file)
-            image_name = os.path.splitext(image_file)[0]
+            base_name = os.path.splitext(image_file)[0]
             
             # Upload image
             logger.debug(f"Uploading image: {image_file}")
-            response = self.adapter.post_image(image_path)
+            response = self.adapter.put_image(image_path, image_file)
             if not response.is_success:
                 self._report_error(f"Failed to upload image {image_file}", response)
                 return False
             
-            image_id = response.data.id
-            
             # Upload ALTO if directory provided
             if alto_dir:
-                alto_file = f"{image_name}.xml"
+                alto_file = f"{base_name}.xml"
                 alto_path = os.path.join(alto_dir, alto_file)
                 if os.path.isfile(alto_path):
                     logger.debug(f"Uploading ALTO: {alto_file}")
-                    response = self.adapter.post_alto(alto_path, image_id=image_id)
+                    response = self.adapter.put_alto(alto_path, image_file)
                     if not response.is_success:
                         self._report_error(f"Failed to upload ALTO {alto_file}", response)
                         return False
@@ -306,11 +304,11 @@ class DocClientWrapper(ABC):
             
             # Upload PAGE if directory provided
             if page_xml_dir:
-                page_file = f"{image_name}.xml"
+                page_file = f"{base_name}.xml"
                 page_path = os.path.join(page_xml_dir, page_file)
                 if os.path.isfile(page_path):
                     logger.debug(f"Uploading PAGE: {page_file}")
-                    response = self.adapter.post_page(page_path, image_id=image_id)
+                    response = self.adapter.put_page(page_path, image_file)
                     if not response.is_success:
                         self._report_error(f"Failed to upload PAGE {page_file}", response)
                         return False
@@ -320,7 +318,7 @@ class DocClientWrapper(ABC):
         # Upload meta JSON if provided
         if meta_file:
             logger.debug("Uploading meta JSON")
-            response = self.adapter.post_meta_json(meta_file)
+            response = self.adapter.put_meta_json(meta_file)
             if not response.is_success:
                 self._report_error("Failed to upload meta JSON", response)
                 return False
@@ -366,12 +364,12 @@ class DocClientWrapper(ABC):
                 logger.info(f"Job status: {job.state}, progress: {job.progress}")
                 time.sleep(self.polling_interval)
     
-    def _download_and_extract_results(self, results_dir: str) -> bool:
+    def _download_and_extract_results(self, result_dir: str) -> bool:
         """
         Download the results ZIP and extract it to the results directory.
         
         Args:
-            results_dir: Directory to extract results to
+            result_dir: Directory to extract results to
             
         Returns:
             True if successful, False otherwise
@@ -383,14 +381,14 @@ class DocClientWrapper(ABC):
             return False
         
         # Save ZIP to temporary file
-        zip_path = os.path.join(results_dir, "results.zip")
+        zip_path = os.path.join(result_dir, "results.zip")
         with open(zip_path, 'wb') as f:
             f.write(response.data)
         
         # Extract ZIP
         try:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(results_dir)
+                zip_ref.extractall(result_dir)
             
             # Remove ZIP file after extraction
             os.remove(zip_path)
