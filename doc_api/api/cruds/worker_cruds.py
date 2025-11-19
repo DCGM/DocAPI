@@ -70,12 +70,18 @@ async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple
                 return None, None, None, AppCode.JOB_QUEUE_EMPTY
 
             db_job.state = base_objects.ProcessingState.PROCESSING
-            db_job.started_date = now
             db_job.last_change = now
             db_job.worker_key_id = worker_key_id
             db_job.previous_attempts = previous_attempts + 1
 
             lease_expire_at, server_time = get_new_lease(now)
+
+            if db_job.previous_attempts > 0:
+                log_msg = f"\n\n\n\nATTEMPT {db_job.previous_attempts + 1} STARTED AT {now} AFTER TIMEOUT/ERROR.\n\n"
+                db_job.log += log_msg
+                db_job.log_user += log_msg
+            else:
+                db_job.started_date = now
 
         return db_job, lease_expire_at, server_time, AppCode.JOB_LEASED
 
