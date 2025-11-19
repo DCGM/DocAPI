@@ -233,6 +233,8 @@ async def get_jobs(
     data = []
     for db_job, db_engine in db_jobs_with_engines:
         job = base_objects.JobProper.model_validate(db_job).model_dump()
+        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+            job.pop("log", None)
         data.append(JobWithEngine(**job,
                                   engine_name=db_engine.name,
                                   engine_version=db_engine.version))

@@ -94,7 +94,7 @@ GET_ENGINES_RESPONSES = {
                 "You can filter engines by name, version, and default status.\n\n"
                 "`active` and `show_definition` are meant only for admins.",
     responses=make_responses(GET_ENGINES_RESPONSES))
-async def list_engines(
+async def get_engines(
         request: Request,
         name: Optional[str] = None,
         version: Optional[str] = None,
