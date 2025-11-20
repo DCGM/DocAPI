@@ -1,3 +1,4 @@
+import logging
 import os
 import asyncio
 from typing import Optional
@@ -16,6 +17,8 @@ from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VAL
 
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # CLI options & env fallbacks

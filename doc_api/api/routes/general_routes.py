@@ -117,7 +117,7 @@ async def get_engines(
                 code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE,
                 detail=GET_ENGINES_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE]["detail"]
             )
-        if show_definition is not None:
+        if show_definition:
             raise DocAPIClientErrorException(
                 status=status.HTTP_403_FORBIDDEN,
                 code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION,
