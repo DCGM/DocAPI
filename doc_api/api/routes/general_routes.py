@@ -229,10 +229,13 @@ def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: mo
             engine_id = None
             engine_definition = None
             engine_files_updated = None
+        logger.info("Engine settings: ")
+        logger.info(db_job.definition.get("engine_settings", None))
         data = base_objects.Job(**job,
                                 images=images,
                                 engine_name=db_engine.name,
                                 engine_version=db_engine.version,
+                                engine_settings=db_job.definition.get("engine_settings", None),
                                 engine_id=engine_id,
                                 engine_files_updated=engine_files_updated,
                                 engine_definition=engine_definition)

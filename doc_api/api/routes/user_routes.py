@@ -237,7 +237,8 @@ async def get_jobs(
             job.pop("log", None)
         data.append(JobWithEngine(**job,
                                   engine_name=db_engine.name,
-                                  engine_version=db_engine.version))
+                                  engine_version=db_engine.version,
+                                  engine_settings=db_job.definition.get("engine_settings", None)))
 
     return validate_ok_response(DocAPIResponseOK[List[base_objects.JobWithEngine]](
         status=status.HTTP_200_OK,

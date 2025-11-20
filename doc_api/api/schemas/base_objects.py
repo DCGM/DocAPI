@@ -192,6 +192,11 @@ class JobWithEngine(JobProper):
         examples=["v1.0.0"],
         description="Version of the engine assigned to this job."
     )
+    engine_settings: Optional[dict] = Field(
+        None,
+        examples=[{"param1": "value1", "param2": 42}],
+        description="JSON settings/configuration of the engine assigned to this job."
+    )
 
 
 class Job(JobWithEngine):
@@ -524,8 +529,8 @@ class EngineNew(BaseModel):
         description="Description of the engine.",
         examples=["An advanced OCR engine optimized for historical documents."],
     )
-    definition: dict = Field(
-        ...,
+    definition: Optional[dict] = Field(
+        None,
         description="JSON definition/configuration of the engine.",
         examples=[{"param1": "value1", "param2": 42}],
     )
