@@ -43,9 +43,9 @@ class WorkerResponse:
         return cls(success=True)
     
     @classmethod
-    def fail(cls, error_message: str, adapter_response: Optional[AdapterResponse] = None, exception: Optional[Exception] = None) -> 'WorkerResponse':
+    def fail(cls, error_message: str, error_adapter_response: Optional[AdapterResponse] = None, exception: Optional[Exception] = None) -> 'WorkerResponse':
         """Create a failed response."""
-        return cls(success=False, error_message=error_message, error_adapter_response=adapter_response, exception=exception)
+        return cls(success=False, error_message=error_message, error_adapter_response=error_adapter_response, exception=exception)
 
 
 class DocWorkerWrapper(ABC):
@@ -562,7 +562,7 @@ class DocWorkerWrapper(ABC):
                 logger.debug(f"Finishing job {self.current_job.id}...")
                 finish_response = self.adapter.patch_job_finish()
                 if not finish_response.is_success:
-                    response = WorkerResponse.fail("Failed to mark job as finished", error_adapter_response=finish_response)
+                    response = WorkerResponse.fail("Failed to mark job as finished", finish_response)
                     self._report_error(response)
                     return None
             except Exception as e:
