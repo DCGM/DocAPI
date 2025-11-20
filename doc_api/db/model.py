@@ -93,7 +93,7 @@ class Engine(Base):
     version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
 
-    definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=True)
 
     default: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
     active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)

@@ -28,8 +28,10 @@ class JobDefinition(BaseModel):
     meta_json_required: bool = False
     alto_required: bool = False
     page_required: bool = False
+
     engine_name: Optional[str] = None
     engine_version: Optional[str] = None
+    engine_settings: Optional[dict] = None
 
     model_config = ConfigDict(extra="forbid")
 
