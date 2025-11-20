@@ -642,7 +642,7 @@ class DocWorkerWrapper(ABC):
             return None
         
         started_timestamp = self.current_job.started_date.isoformat() if self.current_job.started_date else 'unknown'
-        return os.path.join(self.jobs_dir, f"{started_timestamp}.{self.current_job.id}")
+        return os.path.join(self.jobs_dir, f"{started_timestamp}.{str(self.current_job.previous_attempts)}.{self.current_job.id}")
     
     def get_engine_data_path(self) -> Optional[str]:
         """
