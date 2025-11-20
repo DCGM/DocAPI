@@ -64,7 +64,8 @@ class DocWorkerWrapper(ABC):
                  engines_dir: Optional[str] = None,
                  polling_interval: float = 5.0,
                  cleanup_job_dir: bool = False,
-                 cleanup_old_engines: bool = False):
+                 cleanup_old_engines: bool = False,
+                 job_log_format: str = '%(asctime)s : %(name)s : %(hostname)s : %(levelname)s : %(message)s'):
         """
         Initialize the DocWorker.
         
@@ -82,6 +83,7 @@ class DocWorkerWrapper(ABC):
             cleanup_old_engines: If True, removes old engine versions when downloading new ones
         """
         self.adapter = Adapter(api_url, connector)
+        self.job_log_format = job_log_format
         
         # Setup directory structure
         if base_dir:
@@ -424,21 +426,31 @@ class DocWorkerWrapper(ABC):
         if not self.current_job:
             logger.error("Job request succeeded but no current job set")
             return None
-        
-        # Log job acquisition summary
-        logger.info("")
-        logger.info(f"Job {self.current_job.id} acquired")
-        logger.info(f"Created: {self.current_job.created_date}")
-        logger.info(f"Started: {self.current_job.started_date}")
-        logger.info(f"Lease expires: {self.current_lease.lease_expire_at if self.current_lease else 'unknown'}")
-        logger.info(f"Engine: name={self.current_job.engine_name}, verison={self.current_job.engine_version}")
-        logger.info(f"Images: {len(self.current_job.images)}")
-        logger.info(f"Requirements: ALTO={self.current_job.alto_required}, "
-                    f"PAGE={self.current_job.page_required}, "
-                    f"Meta={self.current_job.meta_json_required}")
-        logger.info("")
-                        
+
+        job_log_file_handler = None
+
         try:
+            # add file handler to logger for this job
+            job_log_path = os.path.join(self.get_job_data_path(), "worker.log")
+            job_log_file_handler = logging.FileHandler(job_log_path)
+            job_log_formatter = logging.Formatter(self.job_log_format)
+            job_log_file_handler.setFormatter(job_log_formatter)
+            job_log_file_handler.setLevel(logging.DEBUG)
+            logger.addHandler(job_log_file_handler)
+
+            # Log job acquisition summary
+            logger.info("")
+            logger.info(f"Job {self.current_job.id} acquired")
+            logger.info(f"Created: {self.current_job.created_date}")
+            logger.info(f"Started: {self.current_job.started_date}")
+            logger.info(f"Lease expires: {self.current_lease.lease_expire_at if self.current_lease else 'unknown'}")
+            logger.info(f"Engine: name={self.current_job.engine_name}, verison={self.current_job.engine_version}")
+            logger.info(f"Images: {len(self.current_job.images)}")
+            logger.info(f"Requirements: ALTO={self.current_job.alto_required}, "
+                        f"PAGE={self.current_job.page_required}, "
+                        f"Meta={self.current_job.meta_json_required}")
+            logger.info("")
+
             # Download engine files if needed
             try:
                 logger.debug(f"Checking engine files for job {self.current_job.id}...")
@@ -571,6 +583,11 @@ class DocWorkerWrapper(ABC):
             response = WorkerResponse.fail("An unexpected error occurred during processing", exception=e)
             self._report_error(response)
             return None
+        finally:
+            # Remove job-specific file handler from logger
+            if job_log_file_handler is not None:
+                logger.removeHandler(job_log_file_handler)
+                job_log_file_handler.close()
     
     def start(self) -> None:
         """
