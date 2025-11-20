@@ -30,6 +30,9 @@ class Connector:
     def patch(self, url, json=None):
         return self.session.patch(url, json=json)
 
+    def delete(self, url):
+        return self.session.delete(url)
+
     def _get_auth_header(self):
         return {'X-API-Key': self.api_key}
 

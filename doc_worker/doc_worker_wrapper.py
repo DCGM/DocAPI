@@ -430,8 +430,11 @@ class DocWorkerWrapper(ABC):
         job_log_file_handler = None
 
         try:
+            job_dir = self.get_job_data_path()
+            os.makedirs(job_dir, exist_ok=True)
+
             # add file handler to logger for this job
-            job_log_path = os.path.join(self.get_job_data_path(), "worker.log")
+            job_log_path = os.path.join(job_dir, "worker.log")
             job_log_file_handler = logging.FileHandler(job_log_path)
             job_log_formatter = logging.Formatter(self.job_log_format)
             job_log_file_handler.setFormatter(job_log_formatter)
