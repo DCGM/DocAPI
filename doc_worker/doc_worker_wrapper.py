@@ -107,10 +107,10 @@ class DocWorkerWrapper(ABC):
         self.current_lease: Optional[JobLease] = None
 
     @abstractmethod
-    def process_job(self, 
+    def process_job(self,
                     job: Job,
                     images_dir: str,
-                    results_dir: str,
+                    result_dir: str,
                     alto_dir: Optional[str] = None,
                     page_xml_dir: Optional[str] = None,
                     meta_file: Optional[str] = None,
@@ -123,7 +123,7 @@ class DocWorkerWrapper(ABC):
         Args:
             job: The job object containing job metadata
             images_dir: Directory path containing the downloaded images
-            results_dir: Directory path where processing results should be saved
+            result_dir: Directory path where processing results should be saved
             alto_dir: Optional directory path containing ALTO XML files
             page_xml_dir: Optional directory path containing PAGE XML files
             meta_file: Optional path to the meta.json file
@@ -348,7 +348,7 @@ class DocWorkerWrapper(ABC):
     
     def _zip_results(self, results_dir: str) -> WorkerResponse:
         """
-        Create a ZIP file containing all results from the results directory.
+        Create a ZIP file containing all results from the result directory.
         
         Args:
             results_dir: Directory containing the results to zip
@@ -360,7 +360,7 @@ class DocWorkerWrapper(ABC):
         if not job_dir:
             return WorkerResponse.fail("Failed to get job data path")
             
-        zip_path = os.path.join(job_dir, "results.zip")
+        zip_path = os.path.join(job_dir, "result.zip")
         
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for root, dirs, files in os.walk(results_dir):
@@ -376,7 +376,7 @@ class DocWorkerWrapper(ABC):
 
     def _upload_results(self) -> WorkerResponse:
         """
-        Upload the results ZIP file to the API.
+        Upload the result ZIP file to the API.
         
         Returns:
             WorkerResponse indicating success or failure
@@ -388,7 +388,7 @@ class DocWorkerWrapper(ABC):
         if not job_dir:
             return WorkerResponse.fail("Failed to get job data path")
             
-        zip_path = os.path.join(job_dir, "results.zip")
+        zip_path = os.path.join(job_dir, "result.zip")
             
         upload_response = self.adapter.post_result(zip_path)
         if upload_response.is_success:
@@ -463,7 +463,7 @@ class DocWorkerWrapper(ABC):
                 self._report_error(response)
                 return None
             
-            # Create results directory
+            # Create result directory
             try:
                 job_dir = self.get_job_data_path()
                 if not job_dir:
@@ -471,7 +471,7 @@ class DocWorkerWrapper(ABC):
                     self._report_error(response)
                     return None
                     
-                results_dir = os.path.join(job_dir, "results")
+                results_dir = os.path.join(job_dir, "result")
                 os.makedirs(results_dir, exist_ok=True)
             except Exception as e:
                 response = WorkerResponse.fail("Unable to create job workspace directory", exception=e)
@@ -492,7 +492,7 @@ class DocWorkerWrapper(ABC):
                 process_response = self.process_job(
                     job=self.current_job,
                     images_dir=images_dir,
-                    results_dir=results_dir,
+                    result_dir=results_dir,
                     alto_dir=alto_dir,
                     page_xml_dir=page_xml_dir,
                     meta_file=meta_file,
@@ -629,15 +629,15 @@ class DocWorkerWrapper(ABC):
     
     def get_results_data_path(self) -> Optional[str]:
         """
-        Get the path to the current job's results directory.
+        Get the path to the current job's result directory.
         
         Returns:
-            Path to results directory, or None if no current job
+            Path to result directory, or None if no current job
         """
         job_dir = self.get_job_data_path()
         if not job_dir:
             return None
-        return os.path.join(job_dir, "results")
+        return os.path.join(job_dir, "result")
     
     def update_job_progress(self, progress: Optional[float] = None, log: Optional[str] = None, log_user: Optional[str] = None) -> bool:
         """

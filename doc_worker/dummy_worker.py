@@ -25,10 +25,10 @@ class DummyWorker(DocWorkerWrapper):
     Useful for testing the worker pipeline and API integration.
     """
     
-    def process_job(self, 
+    def process_job(self,
                     job: Job,
                     images_dir: str,
-                    results_dir: str,
+                    result_dir: str,
                     alto_dir: Optional[str] = None,
                     page_xml_dir: Optional[str] = None,
                     meta_file: Optional[str] = None,
@@ -39,7 +39,7 @@ class DummyWorker(DocWorkerWrapper):
         Args:
             job: The job object containing job metadata
             images_dir: Directory path containing the downloaded images
-            results_dir: Directory path where processing results should be saved
+            result_dir: Directory path where processing results should be saved
             alto_dir: Optional directory path containing ALTO XML files
             page_xml_dir: Optional directory path containing PAGE XML files
             meta_file: Optional path to the meta.json file
@@ -53,30 +53,30 @@ class DummyWorker(DocWorkerWrapper):
             
             # Copy images
             if os.path.exists(images_dir):
-                dest_images = os.path.join(results_dir, "images")
+                dest_images = os.path.join(result_dir, "images")
                 shutil.copytree(images_dir, dest_images)
                 logger.debug(f"Copied images to {dest_images}")
             
             # Copy ALTO files if provided
             if alto_dir and os.path.exists(alto_dir):
-                dest_alto = os.path.join(results_dir, "alto")
+                dest_alto = os.path.join(result_dir, "alto")
                 shutil.copytree(alto_dir, dest_alto)
                 logger.debug(f"Copied ALTO files to {dest_alto}")
             
             # Copy PAGE files if provided
             if page_xml_dir and os.path.exists(page_xml_dir):
-                dest_page = os.path.join(results_dir, "page_xml")
+                dest_page = os.path.join(result_dir, "page_xml")
                 shutil.copytree(page_xml_dir, dest_page)
                 logger.debug(f"Copied PAGE files to {dest_page}")
             
             # Copy meta JSON if provided
             if meta_file and os.path.exists(meta_file):
-                dest_meta = os.path.join(results_dir, "meta.json")
+                dest_meta = os.path.join(result_dir, "meta.json")
                 shutil.copy2(meta_file, dest_meta)
                 logger.debug(f"Copied meta.json to {dest_meta}")
 
             if engine_dir and os.path.exists(engine_dir):
-                dest_engine = os.path.join(results_dir, "engine_files")
+                dest_engine = os.path.join(result_dir, "engine_files")
                 shutil.copytree(engine_dir, dest_engine)
                 logger.debug(f"Copied engine files to {dest_engine}")
 
