@@ -64,8 +64,7 @@ class DocWorkerWrapper(ABC):
                  engines_dir: Optional[str] = None,
                  polling_interval: float = 5.0,
                  cleanup_job_dir: bool = False,
-                 cleanup_old_engines: bool = False,
-                 job_log_format: str = '%(asctime)s : %(name)s : %(hostname)s : %(levelname)s : %(message)s'):
+                 cleanup_old_engines: bool = False):
         """
         Initialize the DocWorker.
         
@@ -83,8 +82,7 @@ class DocWorkerWrapper(ABC):
             cleanup_old_engines: If True, removes old engine versions when downloading new ones
         """
         self.adapter = Adapter(api_url, connector)
-        self.job_log_format = job_log_format
-        
+
         # Setup directory structure
         if base_dir:
             base_path = Path(base_dir)
@@ -111,6 +109,7 @@ class DocWorkerWrapper(ABC):
     @abstractmethod
     def process_job(self,
                     job: Job,
+                    job_log_file_handler: logging.FileHandler,
                     images_dir: str,
                     result_dir: str,
                     alto_dir: Optional[str] = None,
@@ -124,6 +123,7 @@ class DocWorkerWrapper(ABC):
         
         Args:
             job: The job object containing job metadata
+            job_log_file_handler: File handler for logging job processing into job-specific log file
             images_dir: Directory path containing the downloaded images
             result_dir: Directory path where processing results should be saved
             alto_dir: Optional directory path containing ALTO XML files
@@ -436,8 +436,18 @@ class DocWorkerWrapper(ABC):
             # add file handler to logger for this job
             job_log_path = os.path.join(job_dir, "worker.log")
             job_log_file_handler = logging.FileHandler(job_log_path)
-            job_log_formatter = logging.Formatter(self.job_log_format)
-            job_log_file_handler.setFormatter(job_log_formatter)
+            # inherit formatter from root logger (use first root handler that has a formatter)
+            root_logger = logging.getLogger()
+            root_formatter = None
+            for rh in root_logger.handlers:
+                if getattr(rh, "formatter", None):
+                    root_formatter = rh.formatter
+                    break
+            if root_formatter:
+                job_log_file_handler.setFormatter(root_formatter)
+            else:
+                # fallback to a reasonable default formatter if root has none
+                job_log_file_handler.setFormatter(logging.Formatter("%(asctime)s : %(levelname)s : %(name)s : %(message)s"))
             job_log_file_handler.setLevel(logging.DEBUG)
             logger.addHandler(job_log_file_handler)
 
@@ -486,8 +496,8 @@ class DocWorkerWrapper(ABC):
                     self._report_error(response)
                     return None
                     
-                results_dir = os.path.join(job_dir, "result")
-                os.makedirs(results_dir, exist_ok=True)
+                result_dir = os.path.join(job_dir, "result")
+                os.makedirs(result_dir, exist_ok=True)
             except Exception as e:
                 response = WorkerResponse.fail("Unable to create job workspace directory", exception=e)
                 self._report_error(response)
@@ -506,8 +516,9 @@ class DocWorkerWrapper(ABC):
                 
                 process_response = self.process_job(
                     job=self.current_job,
+                    job_log_file_handler=job_log_file_handler,
                     images_dir=images_dir,
-                    result_dir=results_dir,
+                    result_dir=result_dir,
                     alto_dir=alto_dir,
                     page_xml_dir=page_xml_dir,
                     meta_file=meta_file,
@@ -525,7 +536,7 @@ class DocWorkerWrapper(ABC):
             # Zip the results
             try:
                 logger.debug(f"Zipping results for job {self.current_job.id}...")
-                zip_response = self._zip_results(results_dir)
+                zip_response = self._zip_results(result_dir)
                 if not zip_response.success:
                     self._report_error(zip_response)
                     return None
