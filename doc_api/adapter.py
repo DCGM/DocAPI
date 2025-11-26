@@ -8,7 +8,7 @@ from typing import Any, TypeVar, Generic, Optional
 import cv2
 import numpy as np
 
-from doc_api.api.schemas.base_objects import Job, JobLease, ProcessingState
+from doc_api.api.schemas.base_objects import Engine, Job, JobLease, ProcessingState
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK
 
 from doc_api.connector import Connector
@@ -228,6 +228,24 @@ class Adapter:
             logger.debug(f"Engine files '{engine_id}' successfully downloaded.")
         else:
             logger.error(f"Downloading engine files '{engine_id}' failed. Response: {response.status_code} {response.text}")
+
+        return adapter_response
+
+    def get_engines(self, route="/v1/engines") -> AdapterResponse[list[Engine]]:
+        url = self.compose_url(route)
+        response = self.connector.get(url)
+
+        result = None
+        if response.status_code == HTTPStatus.OK:
+            response_model = DocAPIResponseOK.model_validate(response.json())
+            result = [Engine.model_validate(item) for item in response_model.data]
+
+        adapter_response = AdapterResponse[list[Engine]](data=result, status=response.status_code, response=response)
+
+        if adapter_response.is_success:
+            logger.debug("Engines successfully obtained.")
+        else:
+            logger.warning(f"Response: {response.status_code} {response.text}")
 
         return adapter_response
 
