@@ -60,7 +60,8 @@ class DocClientWrapper(ABC):
             alto_dir: Optional[str] = None,
             page_xml_dir: Optional[str] = None,
             meta_file: Optional[str] = None,
-            engine_name: Optional[str] = None) -> Optional[Job]:
+            engine_name: Optional[str] = None,
+            engine_settings: Optional[dict] = None) -> Optional[Job]:
         """
         Execute the complete client pipeline: create job, upload data, wait for results, download and process.
         
@@ -111,7 +112,8 @@ class DocClientWrapper(ABC):
                 engine_name=engine_name,
                 alto_required=alto_dir is not None,
                 page_required=page_xml_dir is not None,
-                meta_json_required=meta_file is not None
+                meta_json_required=meta_file is not None,
+                engine_settings=engine_settings
             )
             if not job:
                 logger.error("Failed to create job")
@@ -215,7 +217,8 @@ class DocClientWrapper(ABC):
                    engine_name: Optional[str] = None,
                    alto_required: bool = False,
                    page_required: bool = False,
-                   meta_json_required: bool = False) -> Optional[Job]:
+                   meta_json_required: bool = False,
+                   engine_settings: dict = None) -> Optional[Job]:
         """
         Create a new job on the API with a proper job definition.
         
@@ -245,6 +248,8 @@ class DocClientWrapper(ABC):
             job_definition["meta_json_required"] = True
         if engine_name:
             job_definition["engine_name"] = engine_name
+        if engine_settings:
+            job_definition["engine_settings"] = engine_settings
         
         response = self.adapter.post_job(job_definition, set_if_successful=True)
         if response.is_success and response.data:
@@ -384,15 +389,15 @@ class DocClientWrapper(ABC):
         zip_path = os.path.join(result_dir, "results.zip")
         with open(zip_path, 'wb') as f:
             f.write(response.data)
-        
+
         # Extract ZIP
         try:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(result_dir)
-            
+
             # Remove ZIP file after extraction
             os.remove(zip_path)
-            
+
             return True
         except Exception:
             logger.exception("Failed to extract results ZIP")
