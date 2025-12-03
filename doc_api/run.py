@@ -1,6 +1,5 @@
 
-if __name__ == "__main__":
-
+def main():
     from doc_api.config import config
     config.create_dirs()
 
@@ -22,7 +21,6 @@ if __name__ == "__main__":
         logger.warning("Skipping creating DB and alembic upgrade due to DB_FORCE=True. "
                        "Assuming the database exist and the schema is up to date.")
 
-
     logger.info(f"Running DocAPI on {config.APP_HOST}:{config.APP_PORT} (production={config.PRODUCTION})")
 
     uvicorn.run("api.main:app",
@@ -30,3 +28,7 @@ if __name__ == "__main__":
                 port=config.APP_PORT,
                 reload=not config.PRODUCTION,
                 log_config=config.LOGGING_CONFIG)
+
+
+if __name__ == "__main__":
+    exit(main())
