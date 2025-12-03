@@ -1,0 +1,54 @@
+[build-system]
+requires = [ "setuptools>=61" ]
+
+[project]
+name = "docapi"
+version = "0.0.1"
+description = "DocAPI"
+authors = [
+    {name = "Jan Kohút", email = "ikohut@fit.vut.cz"},
+    {name = "Martin Kišš", email = "ikiss@fit.vut.cz"},
+    {name = "Michal Hradiš", email = "ihradis@fit.vut.cz"}
+]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiofiles",
+    "alembic",
+    "asyncpg",
+    "defusedxml",
+    "fastapi",
+    "httpx",
+    "mailinglogger",
+    "natsort",
+    "numpy",
+    "opencv_python",
+    "opencv_python_headless",
+    "pydantic",
+    "pytest",
+    "pytest_asyncio",
+    "python-multipart",
+    "Requests",
+    "SQLAlchemy",
+    "starlette",
+    "uvicorn"
+]
+
+[project.urls]
+repository = "https://github.com/DCGM/DocAPI"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["*.*"]
+
+[tool.setuptools.package-dir]
+"doc_api" = "doc_api"
+"doc_client" = "doc_client"
+"doc_worker" = "doc_worker"
+
+[project.scripts]
+doc_api = "doc_api.run:main"
+doc_client = "doc_client.dummy_client:main"
