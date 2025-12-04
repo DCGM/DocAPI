@@ -3,7 +3,7 @@ requires = [ "setuptools>=61" ]
 
 [project]
 name = "docapi"
-version = "0.0.1"
+dynamic = ["version"]
 description = "DocAPI"
 authors = [
     {name = "Jan Kohút", email = "ikohut@fit.vut.cz"},
