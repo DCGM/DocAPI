@@ -51,4 +51,3 @@ include-package-data = true
 
 [project.scripts]
 doc_api = "doc_api.run:main"
-doc_client = "doc_client.dummy_client:main"
