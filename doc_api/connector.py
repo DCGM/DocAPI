@@ -18,8 +18,8 @@ class Connector:
 
         self._logger = logging.getLogger(__name__)
 
-    def get(self, url, params=None):
-        return self.session.get(url, params=params)
+    def get(self, url, params=None, stream=False):
+        return self.session.get(url, params=params, stream=stream)
 
     def post(self, url, data=None, json=None, files=None, params=None):
         return self.session.post(url, data=data, json=json, files=files, params=params)

@@ -231,6 +231,25 @@ class Adapter:
 
         return adapter_response
 
+    def get_engine_files_stream(self, engine_id, output_path, route="/v1/engines/{engine_id}/files") -> AdapterResponse[None]:
+        url = self.compose_url(route.format(engine_id=engine_id))
+        response = self.connector.get(url, stream=True)
+
+        logger.debug("Downloading using stream")
+
+        with open(output_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
+        if adapter_response.is_success:
+            logger.debug(f"Engine files '{engine_id}' stream successfully obtained.")
+        else:
+            logger.error(f"Obtaining engine files '{engine_id}' stream failed. Response: {response.status_code} {response.text}")
+
+        return adapter_response
+
     def get_engines(self, route="/v1/engines") -> AdapterResponse[list[Engine]]:
         url = self.compose_url(route)
         response = self.connector.get(url)

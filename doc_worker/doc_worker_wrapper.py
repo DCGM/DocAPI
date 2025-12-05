@@ -64,7 +64,8 @@ class DocWorkerWrapper(ABC):
                  engines_dir: Optional[str] = None,
                  polling_interval: float = 5.0,
                  cleanup_job_dir: bool = False,
-                 cleanup_old_engines: bool = False):
+                 cleanup_old_engines: bool = False,
+                 download_engine_using_stream: bool = False):
         """
         Initialize the DocWorker.
         
@@ -80,6 +81,8 @@ class DocWorkerWrapper(ABC):
             
             cleanup_job_dir: If True, removes job directory after successful processing
             cleanup_old_engines: If True, removes old engine versions when downloading new ones
+
+            download_engine_using_stream: If True, downloads engine files using streaming method
         """
         self.adapter = Adapter(api_url, connector)
 
@@ -105,6 +108,8 @@ class DocWorkerWrapper(ABC):
 
         self.current_job: Optional[Job] = None
         self.current_lease: Optional[JobLease] = None
+
+        self.download_engine_using_stream = download_engine_using_stream
 
     @abstractmethod
     def process_job(self,
@@ -228,20 +233,28 @@ class DocWorkerWrapper(ABC):
         # Clean up old engine versions if flag is enabled
         if self.cleanup_old_engines:
             self._cleanup_engine_versions(engine_id)
-        
-        # Download engine files
-        engine_response = self.adapter.get_engine_files(engine_id)
-        if not engine_response.is_success:
-            return WorkerResponse.fail("Failed to download engine files", engine_response)
-            
+
+        zip_path = os.path.join(engine_dir, "engine.zip")
+
         # Create engine directory
         os.makedirs(engine_dir, exist_ok=True)
-        
-        # Save and extract ZIP file
-        zip_path = os.path.join(engine_dir, "engine.zip")
-        with open(zip_path, 'wb') as f:
-            f.write(engine_response.data)
-            
+
+        if self.download_engine_using_stream:
+            engine_response = self.adapter.get_engine_files_stream(engine_id=engine_id, output_path=zip_path)
+
+            if not engine_response.is_success:
+                return WorkerResponse.fail("Failed to download engine files", engine_response)
+
+        else:
+            # Download engine files
+            engine_response = self.adapter.get_engine_files(engine_id)
+            if not engine_response.is_success:
+                return WorkerResponse.fail("Failed to download engine files", engine_response)
+
+            # Save and extract ZIP file
+            with open(zip_path, 'wb') as f:
+                f.write(engine_response.data)
+
         # Extract ZIP contents
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(engine_dir)
