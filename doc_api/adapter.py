@@ -79,7 +79,7 @@ class Adapter:
 
     def compose_url(self, *args):
         args = [str(arg).strip("/") for arg in args]
-        route = os.path.join(*args)
+        route = "/".join(args)
         return urljoin(self.api_url, route)
 
     def get_me(self, route="/v1/me") -> AdapterResponse[dict]:
