@@ -23,7 +23,7 @@ def main():
 
     logger.info(f"Running DocAPI on {config.APP_HOST}:{config.APP_PORT} (production={config.PRODUCTION})")
 
-    uvicorn.run("api.main:app",
+    uvicorn.run("doc_api.api.main:app",
                 host=config.APP_HOST,
                 port=config.APP_PORT,
                 reload=not config.PRODUCTION,
