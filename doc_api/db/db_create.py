@@ -55,6 +55,9 @@ async def create_database_if_does_not_exist():
                 logger.info(f"Database '{db_name}' created.")
             else:
                 logger.info(f"Database '{db_name}' exists.")
+    except:
+        logger.error(f"Error while connecting to the database server using '{root_url}' or when creating database '{db_name}'. Please check the database connection settings.")
+        raise
     finally:
         # Ensure everything is torn down before the loop ends
         await engine.dispose()
