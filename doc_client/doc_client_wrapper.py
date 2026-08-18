@@ -56,33 +56,36 @@ class DocClientWrapper(ABC):
     def run_job_pipeline(
             self,
             images_dir: str,
-            result_dir: str,
+            result_dir: Optional[str] = None,
             alto_dir: Optional[str] = None,
             page_xml_dir: Optional[str] = None,
             meta_file: Optional[str] = None,
             engine_name: Optional[str] = None,
             engine_settings: Optional[dict] = None) -> Optional[Job]:
         """
-        Execute the complete client pipeline: create job, upload data, wait for results, download and process.
-        
+        Execute the client pipeline: create job, upload data, then either wait for
+        results or return immediately.
+
         Args:
             images_dir: Directory containing images to process (required)
-            result_dir: Directory where results should be saved (required)
+            result_dir: Directory where results should be saved. If omitted, the job
+                is submitted and uploaded but not waited on or downloaded.
             alto_dir: Optional directory containing ALTO XML files
             page_xml_dir: Optional directory containing PAGE XML files
             meta_file: Optional path to meta.json file
             engine_name: Optional name of the engine to use for processing
-            
+
         Returns:
-            Job object if successfully processed, None if failed
+            Job object if successfully processed (or submitted), None if failed
         """
 
         if not os.path.isdir(images_dir):
             logger.error(f"Images directory does not exist: {images_dir}")
             return None
-        
-        os.makedirs(result_dir, exist_ok=True)
-        
+
+        if result_dir:
+            os.makedirs(result_dir, exist_ok=True)
+
         # Validate optional directories and files
         if alto_dir and not os.path.isdir(alto_dir):
             logger.error(f"ALTO directory does not exist: {alto_dir}")
@@ -139,7 +142,13 @@ class DocClientWrapper(ABC):
                 return None
             
             logger.debug("Job data uploaded successfully")
-            
+
+            if not result_dir:
+                logger.info(f"Job {job.id} submitted successfully")
+                job = self.current_job
+                self.current_job = None
+                return job
+
             # Wait for results
             logger.info("Waiting for job to complete...")
             completed_job = self._wait_for_results()
