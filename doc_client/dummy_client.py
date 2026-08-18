@@ -62,8 +62,8 @@ def main():
     )
     parser.add_argument(
         "--result-dir",
-        required=True,
-        help="Directory where results should be saved"
+        help="Directory where results should be saved. If omitted, the job is "
+             "submitted and uploaded but not waited on or downloaded."
     )
     parser.add_argument(
         "--alto-dir",
@@ -128,9 +128,12 @@ def main():
         logger.info(f"Meta file: {args.meta_file}")
     if args.engine_name:
         logger.info(f"Engine: {args.engine_name}")
-    logger.info(f"Results directory: {args.result_dir}")
+    if args.result_dir:
+        logger.info(f"Results directory: {args.result_dir}")
+    else:
+        logger.info("No result directory given: job will be submitted without waiting for completion")
 
-    
+
     # Run the job pipeline
     job = client.run_job_pipeline(
         images_dir=args.images_dir,
