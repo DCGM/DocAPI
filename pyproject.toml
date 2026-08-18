@@ -13,27 +13,54 @@ authors = [
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.10"
+# Everything a consumer reaches through the shared layer: doc_api.connector,
+# doc_api.adapter and doc_api.api.schemas. Installing doc-api on its own gives a
+# usable worker or client without pulling in the service stack.
+# Everything the shared layer imports: doc_api.connector, doc_api.adapter and
+# doc_api.api.schemas. Installing doc-api on its own gives a usable worker or
+# client without pulling in the service stack.
 dependencies = [
-    "aiofiles",
-    "alembic",
-    "asyncpg",
-    "defusedxml",
     "fastapi",
-    "greenlet",
-    "httpx",
-    "mailinglogger",
-    "natsort",
     "numpy",
     "opencv_python",
-    "opencv_python_headless",
     "pydantic",
-    "pytest",
-    "pytest_asyncio",
+    "Requests"
+]
+
+[project.optional-dependencies]
+# Running the API service itself. SQLAlchemy's postgresql_asyncpg extra covers
+# the asyncpg driver named in the DATABASE_URL and the greenlet its async engine
+# runs on; neither is imported directly, and greenlet is otherwise only
+# installed on some architectures. python-multipart is likewise never imported
+# -- FastAPI needs it to parse uploads.
+server = [
+    "aiofiles",
+    "alembic",
+    "defusedxml",
+    "mailinglogger",
+    "natsort",
     "python-multipart",
-    "Requests",
-    "SQLAlchemy",
+    "SQLAlchemy[postgresql_asyncpg]",
     "starlette",
     "uvicorn"
+]
+
+# doc_worker needs nothing beyond the base. Declared so that consumers can
+# depend on doc-api[worker] and keep working if that stops being true.
+worker = []
+
+client = [
+    "natsort"
+]
+
+dev = [
+    "httpx",
+    "pytest",
+    "pytest_asyncio"
+]
+
+all = [
+    "doc-api[server,worker,client,dev]"
 ]
 
 [project.urls]
