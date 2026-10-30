@@ -348,11 +348,18 @@ class Adapter:
 
         return adapter_response
 
-    def patch_job_finish(self, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+    def patch_job_finish(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route, job_id)
-        response = self.connector.patch(url, json={"state": ProcessingState.DONE.value})
+
+        data = {"state": ProcessingState.DONE.value}
+        if log is not None:
+            data["log"] = log
+        if log_user is not None:
+            data["log_user"] = log_user
+
+        response = self.connector.patch(url, json=data)
 
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
         

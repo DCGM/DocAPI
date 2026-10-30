@@ -111,3 +111,37 @@ def test_an_interrupted_job_is_released_not_finished(tmp_path):
         worker.run_job_pipeline()
     assert worker.finished == []
     worker.adapter.delete_job_lease.assert_called_once()
+
+
+class LoggingWorker(Worker):
+    def job_api_logs(self, job, response, job_dir, duration_s):
+        assert job.id == 'job-1' and os.path.isdir(job_dir) and duration_s >= 0
+        state = 'ok' if response.success else response.error_message
+        return f'log {state}', f'user log {state}'
+
+
+def test_a_finished_job_sends_its_logs_with_the_finish(tmp_path):
+    worker = LoggingWorker(tmp_path)
+
+    worker.run_job_pipeline()
+
+    worker.adapter.patch_job_finish.assert_called_once_with(log='log ok', log_user='user log ok')
+
+
+def test_a_failed_job_appends_its_logs_to_the_reported_error(tmp_path):
+    worker = LoggingWorker(tmp_path, process=lambda result_dir: WorkerResponse.fail('Processing failed'))
+
+    worker.run_job_pipeline()
+
+    worker.adapter.patch_job_fail.assert_called_once_with(
+        log='Processing failed for job job-1\n\nlog Processing failed',
+        log_user='Processing failed\n\nuser log Processing failed', job_id='job-1')
+    worker.adapter.patch_job_finish.assert_not_called()
+
+
+def test_failing_job_logs_leave_the_finish_without_them(tmp_path):
+    worker = Worker(tmp_path)
+    worker.job_api_logs = mock.Mock(side_effect=RuntimeError('logs'))
+
+    assert worker.run_job_pipeline().id == 'job-1'
+    worker.adapter.patch_job_finish.assert_called_once_with(log=None, log_user=None)

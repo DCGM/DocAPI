@@ -8,7 +8,7 @@ import glob
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from dataclasses import dataclass
 
 import cv2
@@ -20,6 +20,10 @@ from doc_api.tools.mail.mail_sender import MailSender
 
 
 logger = logging.getLogger(__name__)
+
+
+def _join(*parts: Optional[str]) -> str:
+    return "\n\n".join(part for part in parts if part)
 
 
 @dataclass
@@ -113,6 +117,8 @@ class DocWorkerWrapper(ABC):
         self.current_job: Optional[Job] = None
         self.current_lease: Optional[JobLease] = None
         self._job_failure: Optional[WorkerResponse] = None
+        self._job_started: Optional[float] = None
+        self._job_dir: Optional[str] = None
 
         self.download_engine_using_stream = download_engine_using_stream
 
@@ -161,6 +167,7 @@ class DocWorkerWrapper(ABC):
         self._job_failure = response
 
         user_msg = response.error_message
+        summary_log, summary_log_user = self._job_api_logs(response) if job_id else (None, None)
         
         if response.error_adapter_response:
             # Build technical log from AdapterResponse, starting with user message
@@ -180,7 +187,8 @@ class DocWorkerWrapper(ABC):
         
         # Report failure to API
         if job_id:
-            self.adapter.patch_job_fail(log=tech_log, log_user=user_msg, job_id=job_id)
+            self.adapter.patch_job_fail(log=_join(tech_log, summary_log), log_user=_join(user_msg, summary_log_user),
+                                        job_id=job_id)
     
     def request_job(self) -> Optional[WorkerResponse]:
         """
@@ -450,15 +458,15 @@ class DocWorkerWrapper(ABC):
             return None
 
         job = self.current_job
-        job_started = time.monotonic()
-        job_dir = None
+        job_started = self._job_started = time.monotonic()
+        job_dir = self._job_dir = None
         job_log_file_handler = None
         self._job_failure = None
         succeeded = False
         interrupted = False
 
         try:
-            job_dir = self.get_job_data_path()
+            job_dir = self._job_dir = self.get_job_data_path()
             os.makedirs(job_dir, exist_ok=True)
 
             # add file handler to logger for this job
@@ -588,7 +596,8 @@ class DocWorkerWrapper(ABC):
             # Finish the job
             try:
                 logger.debug(f"Finishing job {self.current_job.id}...")
-                finish_response = self.adapter.patch_job_finish()
+                log, log_user = self._job_api_logs(WorkerResponse.ok())
+                finish_response = self.adapter.patch_job_finish(log=log, log_user=log_user)
                 if not finish_response.is_success:
                     response = WorkerResponse.fail("Failed to mark job as finished", finish_response)
                     self._report_error(response)
@@ -656,6 +665,39 @@ class DocWorkerWrapper(ABC):
             duration_s: Seconds from leasing the job until now
             job_log_file_handler: File handler of the job-specific log, None if it was not created
         """
+
+    def job_api_logs(self,
+                     job: Job,
+                     response: WorkerResponse,
+                     job_dir: Optional[str],
+                     duration_s: float) -> Tuple[Optional[str], Optional[str]]:
+        """
+        The technical and the user log the API gets with the job when it is finished or failed.
+
+        Returns (None, None) by default; override it e.g. to send a summary of the job. A failed job's
+        logs are appended to the error the wrapper reports.
+
+        Args:
+            job: The job
+            response: WorkerResponse.ok() when the job is about to be marked finished, otherwise the
+                failure it is about to be reported with
+            job_dir: The job's data directory with its results, None if it was not created
+            duration_s: Seconds from leasing the job until now
+
+        Returns:
+            (log, log_user), either of which may be None
+        """
+        return None, None
+
+    def _job_api_logs(self, response: WorkerResponse) -> Tuple[Optional[str], Optional[str]]:
+        if self.current_job is None or self._job_started is None:
+            return None, None
+        try:
+            return self.job_api_logs(self.current_job, response, self._job_dir,
+                                     time.monotonic() - self._job_started)
+        except Exception:
+            logger.exception("job_api_logs failed")
+            return None, None
 
     def _job_finished(self, *args) -> None:
         try:
