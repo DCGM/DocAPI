@@ -16,7 +16,7 @@ import cv2
 from doc_api.adapter import Adapter, AdapterResponse
 from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
-from doc_api.tools.mail.mail_logger import MailLogger
+from doc_api.tools.mail.mail_sender import MailSender
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class DocWorkerWrapper(ABC):
                  cleanup_job_dir: bool = False,
                  cleanup_old_engines: bool = False,
                  download_engine_using_stream: bool = False,
-                 mail_logger: Optional[MailLogger] = None):
+                 mail_sender: Optional[MailSender] = None):
         """
         Initialize the DocWorker.
         
@@ -86,7 +86,7 @@ class DocWorkerWrapper(ABC):
 
             download_engine_using_stream: If True, downloads engine files using streaming method
 
-            mail_logger: Optional mail logger that send_mail() sends emails with
+            mail_sender: Optional mail sender that send_mail() sends emails with
         """
         self.adapter = Adapter(api_url, connector)
 
@@ -115,7 +115,7 @@ class DocWorkerWrapper(ABC):
 
         self.download_engine_using_stream = download_engine_using_stream
 
-        self.mail_logger = mail_logger
+        self.mail_sender = mail_sender
 
     @abstractmethod
     def process_job(self,
@@ -752,19 +752,19 @@ class DocWorkerWrapper(ABC):
             logger.error(f"Failed to release lease. Status: {release_response.status}, Code: {release_response.code}")
             return False
 
-    def send_mail(self, subject: str, message: str, receiver_mails: Optional[List[str]] = None) -> bool:
+    def send_mail(self, subject: str, body: str, receiver_mails: Optional[List[str]] = None) -> bool:
         """
-        Send an email with the worker's mail logger.
+        Send an email with the worker's mail sender, logging it with its sender and receivers.
 
         Args:
             subject: Subject of the email
-            message: Plain text body of the email
-            receiver_mails: Receivers of the email, the mail logger's receivers by default
+            body: Plain text body of the email
+            receiver_mails: Receivers of the email, the mail sender's receivers by default
 
         Returns:
-            True if the email was sent; False if it was not, also when no mail logger is configured
+            True if the email was sent; False if it was not, also when no mail sender is configured
         """
-        if self.mail_logger is None:
-            logger.warning(f"Not sending email {subject!r}: the worker has no mail logger")
+        if self.mail_sender is None:
+            logger.warning(f"Not sending email {subject!r}: the worker has no mail sender")
             return False
-        return self.mail_logger.send(subject, message, receiver_mails)
+        return self.mail_sender.send(subject, body, receiver_mails)
