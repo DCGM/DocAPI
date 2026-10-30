@@ -112,6 +112,7 @@ class DocWorkerWrapper(ABC):
 
         self.current_job: Optional[Job] = None
         self.current_lease: Optional[JobLease] = None
+        self._job_failure: Optional[WorkerResponse] = None
 
         self.download_engine_using_stream = download_engine_using_stream
 
@@ -156,7 +157,9 @@ class DocWorkerWrapper(ABC):
             job_id: Optional job ID to report the error for (uses current_job.id if not provided)
         """
         job_id = job_id or (self.current_job.id if self.current_job else None)
-        
+        # what on_job_finished is told the job failed with
+        self._job_failure = response
+
         user_msg = response.error_message
         
         if response.error_adapter_response:
@@ -446,7 +449,13 @@ class DocWorkerWrapper(ABC):
             logger.error("Job request succeeded but no current job set")
             return None
 
+        job = self.current_job
+        job_started = time.monotonic()
+        job_dir = None
         job_log_file_handler = None
+        self._job_failure = None
+        succeeded = False
+        interrupted = False
 
         try:
             job_dir = self.get_job_data_path()
@@ -589,15 +598,7 @@ class DocWorkerWrapper(ABC):
                 self._report_error(response)
                 return None
             
-            if self.cleanup_job_dir:
-                try:
-                    job_dir_to_remove = self.get_job_data_path()
-                    if job_dir_to_remove and os.path.exists(job_dir_to_remove):
-                        shutil.rmtree(job_dir_to_remove)
-                        logger.debug(f"Cleaned up job directory: {job_dir_to_remove}")
-                except Exception:
-                    logger.exception("Failed to clean up job directory")
-                
+            succeeded = True
             logger.info(f"Job {self.current_job.id} processed successfully")
 
             job = self.current_job
@@ -610,6 +611,7 @@ class DocWorkerWrapper(ABC):
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully by releasing the lease instead of failing the job
             logger.info("Pipeline interrupted by user, releasing job lease...")
+            interrupted = True
             self.release_lease()
             raise
         except Exception as e:
@@ -617,11 +619,50 @@ class DocWorkerWrapper(ABC):
             self._report_error(response)
             return None
         finally:
+            if not interrupted:
+                response = WorkerResponse.ok() if succeeded else (
+                    self._job_failure or WorkerResponse.fail("Job failed for an unknown reason"))
+                self._job_finished(job, response, job_dir, time.monotonic() - job_started, job_log_file_handler)
+            # The job directory outlives on_job_finished, which may read the results.
+            if succeeded and self.cleanup_job_dir:
+                try:
+                    if job_dir and os.path.exists(job_dir):
+                        shutil.rmtree(job_dir)
+                        logger.debug(f"Cleaned up job directory: {job_dir}")
+                except Exception:
+                    logger.exception("Failed to clean up job directory")
             # Remove job-specific file handler from logger
             if job_log_file_handler is not None:
                 logger.removeHandler(job_log_file_handler)
                 job_log_file_handler.close()
     
+    def on_job_finished(self,
+                        job: Job,
+                        response: WorkerResponse,
+                        job_dir: Optional[str],
+                        duration_s: float,
+                        job_log_file_handler: Optional[logging.FileHandler]) -> None:
+        """
+        Called once for every leased job when it is done, whether it succeeded or failed at any step.
+
+        Does nothing by default; override it e.g. to log or email a summary of the job. It is called
+        before the job directory is cleaned up and before the job log file handler is closed.
+
+        Args:
+            job: The job
+            response: WorkerResponse.ok() if the job was processed, uploaded and finished,
+                otherwise the failure it was reported with, carrying the exception if there was one
+            job_dir: The job's data directory with its results, None if it was not created
+            duration_s: Seconds from leasing the job until now
+            job_log_file_handler: File handler of the job-specific log, None if it was not created
+        """
+
+    def _job_finished(self, *args) -> None:
+        try:
+            self.on_job_finished(*args)
+        except Exception:
+            logger.exception("on_job_finished failed")
+
     def start(self) -> None:
         """
         Start the worker loop that continuously polls for and processes jobs.
