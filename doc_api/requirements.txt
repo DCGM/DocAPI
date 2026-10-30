@@ -3,7 +3,6 @@ alembic==1.16.5
 asyncpg==0.30.0
 fastapi==0.117.1
 greenlet>=3.0
-mailinglogger==6.0.0
 opencv-python-headless==4.12.0.88
 python-multipart==0.0.20
 starlette

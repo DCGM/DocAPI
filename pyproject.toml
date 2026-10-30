@@ -13,12 +13,9 @@ authors = [
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.10"
-# Everything a consumer reaches through the shared layer: doc_api.connector,
-# doc_api.adapter and doc_api.api.schemas. Installing doc-api on its own gives a
-# usable worker or client without pulling in the service stack.
-# Everything the shared layer imports: doc_api.connector, doc_api.adapter and
-# doc_api.api.schemas. Installing doc-api on its own gives a usable worker or
-# client without pulling in the service stack.
+# Everything the shared layer imports: doc_api.connector, doc_api.adapter,
+# doc_api.api.schemas and doc_api.tools.mail. Installing doc-api on its own gives
+# a usable worker or client without pulling in the service stack.
 dependencies = [
     "fastapi",
     "numpy",
@@ -37,7 +34,6 @@ server = [
     "aiofiles",
     "alembic",
     "defusedxml",
-    "mailinglogger",
     "natsort",
     "python-multipart",
     "SQLAlchemy[postgresql_asyncpg]",
