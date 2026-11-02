@@ -284,9 +284,9 @@ PATCH_JOB_RESPONSES = {
     # worker finishing job
     AppCode.API_KEY_WORKER_FORBIDDEN: {
         "status": fastapi.status.HTTP_403_FORBIDDEN,
-        "description": "Worker can only mark job as done or error, and update progress.",
+        "description": "Worker can only mark job as done, error, or failed, and update progress.",
         "model": DocAPIResponseClientError,
-        "detail": "Worker can only mark job as done or error, and update progress.",
+        "detail": "Worker can only mark job as done, error, or failed, and update progress.",
     },
     AppCode.JOB_UNFINISHABLE: {
         "status": fastapi.status.HTTP_409_CONFLICT,
@@ -313,6 +313,18 @@ PATCH_JOB_RESPONSES = {
         "model": DocAPIResponseOK,
         "detail": "Job has been marked as error.",
     },
+    AppCode.JOB_MARKED_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job has been marked as failed and will not be retried.",
+        "model": DocAPIResponseOK,
+        "detail": "Job has been marked as failed and will not be retried.",
+    },
+    AppCode.JOB_ALREADY_MARKED_FAILED: {
+        "status": fastapi.status.HTTP_200_OK,
+        "description": "Job was already marked as failed.",
+        "model": DocAPIResponseOK,
+        "detail": "Job was already marked as failed.",
+    },
     AppCode.JOB_ALREADY_COMPLETED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job was already marked as done.",
@@ -333,7 +345,8 @@ PATCH_JOB_RESPONSES = {
     tags=["User"],
     openapi_extra={"x-order": 104},
     description="Update the status of a specific job. "
-                "Users can cancel jobs, while workers can mark jobs as done or error, and update progress.",
+                "Users can cancel jobs, while workers can mark jobs as done, error, or failed, and update progress. "
+                "An error may be retried; a failed job will not be retried.",
     responses=make_responses(PATCH_JOB_RESPONSES))
 @challenge_job_exists
 @challenge_user_access_to_job
@@ -366,8 +379,9 @@ async def patch_job(
                     },
                 },
                 "worker_error": {
-                    "summary": "Worker finalizes job as error",
-                    "description": "Worker marks job as error. If given, logs are appended to existing logs."
+                    "summary": "Worker reports a retryable error",
+                    "description": "Worker marks job as error. The job may be retried until the attempt limit is reached. "
+                                   "If given, logs are appended to existing logs."
                                    f"\n\n`state: {base_objects.ProcessingState.ERROR}` must be provided, other fields are optional."
                                    f"\n\nJob must be in one of the following "
                                    f"`state: {base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.ERROR}`.",
@@ -376,6 +390,17 @@ async def patch_job(
                         "progress": 0.7,
                         "log": "Processed 700/1000. Encountered an error.",
                         "log_user": "Processing page 700 of 1000. Encountered an error.",
+                    },
+                },
+                "worker_failed": {
+                    "summary": "Worker permanently fails job",
+                    "description": "Worker marks job as failed without further retries. "
+                                   "Progress is set to 1.0 and provided logs are appended. "
+                                   "Job must be processing, error, or already failed.",
+                    "value": {
+                        "state": base_objects.ProcessingState.FAILED.value,
+                        "log": "Unsupported input. Retrying will not resolve the problem.",
+                        "log_user": "Processing failed because the input is unsupported.",
                     },
                 },
                 "worker_progress": {
@@ -427,6 +452,7 @@ async def patch_job(
         if job_progress_update.state not in {
             base_objects.ProcessingState.DONE,
             base_objects.ProcessingState.ERROR,
+            base_objects.ProcessingState.FAILED,
             None
         }:
             raise DocAPIClientErrorException(
@@ -442,6 +468,15 @@ async def patch_job(
                 code=AppCode.JOB_UNFINISHABLE,
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_UNFINISHABLE]["detail"],
                 details={"state": f"{db_job.state.value}"}
+            )
+
+        if job_progress_update.state == base_objects.ProcessingState.FAILED and \
+                db_job.state not in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.ERROR, base_objects.ProcessingState.FAILED}:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_409_CONFLICT,
+                code=AppCode.JOB_UNFINISHABLE,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UNFINISHABLE]["detail"],
+                details={"state": db_job.state.value},
             )
 
         if job_progress_update.state == base_objects.ProcessingState.DONE:
@@ -506,6 +541,21 @@ async def patch_job(
                     status=fastapi.status.HTTP_200_OK,
                     code=AppCode.JOB_ALREADY_MARKED_ERROR,
                     detail=PATCH_JOB_RESPONSES[AppCode.JOB_ALREADY_MARKED_ERROR]["detail"]
+                )
+
+        elif job_progress_update.state == base_objects.ProcessingState.FAILED:
+            if code_update_job in {AppCode.JOB_MARKED_FAILED, AppCode.JOB_ALREADY_MARKED_FAILED}:
+                return DocAPIResponseOK[NoneType](
+                    status=status.HTTP_200_OK,
+                    code=code_update_job,
+                    detail=PATCH_JOB_RESPONSES[code_update_job]["detail"],
+                )
+            if code_update_job == AppCode.JOB_UNFINISHABLE:
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_409_CONFLICT,
+                    code=code_update_job,
+                    detail=PATCH_JOB_RESPONSES[code_update_job]["detail"],
+                    details={"state": db_job.state.value},
                 )
 
         elif job_progress_update.state is None:

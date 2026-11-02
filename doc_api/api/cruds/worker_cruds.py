@@ -204,6 +204,18 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
                 db_job.last_change = finished_date
                 update_logs = True
 
+            elif job_progress_update.state == base_objects.ProcessingState.FAILED:
+                if db_job.state == base_objects.ProcessingState.FAILED:
+                    return db_job, None, None, AppCode.JOB_ALREADY_MARKED_FAILED
+                if db_job.state not in {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.ERROR}:
+                    return db_job, None, None, AppCode.JOB_UNFINISHABLE
+                db_job.state = base_objects.ProcessingState.FAILED
+                db_job.progress = 1.0
+                finished_date = datetime.now(timezone.utc)
+                db_job.finished_date = finished_date
+                db_job.last_change = finished_date
+                update_logs = True
+
             if update_logs:
                 if job_progress_update.log:
                     if db_job.log:
@@ -227,6 +239,8 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_up
                 return db_job, None, None, AppCode.JOB_COMPLETED
             elif job_progress_update.state == base_objects.ProcessingState.ERROR:
                 return db_job, None, None, AppCode.JOB_MARKED_ERROR
+            elif job_progress_update.state == base_objects.ProcessingState.FAILED:
+                return db_job, None, None, AppCode.JOB_MARKED_FAILED
 
             raise DBError("Unhandled job progress update state.")
 
