@@ -73,6 +73,14 @@ class Config:
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
 
+        # Image names in job definitions: an allowlist takes precedence over requiring any extension.
+        self.REQUIRE_IMAGE_EXTENSION = self._env_bool("REQUIRE_IMAGE_EXTENSION", False)
+        self.ALLOWED_IMAGE_EXTENSIONS = {
+            "." + extension.strip().lstrip(".").lower()
+            for extension in os.getenv("ALLOWED_IMAGE_EXTENSIONS", "").split(",")
+            if extension.strip()
+        }
+
         # validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
         ################################################################################################################
         # Per-check toggles for ALTO & PAGE XML validation (all default to False)
