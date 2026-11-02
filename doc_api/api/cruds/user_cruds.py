@@ -1,9 +1,11 @@
 import logging
+import os.path
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,16 +13,37 @@ from doc_api.api.database import DBError
 from doc_api.api.schemas.responses import AppCode
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
+from doc_api.config import config
 
 
 logger = logging.getLogger(__name__)
 
 
 class ImageForJobDefinition(BaseModel):
-    name: str
+    name: str = Field(description="Image filename. The server may require an extension or restrict allowed extensions.")
     order: int
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def validate_extension(cls, name: str) -> str:
+        if not config.ALLOWED_IMAGE_EXTENSIONS and not config.REQUIRE_IMAGE_EXTENSION:
+            return name
+        _, extension = os.path.splitext(name.strip())
+        if config.ALLOWED_IMAGE_EXTENSIONS:
+            if extension.lower() not in config.ALLOWED_IMAGE_EXTENSIONS:
+                raise PydanticCustomError(
+                    "image_extension_not_allowed",
+                    "Image name must use one of these extensions: {extensions}.",
+                    {"extensions": ", ".join(sorted(config.ALLOWED_IMAGE_EXTENSIONS))},
+                )
+        elif not extension or extension == ".":
+            raise PydanticCustomError(
+                "image_extension_required",
+                "Image name must include a filename extension (e.g. page.jpg).",
+            )
+        return name
 
 
 class JobDefinition(BaseModel):
