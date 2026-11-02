@@ -72,6 +72,10 @@ class Config:
         self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
+        self.DELETE_JOB_INPUTS_ON_COMPLETION = self._env_bool("DELETE_JOB_INPUTS_ON_COMPLETION", False)
+        self.CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "60"))
+        if self.CLEANUP_INTERVAL_SECONDS <= 0:
+            raise ValueError("CLEANUP_INTERVAL_SECONDS must be a positive integer")
 
         # Image names in job definitions: an allowlist takes precedence over requiring any extension.
         self.REQUIRE_IMAGE_EXTENSION = self._env_bool("REQUIRE_IMAGE_EXTENSION", False)
