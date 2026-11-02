@@ -386,11 +386,12 @@ class Adapter:
         return adapter_response
 
     def patch_job_fail(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+        """Mark the job as permanently failed, without further retries."""
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route, job_id)
         
-        data = {"state": ProcessingState.ERROR.value}
+        data = {"state": ProcessingState.FAILED.value}
         if log is not None:
             data["log"] = log
         if log_user is not None:
@@ -404,6 +405,27 @@ class Adapter:
             logger.debug(f"Job '{job_id}' successfully marked as failed.")
         else:
             logger.error(f"Marking job '{job_id}' as failed failed. Response: {response.status_code} {response.text}")
+
+        return adapter_response
+
+    def patch_job_error(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+        """Mark the job as error, allowing retries up to the server's attempt limit."""
+        job_id = self.get_job_id(job_id)
+        url = self.compose_url(route, job_id)
+
+        data = {"state": ProcessingState.ERROR.value}
+        if log is not None:
+            data["log"] = log
+        if log_user is not None:
+            data["log_user"] = log_user
+
+        response = self.connector.patch(url, json=data)
+        adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
+
+        if adapter_response.is_success:
+            logger.debug(f"Job '{job_id}' successfully marked as error.")
+        else:
+            logger.error(f"Marking job '{job_id}' as error failed. Response: {response.status_code} {response.text}")
 
         return adapter_response
 
