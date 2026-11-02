@@ -1,6 +1,7 @@
+import asyncio
 import logging.config
 import traceback
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Optional, List, Set
 
 import fastapi
@@ -21,6 +22,7 @@ from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSE
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
+from doc_api.api.cleanup import run_input_cleanup
 from doc_api.api.routes import admin_router, debug_router, root_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
@@ -192,9 +194,17 @@ async def lifespan(app: FastAPI):
             await db.commit()
 
 
-    yield
-
-    logger.info("Application shutdown complete.")
+    cleanup_task = None
+    if config.DELETE_JOB_INPUTS_ON_COMPLETION:
+        cleanup_task = asyncio.create_task(run_input_cleanup())
+    try:
+        yield
+    finally:
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
+        logger.info("Application shutdown complete.")
 
 
 app = FastAPI(openapi_tags=tags_metadata,
