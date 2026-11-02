@@ -87,6 +87,7 @@ GET_ENGINES_RESPONSES = {
 @root_router.get(
     "/v1/engines",
     summary="Get Engines",
+    include_in_schema=config.SHOW_GET_ENGINES,
     response_model=DocAPIResponseOK[List[base_objects.Engine]],
     tags=["User"],
     openapi_extra={"x-order": 100},

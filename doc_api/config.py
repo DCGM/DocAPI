@@ -173,6 +173,7 @@ class Config:
         ################################################################################################################
         self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, Admin").split(',')])
 
+        self.SHOW_GET_ENGINES = self._env_bool("SHOW_GET_ENGINES", True)
         self.SHOW_PUT_IMAGE = self._env_bool("SHOW_PUT_IMAGE", True)
         self.SHOW_PUT_ALTO = self._env_bool("SHOW_PUT_ALTO", True)
         self.SHOW_PUT_PAGE = self._env_bool("SHOW_PUT_PAGE", True)
