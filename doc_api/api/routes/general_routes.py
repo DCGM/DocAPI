@@ -227,7 +227,6 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
     job = base_objects.JobProper.model_validate(db_job).model_dump()
     job["result_available"] = (await result_availability([db_job]))[db_job.id]
     if key.role != base_objects.KeyRole.ADMIN:
-        job.pop("inputs_deleted_at", None)
         job.pop("artifacts_deleted_at", None)
     images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
 

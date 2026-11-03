@@ -239,7 +239,6 @@ async def get_jobs(
         job = base_objects.JobProper.model_validate(db_job).model_dump()
         job["result_available"] = availability[db_job.id]
         if key.role != base_objects.KeyRole.ADMIN:
-            job.pop("inputs_deleted_at", None)
             job.pop("artifacts_deleted_at", None)
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
             job.pop("log", None)

@@ -91,7 +91,7 @@ async def test_job_availability_and_deletion_visibility(failure_api, output_stor
     deleted = jobs[str(deleted_id)]
     assert deleted["state"] == "done"
     assert deleted["results_deleted_at"] is not None
-    assert "inputs_deleted_at" not in deleted
+    assert deleted["inputs_deleted_at"] is not None
     assert "artifacts_deleted_at" not in deleted
     # Missing legacy files are unavailable even without a result-deletion timestamp.
     assert "results_deleted_at" not in jobs[str(missing_id)]
@@ -101,7 +101,7 @@ async def test_job_availability_and_deletion_visibility(failure_api, output_stor
     job = response.json()["data"]
     assert job["result_available"] is False
     assert job["results_deleted_at"] is not None
-    assert "inputs_deleted_at" not in job
+    assert job["inputs_deleted_at"] is not None
     assert "artifacts_deleted_at" not in job
 
     api.identity.key = SimpleNamespace(id=api.owner.id, role=KeyRole.ADMIN)
