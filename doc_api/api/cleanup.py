@@ -67,13 +67,18 @@ async def _delete_job_data(db, target, directory, cutoff=None):
 
 async def delete_completed_job_inputs(db: AsyncSession):
     if config.DELETE_JOB_INPUTS_ON_COMPLETION:
-        await _delete_job_data(db, "inputs", config.JOBS_DIR)
+        cutoff = None
+        if config.INPUT_RETENTION_SECONDS > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.INPUT_RETENTION_SECONDS)
+        await _delete_job_data(db, "inputs", config.JOBS_DIR, cutoff)
 
 
 async def delete_expired_job_outputs(db: AsyncSession):
     if not config.DELETE_JOB_OUTPUTS:
         return
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.OUTPUT_RETENTION_SECONDS)
+    cutoff = None
+    if config.OUTPUT_RETENTION_SECONDS > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.OUTPUT_RETENTION_SECONDS)
     directories = {"results": config.RESULTS_DIR, "artifacts": config.ARTIFACTS_DIR}
     for target in sorted(config.OUTPUT_CLEANUP_TARGETS):
         await _delete_job_data(db, target, directories[target], cutoff)

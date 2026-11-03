@@ -1,5 +1,7 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -20,6 +22,7 @@ def input_storage(monkeypatch, tmp_path):
         path.mkdir()
         monkeypatch.setattr(config, setting, str(path))
     monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", True)
+    monkeypatch.setattr(config, "INPUT_RETENTION_SECONDS", 0)
     monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", False)
     return tmp_path
 
@@ -126,6 +129,46 @@ def test_input_cleanup_disabled_by_default(monkeypatch):
 def test_image_record_cleanup_disabled_by_default(monkeypatch):
     monkeypatch.delenv("DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", raising=False)
     assert Config().DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS is False
+
+
+@pytest.mark.parametrize("value,expected", [(None, 0), ("0", 0), ("3600", 3600)])
+def test_input_retention_configuration(monkeypatch, value, expected):
+    monkeypatch.delenv("INPUT_RETENTION_SECONDS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("INPUT_RETENTION_SECONDS", value)
+    assert Config().INPUT_RETENTION_SECONDS == expected
+
+
+@pytest.mark.parametrize("value", ["-1", "bad", "0.5"])
+def test_invalid_input_retention(monkeypatch, value):
+    monkeypatch.setenv("INPUT_RETENTION_SECONDS", value)
+    with pytest.raises(ValueError):
+        Config()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [ProcessingState.DONE, ProcessingState.FAILED])
+@pytest.mark.parametrize("age,expired", [(599, False), (600, True), (601, True), (None, False)])
+async def test_input_retention(failure_api, input_storage, monkeypatch, state, age, expired):
+    api = failure_api
+    now = datetime(2026, 11, 3, tzinfo=timezone.utc)
+    monkeypatch.setattr(cleanup, "datetime", SimpleNamespace(now=lambda tz: now))
+    monkeypatch.setattr(config, "INPUT_RETENTION_SECONDS", 600)
+    monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", True)
+    job_id = await create_job(api, state)
+    async with api.sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.finished_date = None if age is None else now - timedelta(seconds=age)
+        db.add(model.Image(job_id=job_id, name="page.jpg", order=0))
+    path = write_inputs(job_id)
+    async with api.sessions() as db:
+        await cleanup.delete_completed_job_inputs(db)
+    assert path.exists() is (not expired)
+    async with api.sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.inputs_deleted_at == (now if expired else None)
+        image_id = await db.scalar(select(model.Image.id).where(model.Image.job_id == job_id))
+        assert (image_id is None) is expired
 
 
 @pytest.mark.asyncio

@@ -73,11 +73,14 @@ class Config:
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
         self.DELETE_JOB_INPUTS_ON_COMPLETION = self._env_bool("DELETE_JOB_INPUTS_ON_COMPLETION", False)
+        self.INPUT_RETENTION_SECONDS = int(os.getenv("INPUT_RETENTION_SECONDS", "0"))
+        if self.INPUT_RETENTION_SECONDS < 0:
+            raise ValueError("INPUT_RETENTION_SECONDS must be a nonnegative integer")
         self.DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS = self._env_bool("DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", False)
         self.DELETE_JOB_OUTPUTS = self._env_bool("DELETE_JOB_OUTPUTS", False)
         self.OUTPUT_RETENTION_SECONDS = int(os.getenv("OUTPUT_RETENTION_SECONDS", "604800"))
-        if self.OUTPUT_RETENTION_SECONDS <= 0:
-            raise ValueError("OUTPUT_RETENTION_SECONDS must be a positive integer")
+        if self.OUTPUT_RETENTION_SECONDS < 0:
+            raise ValueError("OUTPUT_RETENTION_SECONDS must be a nonnegative integer")
         self.OUTPUT_CLEANUP_TARGETS = {
             target.strip().lower()
             for target in os.getenv("OUTPUT_CLEANUP_TARGETS", "results,artifacts").split(",")

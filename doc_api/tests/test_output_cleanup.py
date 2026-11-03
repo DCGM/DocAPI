@@ -183,7 +183,7 @@ def test_output_target_configuration(monkeypatch, value, expected):
 
 
 @pytest.mark.parametrize("setting,value", [
-    ("OUTPUT_RETENTION_SECONDS", "0"), ("OUTPUT_RETENTION_SECONDS", "-1"),
+    ("OUTPUT_RETENTION_SECONDS", "-1"),
     ("OUTPUT_RETENTION_SECONDS", "bad"), ("OUTPUT_CLEANUP_TARGETS", ""),
     ("OUTPUT_CLEANUP_TARGETS", "results,engines"),
 ])
@@ -191,3 +191,27 @@ def test_invalid_output_configuration(monkeypatch, setting, value):
     monkeypatch.setenv(setting, value)
     with pytest.raises(ValueError):
         Config()
+
+
+def test_zero_output_retention_configuration(monkeypatch):
+    monkeypatch.setenv("OUTPUT_RETENTION_SECONDS", "0")
+    assert Config().OUTPUT_RETENTION_SECONDS == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,future_finish", [
+    *[(state, False) for state in ProcessingState],
+    (ProcessingState.DONE, True), (ProcessingState.FAILED, True),
+])
+async def test_immediate_output_cleanup_skips_time_check(failure_api, output_storage, monkeypatch, state, future_finish):
+    monkeypatch.setattr(config, "OUTPUT_RETENTION_SECONDS", 0)
+    finished = output_storage + timedelta(hours=1) if future_finish else None
+    job_id, outputs = await outputs_for_job(failure_api, state, finished)
+    async with failure_api.sessions() as db:
+        await cleanup.delete_expired_job_outputs(db)
+    deleted = state in {ProcessingState.DONE, ProcessingState.FAILED}
+    assert all(path.exists() is (not deleted) for path in outputs.values())
+    async with failure_api.sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.results_deleted_at == (output_storage if deleted else None)
+        assert job.artifacts_deleted_at == (output_storage if deleted else None)
