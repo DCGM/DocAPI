@@ -273,7 +273,6 @@ class Config:
         self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
         self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
 
-        self.TEST_HTTP_TIMEOUT = os.getenv("TEST_HTTP_TIMEOUT", "30")
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)

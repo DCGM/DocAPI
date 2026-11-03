@@ -8,7 +8,7 @@ import pytest
 
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
-from doc_api.tests.conftest import _put_file, _ename
+from doc_api.tests.helpers import _put_file, _ename
 from doc_api.tests.dummy_data import JOB_DEFINITION_PAYLOADS, VALID_ALTO_XML, VALID_PAGE_XML, make_white_image_bytes, \
     VALID_ZIP, job_definition_payload_id
 

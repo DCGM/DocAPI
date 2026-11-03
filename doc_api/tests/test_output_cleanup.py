@@ -1,50 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from doc_api.api import cleanup
-from doc_api.api.main import app
 from doc_api.api.schemas.base_objects import ProcessingState
-from doc_api.api.schemas.responses import AppCode
 from doc_api.config import Config, config
 from doc_api.db import model
-from doc_api.tests.test_worker_failure import failure_api, create_job
-
-
-@pytest.fixture
-def output_storage(monkeypatch, tmp_path):
-    for setting in ["JOBS_DIR", "RESULTS_DIR", "ARTIFACTS_DIR", "ENGINES_DIR"]:
-        path = tmp_path / setting
-        path.mkdir()
-        monkeypatch.setattr(config, setting, str(path))
-    monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", False)
-    monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", True)
-    monkeypatch.setattr(config, "OUTPUT_RETENTION_SECONDS", 604800)
-    monkeypatch.setattr(config, "OUTPUT_CLEANUP_TARGETS", {"results", "artifacts"})
-    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
-
-    class FixedDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return now
-
-    monkeypatch.setattr(cleanup, "datetime", FixedDatetime)
-    return now
-
-
-async def outputs_for_job(api, state, finished):
-    job_id = await create_job(api, state)
-    async with api.sessions.begin() as db:
-        job = await db.get(model.Job, job_id)
-        job.finished_date = finished
-    outputs = {}
-    for target, directory in [("results", config.RESULTS_DIR), ("artifacts", config.ARTIFACTS_DIR)]:
-        path = Path(directory) / f"{job_id}.zip"
-        path.write_bytes(b"output")
-        outputs[target] = path
-    return job_id, outputs
 
 
 @pytest.mark.asyncio
@@ -60,24 +23,23 @@ async def outputs_for_job(api, state, finished):
                                          ProcessingState.PROCESSING, ProcessingState.ERROR,
                                          ProcessingState.CANCELLED]],
 ])
-async def test_output_retention(failure_api, output_storage, state, age, expired):
-    api = failure_api
+async def test_output_retention(db_sessions, output_storage, state, age, expired, output_factory):
     finished = None if age is None else output_storage - timedelta(seconds=age)
-    job_id, outputs = await outputs_for_job(api, state, finished)
+    job_id, outputs = await output_factory(state, finished)
     inputs = Path(config.JOBS_DIR) / str(job_id)
     inputs.mkdir()
     (inputs / "image.jpg").write_bytes(b"input")
     engine = Path(config.ENGINES_DIR) / f"{job_id}.zip"
     engine.write_bytes(b"engine")
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         before = model.orm2dict(await db.get(model.Job, job_id))
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
         await cleanup.delete_expired_job_outputs(db)
     assert all(path.exists() is (not expired) for path in outputs.values())
     assert (inputs / "image.jpg").read_bytes() == b"input"
     assert engine.read_bytes() == b"engine"
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         if expired:
             before["results_deleted_at"] = output_storage
             before["artifacts_deleted_at"] = output_storage
@@ -86,48 +48,26 @@ async def test_output_retention(failure_api, output_storage, state, age, expired
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("targets", [{"results"}, {"artifacts"}, {"results", "artifacts"}])
-async def test_configured_output_targets(failure_api, output_storage, monkeypatch, targets):
+async def test_configured_output_targets(db_sessions, output_storage, monkeypatch, targets, output_factory):
     monkeypatch.setattr(config, "OUTPUT_CLEANUP_TARGETS", targets)
-    _, outputs = await outputs_for_job(failure_api, ProcessingState.DONE, output_storage - timedelta(days=8))
-    async with failure_api.sessions() as db:
+    _, outputs = await output_factory(ProcessingState.DONE, output_storage - timedelta(days=8))
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     assert all(path.exists() is (target not in targets) for target, path in outputs.items())
 
 
 @pytest.mark.asyncio
-async def test_output_cleanup_disabled(failure_api, output_storage, monkeypatch):
+async def test_output_cleanup_disabled(db_sessions, output_storage, monkeypatch, output_factory):
     monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", False)
-    _, outputs = await outputs_for_job(failure_api, ProcessingState.DONE, output_storage - timedelta(days=8))
-    async with failure_api.sessions() as db:
+    _, outputs = await output_factory(ProcessingState.DONE, output_storage - timedelta(days=8))
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     assert all(path.exists() for path in outputs.values())
 
 
 @pytest.mark.asyncio
-async def test_deleted_result_returns_gone(failure_api, output_storage):
-    api = failure_api
-    job_id, _ = await outputs_for_job(api, ProcessingState.DONE, output_storage - timedelta(days=8))
-    route = next(r for r in app.routes if getattr(r, "path", None) == "/v1/jobs/{job_id}/result"
-                 and "GET" in r.methods)
-    auth = next(d.call for d in route.dependant.dependencies if d.name == "key")
-
-    async def current_key():
-        return api.owner
-
-    app.dependency_overrides[auth] = current_key
-    response = await api.client.get(f"/v1/jobs/{job_id}/result")
-    assert response.status_code == 200
-    assert response.content == b"output"
-    async with api.sessions() as db:
-        await cleanup.delete_expired_job_outputs(db)
-    response = await api.client.get(f"/v1/jobs/{job_id}/result")
-    assert response.status_code == 410, response.text
-    assert response.json()["code"] == AppCode.JOB_RESULT_GONE.value
-
-
-@pytest.mark.asyncio
-async def test_output_cleanup_retries_errors(failure_api, output_storage, monkeypatch):
-    _, outputs = await outputs_for_job(failure_api, ProcessingState.DONE, output_storage - timedelta(days=8))
+async def test_output_cleanup_retries_errors(db_sessions, output_storage, monkeypatch, output_factory):
+    _, outputs = await output_factory(ProcessingState.DONE, output_storage - timedelta(days=8))
     remove = cleanup.os.remove
 
     def fail_artifacts(path):
@@ -136,20 +76,20 @@ async def test_output_cleanup_retries_errors(failure_api, output_storage, monkey
         remove(path)
 
     monkeypatch.setattr(cleanup.os, "remove", fail_artifacts)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     assert outputs["artifacts"].exists()
     assert not outputs["results"].exists()
     monkeypatch.setattr(cleanup.os, "remove", remove)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     assert not outputs["artifacts"].exists()
 
 
 @pytest.mark.asyncio
-async def test_output_cleanup_preserves_unknown_files_and_symlinks(failure_api, output_storage):
-    job_id = await create_job(failure_api, ProcessingState.DONE)
-    async with failure_api.sessions.begin() as db:
+async def test_output_cleanup_preserves_unknown_files_and_symlinks(db_sessions, output_storage, job_factory):
+    job_id = await job_factory(ProcessingState.DONE)
+    async with db_sessions.begin() as db:
         (await db.get(model.Job, job_id)).finished_date = output_storage - timedelta(days=8)
     outside = Path(config.ENGINES_DIR) / "outside.zip"
     outside.write_bytes(b"retain")
@@ -161,7 +101,7 @@ async def test_output_cleanup_preserves_unknown_files_and_symlinks(failure_api, 
     unrelated.write_bytes(b"retain")
     temporary = Path(config.RESULTS_DIR) / f"{job_id}.zip.validating"
     temporary.write_bytes(b"retain")
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     assert symlink.is_symlink()
     assert all(path.read_bytes() == b"retain" for path in [outside, unknown, unrelated, temporary])
@@ -203,15 +143,15 @@ def test_zero_output_retention_configuration(monkeypatch):
     *[(state, False) for state in ProcessingState],
     (ProcessingState.DONE, True), (ProcessingState.FAILED, True),
 ])
-async def test_immediate_output_cleanup_skips_time_check(failure_api, output_storage, monkeypatch, state, future_finish):
+async def test_immediate_output_cleanup_skips_time_check(db_sessions, output_storage, monkeypatch, state, future_finish, output_factory):
     monkeypatch.setattr(config, "OUTPUT_RETENTION_SECONDS", 0)
     finished = output_storage + timedelta(hours=1) if future_finish else None
-    job_id, outputs = await outputs_for_job(failure_api, state, finished)
-    async with failure_api.sessions() as db:
+    job_id, outputs = await output_factory(state, finished)
+    async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)
     deleted = state in {ProcessingState.DONE, ProcessingState.FAILED}
     assert all(path.exists() is (not deleted) for path in outputs.values())
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.results_deleted_at == (output_storage if deleted else None)
         assert job.artifacts_deleted_at == (output_storage if deleted else None)

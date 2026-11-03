@@ -516,13 +516,22 @@ async def patch_job(
 
     # at this point we know the request is valid
 
-    if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.ADMIN}:
+    if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.ADMIN} and \
+            job_progress_update.state == base_objects.ProcessingState.CANCELLED:
         code_update_job = await user_cruds.cancel_job(db, job_id)
         if code_update_job == AppCode.JOB_CANCELLED:
             return DocAPIResponseOK[NoneType](
                 status=status.HTTP_200_OK,
                 code=AppCode.JOB_CANCELLED,
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
+            )
+
+        if code_update_job == AppCode.JOB_UNCANCELLABLE:
+            raise DocAPIClientErrorException(
+                status=status.HTTP_409_CONFLICT,
+                code=AppCode.JOB_UNCANCELLABLE,
+                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UNCANCELLABLE]["detail"],
+                details={"state": db_job.state.value},
             )
 
     if key.role in {base_objects.KeyRole.WORKER, base_objects.KeyRole.ADMIN}:

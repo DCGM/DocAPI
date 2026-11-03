@@ -506,6 +506,7 @@ async def get_artifacts(
 
 
 PATCH_JOB_RESPONSES = {
+    AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND],
     AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job was updated successfully.",
@@ -539,5 +540,12 @@ async def patch_job(
                 code=AppCode.JOB_UPDATED,
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
             ))
+
+    if code == AppCode.JOB_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND,
+            code=AppCode.JOB_NOT_FOUND,
+            detail=PATCH_JOB_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
+        )
 
     raise RouteInvariantError(request=request, code=code)
