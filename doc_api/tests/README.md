@@ -160,7 +160,10 @@ are listed once below instead of repeated under each endpoint.
 - [x] **200** — with engines; `JOBS_RETRIEVED`. [`test_user.py::test_get_jobs_200_with_engines`](test_user.py).
 - [x] **200** — result availability. [`test_user.py::test_get_jobs_200_result_availability`](test_user.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_get_jobs_422_invalid_request`](test_user.py).
-- [x] **200** — date filter boundaries. [`test_user.py::test_get_jobs_200_date_filter_boundaries`](test_user.py).
+- [x] **200** — date filter boundaries, UTC `Z`, positive/negative timezone offsets, and naive UTC. [`test_user.py::test_get_jobs_200_date_filter_boundaries`](test_user.py).
+- [x] **200** — NULL dates with and without a filter. [`test_user.py::test_get_jobs_200_date_filter_null_dates`](test_user.py).
+- [x] **200** — all date filters combined with state, engine name/version, and result availability. [`test_user.py::test_get_jobs_200_combined_date_filters`](test_user.py).
+- [x] **200** — descending creation-date order with and without each date filter. [`test_user.py::test_get_jobs_200_date_filter_ordering`](test_user.py).
 - [x] **200** — state filter. [`test_user.py::test_get_jobs_200_state_filter`](test_user.py).
 - [x] **200** — engine filter combination. [`test_user.py::test_get_jobs_200_engine_filter_combination`](test_user.py).
 
@@ -567,8 +570,9 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
 - [x] Expand successful readonly cases: shared read tests run as user, readonly,
   and admin for job listing, job details, results, filters, and data visibility.
   Own-job listing and access to known jobs belonging to other owners are covered.
-- [ ] Expand date-filter tests to timezone offsets, NULL dates, combined filters,
-  and ordering. Current tests cover UTC boundaries for all four date fields.
+- [x] Expand date-filter tests: inclusive boundaries for all four fields in UTC,
+  positive/negative offsets, and naive UTC; nullable start/finish dates; combined
+  date/state/engine/result filters; and descending creation-date ordering.
 - [ ] Extend OpenAPI visibility tests beyond engine listing to all upload toggles
   and section combinations. Schema visibility and endpoint callability must be
   checked separately.
