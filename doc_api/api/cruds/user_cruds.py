@@ -240,6 +240,7 @@ async def cancel_job(db: AsyncSession, job_id: UUID) -> AppCode:
 
             db_job.state = base_objects.ProcessingState.CANCELLED
             db_job.finished_date = datetime.now(timezone.utc)
+            db_job.last_change = db_job.finished_date
 
             return AppCode.JOB_CANCELLED
 
