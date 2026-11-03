@@ -902,6 +902,8 @@ async def test_patch_job_200_cancel_new_job(client, user_headers, cancelled_new_
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["state"] == base_objects.ProcessingState.CANCELLED.value
+    assert data["last_change"] == data["finished_date"]
+    assert datetime.fromisoformat(data["last_change"].replace("Z", "+00:00")) > datetime.fromisoformat(job["last_change"].replace("Z", "+00:00"))
 
 
 @pytest.mark.asyncio
@@ -924,6 +926,7 @@ async def test_patch_job_200_cancel_queued_job(client, user_headers, job_with_re
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["state"] == base_objects.ProcessingState.CANCELLED.value
+    assert data["last_change"] == data["finished_date"]
 
 
 @pytest.mark.asyncio
@@ -946,6 +949,7 @@ async def test_patch_job_200_cancel_processing_job(client, user_headers, lease_j
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["state"] == base_objects.ProcessingState.CANCELLED.value
+    assert data["last_change"] == data["finished_date"]
 
 
 @pytest.mark.asyncio
