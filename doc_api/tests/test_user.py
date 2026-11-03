@@ -1,4 +1,7 @@
 import io
+import subprocess
+import sys
+from itertools import combinations
 import os.path
 import logging
 from datetime import datetime, timedelta, timezone
@@ -14,7 +17,8 @@ from doc_api.api.routes import general_routes
 import pytest
 
 from doc_api.api import cleanup
-from doc_api.tests.helpers import assert_deletion_timestamps, _ename, _put_file
+from doc_api.tests.helpers import (assert_deletion_timestamps, _ename, _put_file,
+                                   OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES)
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
@@ -1855,18 +1859,145 @@ async def test_get_engines_422_invalid_filter(client, user_headers):
 
 @pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
-@pytest.mark.parametrize("visible", [True, False])
-async def test_get_openapi_200_engine_visibility(client, user_headers, monkeypatch, visible):
-    route = next(route for route in main.app.routes if getattr(route, "path", None) == "/v1/engines")
-    # include_in_schema is evaluated by the decorator at startup.
-    monkeypatch.setattr(route, "include_in_schema", visible)
-    monkeypatch.setattr(main.app, "openapi_schema", None)
+@pytest.mark.parametrize("visible", [True, False], ids=["visible", "hidden"])
+@pytest.mark.parametrize("flag,method,path", OPENAPI_VISIBILITY_ROUTES, ids=[row[0] for row in OPENAPI_VISIBILITY_ROUTES])
+async def test_get_openapi_200_endpoint_visibility(client, user_headers, readonly_headers, monkeypatch, visible,
+                                                   flag, method, path, job_with_deletion_timestamps):
+    # Startup configuration binding is tested independently in a fresh process.
+    for other_flag, other_method, other_path in OPENAPI_VISIBILITY_ROUTES:
+        route = next(route for route in main.app.routes
+                     if getattr(route, "path", None) == other_path and other_method.upper() in route.methods)
+        monkeypatch.setattr(route, "include_in_schema", visible if other_flag == flag else True)
     monkeypatch.setattr(config, "SHOW_SECTIONS", {"User", "Worker", "Admin"})
+    monkeypatch.setattr(main.app, "openapi_schema", None)
     schema = await client.get("/openapi.json")
-    assert schema.status_code == 200
-    assert ("/v1/engines" in schema.json()["paths"]) is visible
-    response = await client.get("/v1/engines", headers=user_headers)
+    assert schema.status_code == 200, schema.text
+    operations = {(verb, url) for url, methods in schema.json()["paths"].items() for verb in methods}
+    assert ((method, path) in operations) == visible
+    for other_flag, other_method, other_path in OPENAPI_VISIBILITY_ROUTES:
+        if other_flag != flag:
+            assert (other_method, other_path) in operations
+    # The cached schema must preserve the same visibility.
+    cached = await client.get("/openapi.json")
+    assert cached.status_code == 200
+    assert cached.json() == schema.json()
+
+    kwargs = {}
+    if method == "get":
+        url, expected_status, expected_code = path, 200, AppCode.ENGINES_RETRIEVED
+    else:
+        job_id, _ = await job_with_deletion_timestamps(ProcessingState.NEW)
+        url = path.format(job_id=job_id, image_name="page.jpg")
+        expected_status = 201
+        if flag == "SHOW_PUT_METADATA":
+            kwargs = {"json": {"source": "visibility test"}}
+            expected_code = AppCode.META_JSON_UPLOADED
+        else:
+            data, content_type, expected_code = {
+                "SHOW_PUT_IMAGE": (*make_white_image_bytes(), AppCode.IMAGE_UPLOADED),
+                "SHOW_PUT_ALTO": (VALID_ALTO_XML, "application/xml", AppCode.ALTO_UPLOADED),
+                "SHOW_PUT_PAGE": (VALID_PAGE_XML, "application/xml", AppCode.PAGE_UPLOADED),
+            }[flag]
+            kwargs = {"files": {"file": ("upload", data, content_type)}}
+    response = await client.request(method, url, headers=user_headers, **kwargs)
+    assert response.status_code == expected_status, response.text
+    assert response.json()["code"] == expected_code.value
+    unauthenticated = await client.request(method, url, **kwargs)
+    assert unauthenticated.status_code == 401, unauthenticated.text
+    assert unauthenticated.json()["code"] == AppCode.API_KEY_MISSING.value
+    if method == "put":
+        forbidden = await client.request(method, url, headers=readonly_headers, **kwargs)
+        assert forbidden.status_code == 403, forbidden.text
+        assert forbidden.json()["code"] == AppCode.API_KEY_ROLE_FORBIDDEN.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sections", [set(combo) for size in range(4)
+    for combo in combinations(("User", "Worker", "Admin"), size)] + [{"General"}, {"Debug"}, {"Unknown"}],
+    ids=lambda sections: ",".join(sorted(sections)) or "none")
+@pytest.mark.parametrize("visibility", ["all", "none", "mixed"])
+async def test_get_openapi_200_sections(client, user_headers, worker_headers, admin_headers,
+                                       job_factory, monkeypatch, sections, visibility):
+    hidden = set()
+    for index, (flag, method, path) in enumerate(OPENAPI_VISIBILITY_ROUTES):
+        visible = visibility == "all" or (visibility == "mixed" and index % 2 == 0)
+        route = next(route for route in main.app.routes
+                     if getattr(route, "path", None) == path and method.upper() in route.methods)
+        monkeypatch.setattr(route, "include_in_schema", visible)
+        if not visible:
+            hidden.add((method, path))
+    monkeypatch.setattr(config, "SHOW_SECTIONS", sections)
+    monkeypatch.setattr(main.app, "openapi_schema", None)
+    response = await client.get("/openapi.json")
     assert response.status_code == 200, response.text
+    paths = response.json()["paths"]
+    actual = {(method, path) for path, operations in paths.items() for method in operations}
+    expected = set().union(*(operations for section, operations in OPENAPI_SECTION_OPERATIONS.items()
+                             if section in sections)) - hidden
+    assert actual == expected
+    assert all(operations for operations in paths.values())
+    # Root/debug stay undocumented even when their section names are requested.
+    assert "/" not in paths
+    assert "/debug/jobs/{job_id}/start" not in paths
+
+    for method, url, headers, code in [
+        ("get", "/v1/me", user_headers, AppCode.API_KEY_VALID),
+        ("post", "/v1/jobs/lease", worker_headers, AppCode.JOB_QUEUE_EMPTY),
+        ("get", "/v1/admin/keys", admin_headers, AppCode.KEYS_RETRIEVED),
+    ]:
+        result = await client.request(method, url, headers=headers)
+        assert result.status_code == 200, result.text
+        assert result.json()["code"] == code.value
+    job_id = await job_factory(ProcessingState.NEW)
+    result = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert result.status_code == 200, result.text
+    assert result.json()["code"] == AppCode.JOB_STARTED.value
+
+
+@pytest.mark.parametrize("disabled", [None, "all", *[flag for flag, _, _ in OPENAPI_VISIBILITY_ROUTES]],
+                         ids=lambda disabled: disabled or "defaults")
+def test_openapi_visibility_flags_from_environment(tmp_path, disabled):
+    # Route decorators capture config values during import. Avoid reloading
+    # shared application modules or starting a DB lifespan just to check this.
+    env = os.environ.copy()
+    for flag, _, _ in OPENAPI_VISIBILITY_ROUTES:
+        env.pop(flag, None)
+        if disabled == "all" or disabled == flag:
+            env[flag] = "false"
+    env.pop("SHOW_SECTIONS", None)
+    if disabled == "all":
+        env["SHOW_SECTIONS"] = ""
+    elif disabled is not None:
+        env["SHOW_SECTIONS"] = " Worker , Admin "
+    for name in ("JOBS", "RESULTS", "ARTIFACTS", "ENGINES", "LOGGING"):
+        env[f"{name}_DIR"] = str(tmp_path / name.lower())
+    env["BASE_DIR"] = str(tmp_path)
+    env["DATABASE_URL"] = "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
+    env.pop("INTERNAL_MAIL_SERVER", None)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).resolve().parents[2]), env.get("PYTHONPATH")]))
+    script = """
+import sys
+from doc_api.api.main import app
+from doc_api.config import config
+from doc_api.tests.helpers import OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES
+disabled = sys.argv[1]
+sections = {"User", "Worker", "Admin"} if not disabled else (set() if disabled == "all" else {"Worker", "Admin"})
+assert config.SHOW_SECTIONS - {""} == sections
+hidden = set()
+for flag, method, path in OPENAPI_VISIBILITY_ROUTES:
+    expected = disabled not in {"all", flag}
+    route = next(route for route in app.routes if getattr(route, "path", None) == path and method.upper() in route.methods)
+    assert getattr(config, flag) == expected, flag
+    assert route.include_in_schema == expected, flag
+    if not expected:
+        hidden.add((method, path))
+expected = set().union(*(operations for section, operations in OPENAPI_SECTION_OPERATIONS.items() if section in sections)) - hidden
+actual = {(method, path) for path, operations in app.openapi()["paths"].items() for method in operations}
+assert actual == expected, (actual, expected)
+"""
+    result = subprocess.run([sys.executable, "-c", script, disabled or ""], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 #
