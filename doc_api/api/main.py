@@ -22,7 +22,7 @@ from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSE
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
-from doc_api.api.cleanup import run_input_cleanup
+from doc_api.api.cleanup import run_cleanup
 from doc_api.api.routes import admin_router, debug_router, root_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
@@ -195,8 +195,8 @@ async def lifespan(app: FastAPI):
 
 
     cleanup_task = None
-    if config.DELETE_JOB_INPUTS_ON_COMPLETION:
-        cleanup_task = asyncio.create_task(run_input_cleanup())
+    if config.DELETE_JOB_INPUTS_ON_COMPLETION or config.DELETE_JOB_OUTPUTS:
+        cleanup_task = asyncio.create_task(run_cleanup())
     try:
         yield
     finally:

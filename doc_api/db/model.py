@@ -44,6 +44,9 @@ class Job(Base):
     started_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
     last_change: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True, nullable=False)
     finished_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    inputs_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    results_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    artifacts_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     log: Mapped[str] = mapped_column(nullable=True)
     log_user: Mapped[str] = mapped_column(nullable=True)
