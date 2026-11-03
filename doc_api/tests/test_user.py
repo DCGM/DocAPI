@@ -3,6 +3,7 @@ import os.path
 import logging
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from pathlib import Path
 
 from uuid import UUID, uuid4
 from doc_api.config import config
@@ -18,7 +19,7 @@ from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, JOB_DEFINITION_PAYLOADS, \
-    job_definition_payload_id
+    job_definition_payload_id, VALID_ZIP
 
 
 logger = logging.getLogger(__name__)
@@ -301,15 +302,106 @@ async def test_get_jobs_422_invalid_request(client, reader_headers):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["created_date", "started_date", "last_change", "finished_date"])
 @pytest.mark.parametrize("offset", [-1, 0, 1])
-async def test_get_jobs_200_date_filter_boundaries(client, reader_headers, job_factory, db_sessions, field, offset):
+@pytest.mark.parametrize("timezone_minutes", [0, 330, -210, None], ids=["UTC-Z", "UTC+05:30", "UTC-03:30", "naive-UTC"])
+async def test_get_jobs_200_date_filter_boundaries(client, reader_headers, job_factory, db_sessions, field, offset, timezone_minutes):
     job_id = await job_factory(ProcessingState.DONE)
     when = datetime(2026, 1, 1, tzinfo=timezone.utc)
     async with db_sessions.begin() as db:
         setattr(await db.get(model.Job, job_id), field, when)
-    response = await client.get("/v1/jobs", headers=reader_headers,
-                                params={f"from_{field}": (when + timedelta(seconds=offset)).isoformat()})
+    threshold = when + timedelta(seconds=offset)
+    if timezone_minutes is None:
+        encoded = threshold.replace(tzinfo=None).isoformat()
+    else:
+        encoded = threshold.astimezone(timezone(timedelta(minutes=timezone_minutes))).isoformat()
+        if timezone_minutes == 0:
+            encoded = encoded.replace("+00:00", "Z")
+    response = await client.get("/v1/jobs", headers=reader_headers, params={f"from_{field}": encoded})
     assert response.status_code == 200, response.text
     assert {job["id"] for job in response.json()["data"]} == ({str(job_id)} if offset <= 0 else set())
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["started_date", "finished_date"])
+async def test_get_jobs_200_date_filter_null_dates(client, reader_headers, job_factory, db_sessions, field):
+    missing = await job_factory(ProcessingState.NEW)
+    dated = await job_factory(ProcessingState.DONE)
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(model.Job, missing), field, None)
+        setattr(await db.get(model.Job, dated), field, when)
+    response = await client.get("/v1/jobs", headers=reader_headers)
+    assert response.status_code == 200, response.text
+    assert {job["id"] for job in response.json()["data"]} == {str(missing), str(dated)}
+    response = await client.get("/v1/jobs", headers=reader_headers, params={f"from_{field}": when.isoformat()})
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOBS_RETRIEVED.value
+    assert [job["id"] for job in response.json()["data"]] == [str(dated)]
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_combined_date_filters(client, reader_headers, job_factory, engine_factory, db_sessions):
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fields = ["created_date", "started_date", "last_change", "finished_date"]
+    engine = await engine_factory(name="A", version="1")
+    other_version = await engine_factory(name="A", version="2")
+    other_engine = await engine_factory(name="B", version="1")
+    cases = [
+        ("boundary", {}),
+        ("later", {field: when + timedelta(seconds=1) for field in fields}),
+        *[(field, {field: when - timedelta(seconds=1)}) for field in fields],
+        ("not_started", {"started_date": None}),
+        ("not_finished", {"finished_date": None}),
+        ("state", {"state": ProcessingState.QUEUED}),
+        ("version", {"engine_id": other_version.id}),
+        ("engine", {"engine_id": other_engine.id}),
+        ("no_engine", {"engine_id": None}),
+        ("no_result", {}),
+    ]
+    ids = {}
+    for name, changes in cases:
+        job_id = await job_factory(ProcessingState.DONE)
+        ids[name] = str(job_id)
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            for field, value in {**dict.fromkeys(fields, when), "engine_id": engine.id, **changes}.items():
+                setattr(job, field, value)
+        if name != "no_result":
+            (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(VALID_ZIP)
+
+    response = await client.get("/v1/jobs", headers=reader_headers, params={
+        **{f"from_{field}": when.isoformat() for field in fields},
+        "engine_name": "A", "engine_version": "1", "state": "done", "result_available": True,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOBS_RETRIEVED.value
+    assert [job["id"] for job in response.json()["data"]] == [ids["later"], ids["boundary"]]
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", [None, "created_date", "started_date", "last_change", "finished_date"],
+                         ids=["unfiltered", "created_date", "started_date", "last_change", "finished_date"])
+async def test_get_jobs_200_date_filter_ordering(client, reader_headers, job_factory, db_sessions, field):
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = {}
+    # Insert out of order; other timestamps run in the opposite direction.
+    for rank in [1, 4, 2, 0, 3]:
+        job_id = await job_factory(ProcessingState.DONE)
+        ids[rank] = str(job_id)
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            job.created_date = when + timedelta(seconds=rank)
+            for other in ["started_date", "last_change", "finished_date"]:
+                setattr(job, other, when + timedelta(seconds=10 - rank))
+    threshold = when + timedelta(seconds=2 if field == "created_date" else 8)
+    params = {f"from_{field}": threshold.isoformat()} if field else {}
+    response = await client.get("/v1/jobs", headers=reader_headers, params=params)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOBS_RETRIEVED.value
+    expected = [4, 3, 2, 1, 0] if field is None else ([4, 3, 2] if field == "created_date" else [2, 1, 0])
+    assert [job["id"] for job in response.json()["data"]] == [ids[rank] for rank in expected]
 
 
 @pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])

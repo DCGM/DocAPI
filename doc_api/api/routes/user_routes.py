@@ -198,13 +198,14 @@ async def get_jobs(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    if from_created_date is not None:
+    # Treat naive filters as UTC; keep explicit offsets intact.
+    if from_created_date is not None and from_created_date.tzinfo is None:
         from_created_date = from_created_date.replace(tzinfo=timezone.utc)
-    if from_started_date is not None:
+    if from_started_date is not None and from_started_date.tzinfo is None:
         from_started_date = from_started_date.replace(tzinfo=timezone.utc)
-    if from_last_change is not None:
+    if from_last_change is not None and from_last_change.tzinfo is None:
         from_last_change = from_last_change.replace(tzinfo=timezone.utc)
-    if from_finished_date is not None:
+    if from_finished_date is not None and from_finished_date.tzinfo is None:
         from_finished_date = from_finished_date.replace(tzinfo=timezone.utc)
 
     if key.role == base_objects.KeyRole.ADMIN:
