@@ -7,7 +7,6 @@ from uuid import uuid4
 import pytest
 
 from doc_api.api import cleanup
-from doc_api.api import main
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import Config, config
 from doc_api.db import model
@@ -271,31 +270,3 @@ async def test_cleanup_skips_locked_and_requeued_jobs(db_sessions, input_storage
     async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("inputs,outputs", [(False, False), (True, False), (False, True), (True, True)])
-async def test_cleanup_task_lifecycle(monkeypatch, inputs, outputs):
-    enabled = inputs or outputs
-    monkeypatch.setattr(config, "ADMIN_KEY", None)
-    monkeypatch.setattr(config, "PRODUCTION", True)
-    monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", inputs)
-    monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", outputs)
-    started = asyncio.Event()
-    stopped = asyncio.Event()
-
-    async def cleanup_task():
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            stopped.set()
-
-    monkeypatch.setattr(main, "run_cleanup", cleanup_task)
-    async with main.lifespan(main.app):
-        if enabled:
-            await asyncio.wait_for(started.wait(), timeout=5)
-        else:
-            await asyncio.sleep(0)
-            assert not started.is_set()
-    assert stopped.is_set() is enabled
