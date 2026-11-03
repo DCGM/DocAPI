@@ -40,10 +40,10 @@ async def get_jobs_with_engines(*, db: AsyncSession,
                                 from_created_date: Optional[datetime] = None,
                                 from_started_date: Optional[datetime] = None,
                                 from_last_change: Optional[datetime] = None,
-                                from_finished_date: Optional[datetime] = None) -> Tuple[List[Tuple[model.Job, model.Engine]], AppCode]:
+                                from_finished_date: Optional[datetime] = None) -> Tuple[List[Tuple[model.Job, Optional[model.Engine]]], AppCode]:
     try:
         async with db.begin():
-            query = select(model.Job, model.Engine).join(model.Engine)
+            query = select(model.Job, model.Engine).outerjoin(model.Engine)
 
             if key_id is not None:
                 query = query.where(model.Job.owner_key_id == key_id)

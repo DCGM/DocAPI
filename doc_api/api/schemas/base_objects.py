@@ -90,6 +90,18 @@ class ImageUpdate(BaseModel):
 
 
 class JobProper(BaseModel):
+    inputs_deleted_at: Optional[datetime] = Field(
+        None, description="Admin only: UTC time input cleanup removed files or detected their absence."
+    )
+    results_deleted_at: Optional[datetime] = Field(
+        None, description="UTC time result cleanup removed the ZIP or detected its absence."
+    )
+    artifacts_deleted_at: Optional[datetime] = Field(
+        None, description="Admin only: UTC time artifact cleanup removed the ZIP or detected its absence."
+    )
+    result_available: bool = Field(
+        False, description="Whether the job is done and its result ZIP currently exists."
+    )
     id: UUID = Field(
         ...,
         examples=["550e8400-e29b-41d4-a716-446655440000"],

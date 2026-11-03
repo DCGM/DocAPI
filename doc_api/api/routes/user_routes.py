@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
-from doc_api.api.routes.general_routes import prepare_job_data
+from doc_api.api.routes.general_routes import prepare_job_data, result_availability
 from doc_api.api.routes.helper import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_new_job, challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
@@ -155,7 +155,7 @@ async def post_job(
         db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
 
     if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGES_RETRIEVED:
-        data = prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+        data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
         return validate_ok_response(DocAPIResponseOK[base_objects.Job](
             status=status.HTTP_201_CREATED,
             code=AppCode.JOB_CREATED,
@@ -188,6 +188,7 @@ GET_JOBS_RESPONSES = {
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
         state: Optional[base_objects.ProcessingState] = None,
+        result_available: Optional[bool] = None,
         engine_name: Optional[str] = None,
         engine_version: Optional[str] = None,
         from_created_date: Optional[datetime] = None,
@@ -230,14 +231,21 @@ async def get_jobs(
             from_finished_date=from_finished_date
         )
 
+    availability = await result_availability([job for job, _ in db_jobs_with_engines])
     data = []
     for db_job, db_engine in db_jobs_with_engines:
+        if result_available is not None and availability[db_job.id] != result_available:
+            continue
         job = base_objects.JobProper.model_validate(db_job).model_dump()
+        job["result_available"] = availability[db_job.id]
+        if key.role != base_objects.KeyRole.ADMIN:
+            job.pop("inputs_deleted_at", None)
+            job.pop("artifacts_deleted_at", None)
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
             job.pop("log", None)
         data.append(JobWithEngine(**job,
-                                  engine_name=db_engine.name,
-                                  engine_version=db_engine.version,
+                                  engine_name=db_engine.name if db_engine else None,
+                                  engine_version=db_engine.version if db_engine else None,
                                   engine_settings=db_job.definition.get("engine_settings", None)))
 
     return validate_ok_response(DocAPIResponseOK[List[base_objects.JobWithEngine]](

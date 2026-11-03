@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from types import NoneType
@@ -195,7 +196,7 @@ async def get_job(
         db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
 
     if job_code == AppCode.JOB_RETRIEVED and images_code == AppCode.IMAGES_RETRIEVED:
-        data = prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+        data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
         return validate_ok_response(DocAPIResponseOK[base_objects.Job](
             status=status.HTTP_200_OK,
             code=AppCode.JOB_RETRIEVED,
@@ -210,8 +211,24 @@ async def get_job(
     raise RouteInvariantError(code=engine_code, request=request)
 
 
-def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
+async def result_availability(jobs):
+    """Check actual files, including jobs completed before deletion tracking existed."""
+    def check():
+        return {
+            job.id: job.state == base_objects.ProcessingState.DONE
+            and os.path.isfile(os.path.join(config.RESULTS_DIR, f"{job.id}.zip"))
+            for job in jobs
+        }
+
+    return await asyncio.to_thread(check)
+
+
+async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
     job = base_objects.JobProper.model_validate(db_job).model_dump()
+    job["result_available"] = (await result_availability([db_job]))[db_job.id]
+    if key.role != base_objects.KeyRole.ADMIN:
+        job.pop("inputs_deleted_at", None)
+        job.pop("artifacts_deleted_at", None)
     images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
 
     # drop everything that is only for admins

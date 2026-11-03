@@ -73,6 +73,18 @@ class Config:
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
         self.DELETE_JOB_INPUTS_ON_COMPLETION = self._env_bool("DELETE_JOB_INPUTS_ON_COMPLETION", False)
+        self.DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS = self._env_bool("DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", False)
+        self.DELETE_JOB_OUTPUTS = self._env_bool("DELETE_JOB_OUTPUTS", False)
+        self.OUTPUT_RETENTION_SECONDS = int(os.getenv("OUTPUT_RETENTION_SECONDS", "604800"))
+        if self.OUTPUT_RETENTION_SECONDS <= 0:
+            raise ValueError("OUTPUT_RETENTION_SECONDS must be a positive integer")
+        self.OUTPUT_CLEANUP_TARGETS = {
+            target.strip().lower()
+            for target in os.getenv("OUTPUT_CLEANUP_TARGETS", "results,artifacts").split(",")
+            if target.strip()
+        }
+        if not self.OUTPUT_CLEANUP_TARGETS or not self.OUTPUT_CLEANUP_TARGETS <= {"results", "artifacts"}:
+            raise ValueError("OUTPUT_CLEANUP_TARGETS must contain results, artifacts, or both")
         self.CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "60"))
         if self.CLEANUP_INTERVAL_SECONDS <= 0:
             raise ValueError("CLEANUP_INTERVAL_SECONDS must be a positive integer")
