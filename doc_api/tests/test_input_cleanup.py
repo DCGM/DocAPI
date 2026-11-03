@@ -183,6 +183,7 @@ async def test_optional_image_record_cleanup(failure_api, input_storage, monkeyp
     async with api.sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.definition = {"images": [{"name": "page.jpg", "order": 0}]}
+        job.image_count = 1
         db.add_all([model.Image(job_id=job_id, name="page.jpg", order=0),
                     model.Image(job_id=other_id, name="other.jpg", order=0)])
     path = write_inputs(job_id)
@@ -196,6 +197,7 @@ async def test_optional_image_record_cleanup(failure_api, input_storage, monkeyp
         job = await db.get(model.Job, job_id)
         assert (job.inputs_deleted_at is not None) is completed
         assert job.definition == {"images": [{"name": "page.jpg", "order": 0}]}
+        assert job.image_count == 1
     assert path.exists() is (not completed)
 
 

@@ -31,6 +31,7 @@ async def test_post_job_201(created_job):
     assert job["alto_required"] == payload["alto_required"]
     assert job["page_required"] == payload["page_required"]
     assert len(job["images"]) == len(payload["images"])
+    assert job["image_count"] == len(payload["images"])
     for img_payload, img_body in zip(payload["images"], job["images"]):
         assert img_payload["name"] == img_body["name"]
         assert img_payload["order"] == img_body["order"]
@@ -52,6 +53,7 @@ async def test_post_job_201_with_engine(created_job_with_engine):
     assert job["alto_required"] == payload["alto_required"]
     assert job["page_required"] == payload["page_required"]
     assert len(job["images"]) == len(payload["images"])
+    assert job["image_count"] == len(payload["images"])
     for img_payload, img_body in zip(payload["images"], job["images"]):
         assert img_payload["name"] == img_body["name"]
         assert img_payload["order"] == img_body["order"]

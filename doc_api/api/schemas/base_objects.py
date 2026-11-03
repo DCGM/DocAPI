@@ -108,6 +108,10 @@ class JobProper(BaseModel):
         description="Progress of the job (0.0 - 1.0)."
     )
 
+    image_count: int = Field(
+        0, ge=0, description="Number of images in the original job definition, retained after input cleanup."
+    )
+
     previous_attempts: Optional[int] = Field(
         None,
         examples=[1],

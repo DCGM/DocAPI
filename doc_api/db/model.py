@@ -30,6 +30,7 @@ class Job(Base):
     engine_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('engines.id'), index=True, nullable=True)
 
     definition: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    image_count: Mapped[int] = mapped_column(default=0, nullable=False)
 
     alto_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     page_required: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
