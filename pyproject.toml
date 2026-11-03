@@ -52,6 +52,7 @@ client = [
 dev = [
     "httpx",
     "pytest",
+    "pytest-cov",
     "pytest_asyncio"
 ]
 

@@ -1,6 +1,15 @@
 import os
 
+from datetime import datetime, timezone
+from uuid import uuid4
+
 import pytest
+from sqlalchemy import select
+
+from doc_api.api.cruds import admin_cruds
+from doc_api.api.schemas.base_objects import ProcessingState
+from doc_api.db import model
+from doc_api.config import config
 
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
@@ -20,6 +29,7 @@ async def test_get_keys_200(client, admin_headers, dummy):
     assert body["code"] == AppCode.KEYS_RETRIEVED.value
     data = body["data"]
     assert isinstance(data, list)
+    assert {item["label"] for item in data} == {"test-admin", "test-readonly", "test-user", "test-worker"}
     for item in data:
         assert "label" in item
         assert "role" in item
@@ -27,7 +37,7 @@ async def test_get_keys_200(client, admin_headers, dummy):
 
 
 #
-# POST /v1/admin/keys - 201, 409
+# POST /v1/admin/keys - 201, 409, 422
 #
 
 @pytest.mark.asyncio
@@ -95,8 +105,20 @@ async def test_post_keys_422_extra_key(client, admin_headers):
     assert body["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
+@pytest.mark.asyncio
+async def test_post_keys_409_generation_failure(client, admin_headers, monkeypatch, db_sessions):
+    async def exhausted(db):
+        return None, None, None, None
+    monkeypatch.setattr(admin_cruds, "get_secret", exhausted)
+    response = await client.post("/v1/admin/keys", headers=admin_headers, json={"label": "collision", "role": "user"})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.KEY_CREATION_FAILED.value
+    async with db_sessions() as db:
+        assert (await db.execute(select(model.Key).where(model.Key.label == "collision"))).scalar_one_or_none() is None
+
+
 #
-# POST /v1/admin/keys/{label}/secret - 201, 404
+# POST /v1/admin/keys/{label}/secret - 201, 404, 409
 #
 
 @pytest.mark.asyncio
@@ -128,8 +150,32 @@ async def test_post_keys_secret_404(client, admin_headers):
     assert body["code"] == AppCode.KEY_NOT_FOUND.value
 
 
+@pytest.mark.asyncio
+async def test_post_keys_secret_409_generation_failure(client, admin_headers, monkeypatch):
+    async def exhausted(db):
+        return None, None, None, None
+    monkeypatch.setattr(admin_cruds, "get_secret", exhausted)
+    response = await client.post("/v1/admin/keys/test-user/secret", headers=admin_headers)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.KEY_SECRET_CREATION_FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_post_keys_secret_201_rotates_credentials(client, admin_headers, user_headers):
+    response = await client.post("/v1/admin/keys/test-user/secret", headers=admin_headers)
+    assert response.status_code == 201, response.text
+    assert response.json()["code"] == AppCode.KEY_SECRET_CREATED.value
+    new_headers = {"X-API-Key": response.json()["data"]["secret"]}
+    old_response = await client.get("/v1/me", headers=user_headers)
+    assert old_response.status_code == 401, old_response.text
+    assert old_response.json()["code"] == AppCode.API_KEY_INVALID.value
+    new_response = await client.get("/v1/me", headers=new_headers)
+    assert new_response.status_code == 200, new_response.text
+    assert new_response.json()["data"]["label"] == "test-user"
+
+
 #
-# PATCH /v1/admin/keys/{label} - 200, 400, 404, 409
+# PATCH /v1/admin/keys/{label} - 200, 400, 404, 409, 422
 #
 
 @pytest.mark.asyncio
@@ -272,8 +318,15 @@ async def test_patch_key_409(client, admin_headers, new_key):
     assert body["code"] == AppCode.KEY_ALREADY_EXISTS.value
 
 
+@pytest.mark.asyncio
+async def test_patch_key_422_invalid_request(client, admin_headers):
+    response = await client.request('PATCH', '/v1/admin/keys/test-user', headers=admin_headers, json={'role': 'invalid'})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
 #
-# POST /v1/admin/engines - 201, 409
+# POST /v1/admin/engines - 201, 409, 422
 #
 
 @pytest.mark.asyncio
@@ -479,8 +532,15 @@ async def test_post_engine_409(client, admin_headers, created_engine, dummy):
     body = r.json()
     assert body["code"] == AppCode.ENGINE_ALREADY_EXISTS.value
 
+@pytest.mark.asyncio
+async def test_post_engine_422_invalid_request(client, admin_headers):
+    response = await client.request('POST', '/v1/admin/engines', headers=admin_headers, json={})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
 #
-# PATCH /v1/admin/engines/{name}/{version} - 200, 400, 404, 409
+# PATCH /v1/admin/engines/{name}/{version} - 200, 400, 404, 409, 422
 #
 
 @pytest.mark.asyncio
@@ -709,8 +769,15 @@ async def test_patch_engine_409(client, admin_headers, created_engine, dummy):
     assert body["code"] == AppCode.ENGINE_ALREADY_EXISTS.value
 
 
+@pytest.mark.asyncio
+async def test_patch_engine_422_invalid_request(client, admin_headers):
+    response = await client.request('PATCH', '/v1/admin/engines/missing/1', headers=admin_headers, json={'active': 'invalid'})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
 #
-# PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 415
+# PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 404, 415, 422
 #
 
 @pytest.mark.asyncio
@@ -815,8 +882,33 @@ async def test_put_engine_files_415(client, admin_headers, created_engine, dummy
     assert body["code"] == AppCode.ENGINE_FILES_INVALID.value
 
 
+@pytest.mark.asyncio
+async def test_put_engine_files_404_engine_not_found(client, admin_headers):
+    response = await client.put("/v1/admin/engines/missing/1/files", headers=admin_headers,
+                                files={"file": ("engine.zip", VALID_ZIP)})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.ENGINE_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_422_missing_file(client, admin_headers):
+    response = await client.put("/v1/admin/engines/missing/1/files", headers=admin_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_201_validation_disabled(client, admin_headers, engine_factory, monkeypatch):
+    monkeypatch.setattr(config, "ENGINE_FILES_ZIP_VALIDATION", False)
+    engine = await engine_factory()
+    response = await client.put(f"/v1/admin/engines/{engine.name}/{engine.version}/files", headers=admin_headers,
+                                files={"file": ("engine.zip", b"not a ZIP")})
+    assert response.status_code == 201, response.text
+    assert response.json()["code"] == AppCode.ENGINE_FILES_UPLOADED.value
+
+
 #
-# GET /v1/admin/jobs/{job_id}/artifacts - 200, 404
+# GET /v1/admin/jobs/{job_id}/artifacts - 200, 404, 422
 #
 
 @pytest.mark.asyncio
@@ -849,3 +941,155 @@ async def test_get_artifacts_404(client, admin_headers, job_with_result, payload
     assert body["code"] == AppCode.JOB_ARTIFACTS_NOT_FOUND.value
 
 
+@pytest.mark.asyncio
+async def test_get_artifacts_422_invalid_request(client, admin_headers):
+    response = await client.request('GET', '/v1/admin/jobs/not-a-uuid/artifacts', headers=admin_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_get_artifacts_404_job_not_found(client, admin_headers):
+    response = await client.get(f"/v1/admin/jobs/{uuid4()}/artifacts", headers=admin_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+#
+# GET /v1/jobs as ADMIN - 200
+#
+
+@pytest.mark.asyncio
+async def test_get_jobs_200_deletion_visibility(client, admin_headers, jobs_with_output_availability):
+    job_id = str(jobs_with_output_availability.deleted)
+    response = await client.get("/v1/jobs", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOBS_RETRIEVED.value
+    job = next(item for item in response.json()["data"] if item["id"] == job_id)
+    assert all(job[name] is not None for name in ["inputs_deleted_at", "results_deleted_at", "artifacts_deleted_at"])
+
+
+#
+# GET /v1/jobs/{job_id} as ADMIN - 200
+#
+
+@pytest.mark.asyncio
+async def test_get_job_200_deletion_visibility(client, admin_headers, jobs_with_output_availability):
+    job_id = str(jobs_with_output_availability.deleted)
+    response = await client.get(f"/v1/jobs/{job_id}", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOB_RETRIEVED.value
+    job = response.json()["data"]
+    assert all(job[name] is not None for name in ["inputs_deleted_at", "results_deleted_at", "artifacts_deleted_at"])
+
+
+#
+# PATCH /v1/admin/jobs/{job_id} - 200, 404, 422
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("append_logs", [True, False])
+async def test_patch_job_200_force_update(client, admin_headers, job_factory, db_sessions, append_logs):
+    job_id = await job_factory(ProcessingState.NEW)
+    now = datetime.now(timezone.utc).isoformat()
+    fields = {"state": "done", "progress": 1.0, "previous_attempts": 2,
+              "meta_json_uploaded": True, "meta_json_required": True,
+              "alto_required": True, "page_required": True,
+              "created_date": now, "started_date": now, "last_change": now, "finished_date": now,
+              "log": "admin", "log_user": "user"}
+    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers,
+                                  params={"append_logs": str(append_logs).lower()}, json=fields)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOB_UPDATED.value
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.DONE
+        for field in ["progress", "previous_attempts", "meta_json_uploaded", "meta_json_required", "alto_required", "page_required"]:
+            assert getattr(job, field) == fields[field]
+        for field in ["created_date", "started_date", "last_change", "finished_date"]:
+            assert getattr(job, field).isoformat() == now
+        assert job.log == ("Technical log\nadmin" if append_logs else "admin")
+        assert job.log_user == ("User log\nuser" if append_logs else "user")
+
+
+@pytest.mark.asyncio
+async def test_patch_job_422_invalid_state(client, admin_headers, job_factory):
+    job_id = await job_factory(ProcessingState.NEW)
+    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"state": "invalid"})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_patch_job_404_job_not_found(client, admin_headers):
+    response = await client.patch(f"/v1/admin/jobs/{uuid4()}", headers=admin_headers, json={"state": "done"})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+#
+# PUT /debug/jobs/{job_id}/start - 200, 404, 409, 422
+#
+
+@pytest.mark.asyncio
+async def test_put_job_start_200_ready(client, admin_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.NEW)
+    response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.JOB_STARTED.value
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_409_missing_input(client, admin_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.NEW)
+    async with db_sessions.begin() as db:
+        db.add(model.Image(id=uuid4(), job_id=job_id, name="page.jpg", order=0))
+    response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_READY.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [state for state in ProcessingState if state != ProcessingState.NEW])
+async def test_put_job_start_409_already_started(client, admin_headers, job_factory, state):
+    job_id = await job_factory(state)
+    response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_ALREADY_STARTED.value
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_422_invalid_id(client, admin_headers):
+    response = await client.put("/debug/jobs/not-a-uuid/start", headers=admin_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_404_job_not_found(client, admin_headers):
+    response = await client.put(f"/debug/jobs/{uuid4()}/start", headers=admin_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+#
+# GET /v1/engines as ADMIN - 200
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params,names", [
+    ({}, ["A", "B"]), ({"active": "false"}, ["B"]),
+    ({"name": "A", "version": "1"}, ["A"]), ({"default": "true"}, ["A"]),
+    ({"name": "missing"}, []),
+])
+async def test_get_engines_200_admin_filters(client, admin_headers, engine_factory, params, names):
+    await engine_factory(name="A", default=True)
+    await engine_factory(name="B", active=False)
+    response = await client.get("/v1/engines", headers=admin_headers, params={**params, "show_definition": "true"})
+    assert response.status_code == 200, response.text
+    assert [engine["name"] for engine in response.json()["data"]] == names
+    for engine in response.json()["data"]:
+        assert engine["id"] is not None
+        assert engine["definition"] == {"type": "test"}

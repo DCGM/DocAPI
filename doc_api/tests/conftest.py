@@ -1,17 +1,28 @@
 import logging
 import os
-import asyncio
-from typing import Optional
+from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import asyncpg
+from sqlalchemy import select
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import httpx
 
-import io
 import os.path
-import urllib.parse
 
 import pytest
 import pytest_asyncio
 
+from doc_api.api import cleanup
+from doc_api.api import database as db_module
+from doc_api.api.main import app
+from doc_api.api.schemas.base_objects import ProcessingState
+from doc_api.db import model
+from doc_api.tests.helpers import migrate, _put_file, _ename
 from doc_api.api.schemas import base_objects
 from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, VALID_ZIP
 
@@ -20,99 +31,175 @@ from doc_api.config import config
 
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------------------------
-# CLI options & env fallbacks
-# -----------------------------------------------------------------------------
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--base-url",
-        action="store",
-        default=os.getenv("APP_BASE_URL", config.APP_BASE_URL),
-        help="REQUIRED: Base URL of a running DocAPI instance (e.g., http://localhost:9999).",
+# Database-backed tests require an explicit PostgreSQL maintenance connection.
+# Only uniquely named databases created here are migrated or dropped.
+@pytest_asyncio.fixture
+async def isolated_database():
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set TEST_DATABASE_URL to run isolated PostgreSQL tests (see tests/README.md)")
+    url = make_url(database_url).set(drivername="postgresql+asyncpg")
+    database_name = "docapi_test_" + uuid4().hex
+    admin = await asyncpg.connect(
+        host=url.host, port=url.port or 5432, user=url.username,
+        password=url.password, database=url.database,
     )
-    parser.addoption("--api-key-readonly", action="store", default=os.getenv("TEST_READONLY_KEY", config.TEST_READONLY_KEY))
-    parser.addoption("--api-key-user", action="store", default=os.getenv("TEST_USER_KEY", config.TEST_USER_KEY))
-    parser.addoption("--api-key-worker", action="store", default=os.getenv("TEST_WORKER_KEY", config.TEST_WORKER_KEY))
-    parser.addoption("--api-key-admin", action="store", default=os.getenv("TEST_ADMIN_KEY", config.TEST_ADMIN_KEY))
-    parser.addoption("--http-timeout", action="store",
-                     type=float,
-                     default=float(os.getenv("TEST_HTTP_TIMEOUT", config.TEST_HTTP_TIMEOUT)),
-                     help="HTTP client timeout in seconds.")
+    engine = None
+    created = False
+    try:
+        await admin.execute(f'CREATE DATABASE "{database_name}"')
+        created = True
+        engine = create_async_engine(url.set(database=database_name))
+        yield SimpleNamespace(engine=engine, name=database_name,
+                              sessions=async_sessionmaker(engine, expire_on_commit=False))
+    finally:
+        try:
+            if engine is not None:
+                await engine.dispose()
+            if created:
+                await admin.execute(f'DROP DATABASE "{database_name}" WITH (FORCE)')
+        finally:
+            await admin.close()
 
 
-@pytest.fixture(scope="session")
-def _opts(request):
-    return {
-        "APP_BASE_URL": request.config.getoption("--base-url"),
-        "TEST_READONLY_KEY": request.config.getoption("--api-key-readonly"),
-        "TEST_USER_KEY": request.config.getoption("--api-key-user"),
-        "TEST_WORKER_KEY": request.config.getoption("--api-key-worker"),
-        "TEST_ADMIN_KEY": request.config.getoption("--api-key-admin"),
-        "TEST_HTTP_TIMEOUT": request.config.getoption("--http-timeout"),
-    }
+@pytest.fixture
+def test_settings(monkeypatch, tmp_path):
+    # Disregard deployment settings: startup must only create test credentials,
+    # and uploads/cleanup must never reach the application's data directories.
+    monkeypatch.setattr(config, "PRODUCTION", False)
+    monkeypatch.setattr(config, "ADMIN_KEY", None)
+    monkeypatch.setattr(config, "INTERNAL_MAIL_SERVER", None)
+    monkeypatch.setattr(config, "KEY_PREFIX", "doc-api")
+    monkeypatch.setattr(config, "HMAC_SECRET", "isolated-test-hmac-secret")
+    monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", False)
+    monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", False)
+    monkeypatch.setattr(config, "REQUIRE_IMAGE_EXTENSION", False)
+    monkeypatch.setattr(config, "ALLOWED_IMAGE_EXTENSIONS", set())
+    for role in ("ADMIN", "READONLY", "USER", "WORKER"):
+        monkeypatch.setattr(config, f"TEST_{role}_KEY", f"doc-api.test{role.lower()}kid.test{role.lower()}secret")
+        monkeypatch.setattr(config, f"TEST_{role}_KEY_LABEL", f"test-{role.lower()}")
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    for name in ("JOBS", "RESULTS", "ARTIFACTS", "ENGINES", "LOGGING"):
+        monkeypatch.setattr(config, f"{name}_DIR", str(tmp_path / name.lower()))
+    config.create_dirs()
 
 
-# -----------------------------------------------------------------------------
-# Single event loop for the entire test session
-# -----------------------------------------------------------------------------
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+@pytest_asyncio.fixture
+async def client(isolated_database, test_settings, monkeypatch):
+    database = isolated_database
+    await migrate(database.engine, "head")
+    monkeypatch.setattr(db_module, "global_engine", database.engine)
+    monkeypatch.setattr(db_module, "global_async_session_maker", database.sessions)
+    previous_overrides = dict(app.dependency_overrides)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test",
+                follow_redirects=True,
+            ) as http_client:
+                yield http_client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
 
-# -----------------------------------------------------------------------------
-# Validate required APP_BASE_URL once per session
-# -----------------------------------------------------------------------------
-@pytest.fixture(scope="session", autouse=True)
-def _require_base_url(_opts):
-    if not _opts["APP_BASE_URL"]:
-        pytest.exit(
-            "Remote-only test run requires --base-url (or APP_BASE_URL env). "
-            "Example: pytest --base-url http://localhost:9999",
-            returncode=2,
-        )
+@pytest_asyncio.fixture
+async def db_sessions(client, isolated_database):
+    """Session factory for setup/assertions against the same DB as client."""
+    return isolated_database.sessions
 
 
-# -----------------------------------------------------------------------------
-# httpx client pointed at the running instance
-# -----------------------------------------------------------------------------
-@pytest_asyncio.fixture()
-async def client(_opts):
-    timeout = httpx.Timeout(_opts["TEST_HTTP_TIMEOUT"])
-    async with httpx.AsyncClient(base_url=_opts["APP_BASE_URL"], timeout=timeout, follow_redirects=True) as ac:
-        yield ac
+@pytest.fixture
+def readonly_headers(test_settings):
+    return {"X-API-Key": config.TEST_READONLY_KEY}
 
 
-# -----------------------------------------------------------------------------
-# Header fixtures (skip tests if a needed key isn't supplied)
-# -----------------------------------------------------------------------------
-def _headers_or_skip(key: Optional[str], which: str):
-    if not key:
-        pytest.skip(
-            f"{which} API key not provided for remote target. "
-            f"Pass --api-key-{which.lower()} or set TEST_{which.upper()}_KEY."
-        )
-    return {"X-API-Key": key}
+@pytest.fixture
+def user_role():
+    return "user"
 
-@pytest.fixture()
-def readonly_headers(_opts):
-    return _headers_or_skip(_opts["TEST_READONLY_KEY"], "READONLY")
 
-@pytest.fixture()
-def user_headers(_opts):
-    return _headers_or_skip(_opts["TEST_USER_KEY"], "USER")
+@pytest.fixture
+def worker_role():
+    return "worker"
 
-@pytest.fixture()
-def worker_headers(_opts):
-    return _headers_or_skip(_opts["TEST_WORKER_KEY"], "WORKER")
 
-@pytest.fixture()
-def admin_headers(_opts):
-    return _headers_or_skip(_opts["TEST_ADMIN_KEY"], "ADMIN")
+@pytest.fixture
+def reader_role():
+    return "user"
 
-# -----------------------------------------------------------------------------
+
+@pytest.fixture
+def reader_headers(test_settings, reader_role):
+    return {"X-API-Key": getattr(config, f"TEST_{reader_role.upper()}_KEY")}
+
+
+@pytest_asyncio.fixture
+async def reader_owner(db_sessions, reader_role):
+    """Readonly listing uses its own jobs; admins exercise user-owned jobs."""
+    label = config.TEST_READONLY_KEY_LABEL if reader_role == "readonly" else config.TEST_USER_KEY_LABEL
+    async with db_sessions() as db:
+        return (await db.execute(select(model.Key).where(model.Key.label == label))).scalar_one()
+
+
+@pytest.fixture
+def user_headers(test_settings, user_role):
+    return {"X-API-Key": getattr(config, f"TEST_{user_role.upper()}_KEY")}
+
+
+@pytest.fixture
+def worker_headers(test_settings, worker_role):
+    return {"X-API-Key": getattr(config, f"TEST_{worker_role.upper()}_KEY")}
+
+
+@pytest.fixture
+def admin_headers(test_settings):
+    return {"X-API-Key": config.TEST_ADMIN_KEY}
+
+
+@pytest_asyncio.fixture
+async def worker_key(db_sessions):
+    async with db_sessions() as db:
+        return (await db.execute(select(model.Key).where(model.Key.label == config.TEST_WORKER_KEY_LABEL))).scalar_one()
+
+
+@pytest_asyncio.fixture
+async def other_worker_headers(client, admin_headers):
+    response = await client.post("/v1/admin/keys", headers=admin_headers,
+                                 json={"label": "other-worker", "role": "worker"})
+    assert response.status_code == 201, response.text
+    return {"X-API-Key": response.json()["data"]["secret"]}
+
+
+@pytest_asyncio.fixture
+async def job_factory(db_sessions, worker_key, reader_owner):
+    async def create(state, *, owner_key_id=None):
+        job = model.Job(id=uuid4(), owner_key_id=owner_key_id or reader_owner.id,
+                        worker_key_id=worker_key.id, definition={"images": []},
+                        state=state, progress=0.4, previous_attempts=0,
+                        log="Technical log", log_user="User log")
+        async with db_sessions.begin() as db:
+            db.add(job)
+        return job.id
+
+    return create
+
+
+@pytest_asyncio.fixture
+async def output_factory(db_sessions, job_factory):
+    async def create(state, finished):
+        job_id = await job_factory(state)
+        async with db_sessions.begin() as db:
+            (await db.get(model.Job, job_id)).finished_date = finished
+        outputs = {}
+        for target, directory in [("results", config.RESULTS_DIR), ("artifacts", config.ARTIFACTS_DIR)]:
+            path = Path(directory) / f"{job_id}.zip"
+            path.write_bytes(b"output")
+            outputs[target] = path
+        return job_id, outputs
+
+    return create
+
 
 @pytest.fixture
 def payload(request):
@@ -120,7 +207,7 @@ def payload(request):
 
 
 @pytest_asyncio.fixture
-async def created_job(client, user_headers, admin_headers, payload):
+async def created_job(client, user_headers, payload):
     r = await client.post("/v1/jobs", json=payload, headers=user_headers)
 
     assert r.status_code == 201, r.text
@@ -131,17 +218,7 @@ async def created_job(client, user_headers, admin_headers, payload):
 
     job = body["data"]
 
-    yield {"created_job": job, "payload": payload}
-
-    job_id = job["id"]
-    r = await client.patch(f"/v1/admin/jobs/{job_id}",
-                           headers=admin_headers,
-                           json={"state": base_objects.ProcessingState.DONE.value})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == 200
-    assert body["code"] == AppCode.JOB_UPDATED.value
-
+    return {"created_job": job, "payload": payload}
 
 @pytest_asyncio.fixture
 async def cancelled_new_job(client, user_headers, created_job):
@@ -161,14 +238,6 @@ async def cancelled_new_job(client, user_headers, created_job):
 
     return created_job
 
-
-async def _put_file(client, url: str, field: str, filename: str, data: bytes, content_type: str, headers):
-    files = {field: (filename, io.BytesIO(data), content_type)}
-    r = await client.put(url, files=files, headers=headers)
-    return r
-
-def _ename(name: str) -> str:
-    return urllib.parse.quote(name, safe="._-()[]")
 
 @pytest_asyncio.fixture
 async def job_with_required_uploads_by_payload_name(client, user_headers, created_job):
@@ -519,24 +588,10 @@ async def created_engine(client, admin_headers):
     body = r.json()
     assert body["code"] == AppCode.ENGINE_CREATED.value
 
-    yield engine
-
-    r = await client.patch(
-        f"/v1/admin/engines/{name}/{version}",
-        headers=admin_headers,
-        json={
-            "default": False,
-            "active": False
-        }
-    )
-
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["code"] == AppCode.ENGINE_UPDATED.value
-
+    return engine
 
 @pytest_asyncio.fixture
-async def created_job_with_engine(client, user_headers, admin_headers, created_engine, payload):
+async def created_job_with_engine(client, user_headers, created_engine, payload):
     r = await client.post("/v1/jobs", json=payload, headers=user_headers)
 
     assert r.status_code == 201, r.text
@@ -547,17 +602,7 @@ async def created_job_with_engine(client, user_headers, admin_headers, created_e
 
     job = body["data"]
 
-    yield {"created_job": job, "engine": created_engine, "payload": payload}
-
-    job_id = job["id"]
-    r = await client.patch(f"/v1/admin/jobs/{job_id}",
-                            headers=admin_headers,
-                            json={"state": base_objects.ProcessingState.DONE})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == 200
-    assert body["code"] == AppCode.JOB_UPDATED.value
-
+    return {"created_job": job, "engine": created_engine, "payload": payload}
 
 @pytest_asyncio.fixture
 async def created_job_with_uploaded_engine(client, user_headers, admin_headers, created_job_with_engine, payload):
@@ -574,4 +619,72 @@ async def created_job_with_uploaded_engine(client, user_headers, admin_headers, 
     body = r.json()
     assert body["code"] == AppCode.ENGINE_FILES_UPLOADED.value
 
-    yield created_job_with_engine
+    return created_job_with_engine
+
+
+@pytest.fixture
+def output_storage(monkeypatch, tmp_path):
+    for setting in ["JOBS_DIR", "RESULTS_DIR", "ARTIFACTS_DIR", "ENGINES_DIR"]:
+        path = tmp_path / setting
+        path.mkdir()
+        monkeypatch.setattr(config, setting, str(path))
+    monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", False)
+    monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", True)
+    monkeypatch.setattr(config, "OUTPUT_RETENTION_SECONDS", 604800)
+    monkeypatch.setattr(config, "OUTPUT_CLEANUP_TARGETS", {"results", "artifacts"})
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(cleanup, "datetime", FixedDatetime)
+    return now
+
+
+@pytest_asyncio.fixture
+async def jobs_with_output_availability(db_sessions, job_factory, output_factory, other_worker_headers, output_storage, monkeypatch):
+    old = output_storage - timedelta(days=8)
+    deleted_id, _ = await output_factory(ProcessingState.DONE, old)
+    active_id, _ = await output_factory(ProcessingState.DONE, output_storage)
+    processing_id, _ = await output_factory(ProcessingState.PROCESSING, old)
+    missing_id = await job_factory(ProcessingState.DONE)
+    other_id, _ = await output_factory(ProcessingState.DONE, output_storage)
+    async with db_sessions.begin() as db:
+        other_worker = (await db.execute(select(model.Key).where(model.Key.label == "other-worker"))).scalar_one()
+        (await db.get(model.Job, other_id)).owner_key_id = other_worker.id
+    monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", True)
+    async with db_sessions() as db:
+        await cleanup.delete_completed_job_inputs(db)
+        await cleanup.delete_expired_job_outputs(db)
+    return SimpleNamespace(deleted=deleted_id, active=active_id, processing=processing_id,
+                           missing=missing_id, other=other_id)
+
+
+@pytest_asyncio.fixture
+async def job_with_deletion_timestamps(db_sessions, job_factory, output_storage):
+    async def create(state):
+        job_id = await job_factory(state)
+        before = output_storage - timedelta(days=8)
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            for target in ("inputs", "results", "artifacts"):
+                setattr(job, f"{target}_deleted_at", before)
+            job.meta_json_required = True
+            job.alto_required = True
+            job.page_required = True
+            db.add(model.Image(id=uuid4(), job_id=job_id, name="page.jpg", order=0))
+        return job_id, before
+    return create
+
+
+@pytest_asyncio.fixture
+async def engine_factory(db_sessions):
+    async def create(name="Engine", version="1", **fields):
+        engine = model.Engine(id=uuid4(), name=name, version=version,
+                              description="Test engine", definition={"type": "test"}, **fields)
+        async with db_sessions.begin() as db:
+            db.add(engine)
+        return engine
+    return create

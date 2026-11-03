@@ -11,7 +11,6 @@ from doc_api.api import main
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import Config, config
 from doc_api.db import model
-from doc_api.tests.test_worker_failure import failure_api, create_job
 from sqlalchemy import select, event
 
 
@@ -37,10 +36,9 @@ def write_inputs(job_id):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", list(ProcessingState))
-async def test_cleanup_only_terminal_inputs(failure_api, input_storage, state):
-    api = failure_api
-    job_id = await create_job(api, state)
-    async with api.sessions.begin() as db:
+async def test_cleanup_only_terminal_inputs(db_sessions, input_storage, state, job_factory):
+    job_id = await job_factory(state)
+    async with db_sessions.begin() as db:
         image = model.Image(id=uuid4(), job_id=job_id, name="page.jpg", order=0,
                             image_uploaded=True, alto_uploaded=True, page_uploaded=True)
         db.add(image)
@@ -50,16 +48,16 @@ async def test_cleanup_only_terminal_inputs(failure_api, input_storage, state):
         retained = Path(getattr(config, setting)) / f"{job_id}.zip"
         retained.write_bytes(b"retain")
         retained_files.append(retained)
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         before_job = model.orm2dict(await db.get(model.Job, job_id))
         before_image = model.orm2dict(await db.get(model.Image, image.id))
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
         # A repeat pass must work after the input directory has disappeared.
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists() is (state not in {ProcessingState.DONE, ProcessingState.FAILED})
     assert all(file.read_bytes() == b"retain" for file in retained_files)
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         after_job = model.orm2dict(await db.get(model.Job, job_id))
         if state in {ProcessingState.DONE, ProcessingState.FAILED}:
             assert after_job["inputs_deleted_at"] is not None
@@ -69,27 +67,27 @@ async def test_cleanup_only_terminal_inputs(failure_api, input_storage, state):
 
 
 @pytest.mark.asyncio
-async def test_disabled_cleanup_keeps_inputs(failure_api, input_storage, monkeypatch):
+async def test_disabled_cleanup_keeps_inputs(db_sessions, input_storage, monkeypatch, job_factory):
     monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", False)
-    job_id = await create_job(failure_api, ProcessingState.DONE)
+    job_id = await job_factory(ProcessingState.DONE)
     path = write_inputs(job_id)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert len(list(path.iterdir())) == 4
 
 
 @pytest.mark.asyncio
-async def test_cleanup_preserves_unknown_directories_and_symlink_targets(failure_api, input_storage):
+async def test_cleanup_preserves_unknown_directories_and_symlink_targets(db_sessions, input_storage, job_factory):
     unknown = write_inputs(uuid4())
     unrelated = Path(config.JOBS_DIR) / "unrelated"
     unrelated.mkdir()
     target = input_storage / "outside-inputs"
     target.mkdir()
     (target / "keep").write_text("keep")
-    job_id = await create_job(failure_api, ProcessingState.DONE)
+    job_id = await job_factory(ProcessingState.DONE)
     symlink = Path(config.JOBS_DIR) / str(job_id)
     symlink.symlink_to(target, target_is_directory=True)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert unknown.is_dir()
     assert unrelated.is_dir()
@@ -98,10 +96,10 @@ async def test_cleanup_preserves_unknown_directories_and_symlink_targets(failure
 
 
 @pytest.mark.asyncio
-async def test_cleanup_retries_failed_deletion(failure_api, input_storage, monkeypatch):
-    job_id = await create_job(failure_api, ProcessingState.FAILED)
+async def test_cleanup_retries_failed_deletion(db_sessions, input_storage, monkeypatch, job_factory):
+    job_id = await job_factory(ProcessingState.FAILED)
     path = write_inputs(job_id)
-    other_id = await create_job(failure_api, ProcessingState.DONE)
+    other_id = await job_factory(ProcessingState.DONE)
     other_path = write_inputs(other_id)
     rmtree = cleanup.shutil.rmtree
 
@@ -111,12 +109,12 @@ async def test_cleanup_retries_failed_deletion(failure_api, input_storage, monke
         rmtree(path_to_remove)
 
     monkeypatch.setattr(cleanup.shutil, "rmtree", fail_one)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists()
     assert not other_path.exists()
     monkeypatch.setattr(cleanup.shutil, "rmtree", rmtree)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert not path.exists()
 
@@ -149,22 +147,21 @@ def test_invalid_input_retention(monkeypatch, value):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [ProcessingState.DONE, ProcessingState.FAILED])
 @pytest.mark.parametrize("age,expired", [(599, False), (600, True), (601, True), (None, False)])
-async def test_input_retention(failure_api, input_storage, monkeypatch, state, age, expired):
-    api = failure_api
+async def test_input_retention(db_sessions, input_storage, monkeypatch, state, age, expired, job_factory):
     now = datetime(2026, 11, 3, tzinfo=timezone.utc)
     monkeypatch.setattr(cleanup, "datetime", SimpleNamespace(now=lambda tz: now))
     monkeypatch.setattr(config, "INPUT_RETENTION_SECONDS", 600)
     monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", True)
-    job_id = await create_job(api, state)
-    async with api.sessions.begin() as db:
+    job_id = await job_factory(state)
+    async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.finished_date = None if age is None else now - timedelta(seconds=age)
         db.add(model.Image(job_id=job_id, name="page.jpg", order=0))
     path = write_inputs(job_id)
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists() is (not expired)
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.inputs_deleted_at == (now if expired else None)
         image_id = await db.scalar(select(model.Image.id).where(model.Image.job_id == job_id))
@@ -174,23 +171,22 @@ async def test_input_retention(failure_api, input_storage, monkeypatch, state, a
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", list(ProcessingState))
 @pytest.mark.parametrize("inputs,records", [(False, False), (False, True), (True, False), (True, True)])
-async def test_optional_image_record_cleanup(failure_api, input_storage, monkeypatch, state, inputs, records):
-    api = failure_api
+async def test_optional_image_record_cleanup(db_sessions, input_storage, monkeypatch, state, inputs, records, job_factory):
     monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", inputs)
     monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", records)
-    job_id = await create_job(api, state)
-    other_id = await create_job(api, ProcessingState.NEW)
-    async with api.sessions.begin() as db:
+    job_id = await job_factory(state)
+    other_id = await job_factory(ProcessingState.NEW)
+    async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.definition = {"images": [{"name": "page.jpg", "order": 0}]}
         job.image_count = 1
         db.add_all([model.Image(job_id=job_id, name="page.jpg", order=0),
                     model.Image(job_id=other_id, name="other.jpg", order=0)])
     path = write_inputs(job_id)
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     completed = inputs and state in {ProcessingState.DONE, ProcessingState.FAILED}
-    async with api.sessions() as db:
+    async with db_sessions() as db:
         images = list(await db.scalars(select(model.Image).where(model.Image.job_id == job_id)))
         assert len(images) == (0 if completed and records else 1)
         assert await db.scalar(select(model.Image.id).where(model.Image.job_id == other_id)) is not None
@@ -202,10 +198,10 @@ async def test_optional_image_record_cleanup(failure_api, input_storage, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_image_records_retained_when_removal_fails(failure_api, input_storage, monkeypatch):
+async def test_image_records_retained_when_removal_fails(db_sessions, input_storage, monkeypatch, job_factory):
     monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", True)
-    job_id = await create_job(failure_api, ProcessingState.DONE)
-    async with failure_api.sessions.begin() as db:
+    job_id = await job_factory(ProcessingState.DONE)
+    async with db_sessions.begin() as db:
         db.add(model.Image(job_id=job_id, name="page.jpg", order=0))
     path = write_inputs(job_id)
 
@@ -213,36 +209,36 @@ async def test_image_records_retained_when_removal_fails(failure_api, input_stor
         raise PermissionError("Test deletion failure")
 
     monkeypatch.setattr(cleanup.shutil, "rmtree", fail_removal)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists()
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         assert await db.scalar(select(model.Image.id).where(model.Image.job_id == job_id)) is not None
         assert (await db.get(model.Job, job_id)).inputs_deleted_at is None
 
 
 @pytest.mark.asyncio
-async def test_image_record_cleanup_transaction_recovery(failure_api, input_storage, monkeypatch):
+async def test_image_record_cleanup_transaction_recovery(db_sessions, input_storage, monkeypatch, job_factory):
     monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", True)
-    job_id = await create_job(failure_api, ProcessingState.FAILED)
-    async with failure_api.sessions.begin() as db:
+    job_id = await job_factory(ProcessingState.FAILED)
+    async with db_sessions.begin() as db:
         db.add(model.Image(job_id=job_id, name="page.jpg", order=0))
     path = write_inputs(job_id)
 
     def reject_commit(session):
         raise RuntimeError("Test commit failure")
 
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         event.listen(db.sync_session, "before_commit", reject_commit, once=True)
         with pytest.raises(RuntimeError, match="Test commit failure"):
             await cleanup.delete_completed_job_inputs(db)
     assert not path.exists()
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         assert await db.scalar(select(model.Image.id).where(model.Image.job_id == job_id)) is not None
         assert (await db.get(model.Job, job_id)).inputs_deleted_at is None
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         assert await db.scalar(select(model.Image.id).where(model.Image.job_id == job_id)) is None
         assert (await db.get(model.Job, job_id)).inputs_deleted_at is not None
 
@@ -263,16 +259,16 @@ def test_invalid_cleanup_interval(monkeypatch, value):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_skips_locked_and_requeued_jobs(failure_api, input_storage):
-    job_id = await create_job(failure_api, ProcessingState.DONE)
+async def test_cleanup_skips_locked_and_requeued_jobs(db_sessions, input_storage, job_factory):
+    job_id = await job_factory(ProcessingState.DONE)
     path = write_inputs(job_id)
-    async with failure_api.sessions.begin() as admin:
+    async with db_sessions.begin() as admin:
         job = await admin.scalar(select(model.Job).where(model.Job.id == job_id).with_for_update())
-        async with failure_api.sessions() as db:
+        async with db_sessions() as db:
             await asyncio.wait_for(cleanup.delete_completed_job_inputs(db), timeout=5)
         assert path.exists()
         job.state = ProcessingState.QUEUED
-    async with failure_api.sessions() as db:
+    async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists()
 

@@ -1,15 +1,22 @@
 import io
 import os.path
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
+
+from uuid import UUID, uuid4
+from doc_api.config import config
+from doc_api.db import model
+from doc_api.api import main
+from doc_api.api.routes import general_routes
 
 import pytest
 
+from doc_api.api import cleanup
+from doc_api.tests.helpers import assert_deletion_timestamps, _ename, _put_file
+from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
-from doc_api.config import config
-from doc_api.tests.conftest import _ename, _put_file
 from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, JOB_DEFINITION_PAYLOADS, \
     job_definition_payload_id
 
@@ -18,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 #
-# POST /v1/jobs - 201, 422
+# POST /v1/jobs - 201, 403, 404, 409, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_CREATED.value), indirect=True)
 async def test_post_job_201(created_job):
@@ -40,6 +48,7 @@ async def test_post_job_201(created_job):
         assert img_body["page_uploaded"] is False
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_CREATED.value), indirect=True)
 async def test_post_job_201_with_engine(created_job_with_engine):
@@ -62,6 +71,7 @@ async def test_post_job_201_with_engine(created_job_with_engine):
         assert img_body["page_uploaded"] is False
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.REQUEST_VALIDATION_ERROR.value])
 async def test_post_job_422_invalid_key_values(client, user_headers, dummy):
@@ -87,6 +97,7 @@ async def test_post_job_422_invalid_key_values(client, user_headers, dummy):
     assert ["body", "alto_required"] in paths
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.REQUEST_VALIDATION_ERROR.value])
 async def test_post_job_422_extra_keys(client, user_headers, dummy):
@@ -111,6 +122,7 @@ async def test_post_job_422_extra_keys(client, user_headers, dummy):
     assert ["body", "unexpected_key"] in paths
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.REQUEST_VALIDATION_ERROR.value])
 async def test_post_job_422_duplicate_image_names(client, user_headers, dummy):
@@ -147,97 +159,305 @@ async def test_post_job_422_duplicate_image_names(client, user_headers, dummy):
     paths = [err.get("loc") for err in details if isinstance(err, dict)]
     assert ["body", "images", "name"] in paths
 
-#
-# GET /v1/jobs - 200
-#
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_422_invalid_request(client, user_headers):
+    response = await client.request('POST', '/v1/jobs', headers=user_headers, json={})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_404_engine_not_found(client, user_headers):
+    response = await client.post("/v1/jobs", headers=user_headers, json={"images": [], "engine_name": "missing"})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.ENGINE_NOT_FOUND.value
+
 
 @pytest.mark.asyncio
+async def test_post_job_409_engine_inactive(client, user_headers, engine_factory):
+    await engine_factory(active=False)
+    response = await client.post("/v1/jobs", headers=user_headers, json={"images": [], "engine_name": "Engine"})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.ENGINE_INACTIVE.value
+
+
+@pytest.mark.asyncio
+async def test_post_job_403_explicit_engine_version(client, user_headers):
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                 json={"images": [], "engine_name": "Engine", "engine_version": "1"})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_VERSION.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required,allowed,name", [(True, set(), "page"), (False, {".jpg"}, "page.png")])
+async def test_post_job_422_extension_policy(client, user_headers, monkeypatch, required, allowed, name):
+    monkeypatch.setattr(config, "REQUIRE_IMAGE_EXTENSION", required)
+    monkeypatch.setattr(config, "ALLOWED_IMAGE_EXTENSIONS", allowed)
+    response = await client.post("/v1/jobs", headers=user_headers, json={"images": [{"name": name, "order": 0}]})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+    assert response.json()["details"][0]["loc"] == ["body", "images", 0, "name"]
+
+
+#
+# GET /v1/jobs - 200, 422
+#
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.JOBS_RETRIEVED.value])
-async def test_get_jobs_200(client, user_headers, dummy):
-    for p in JOB_DEFINITION_PAYLOADS:
+@pytest.mark.parametrize("has_owned_jobs", [True, False], ids=["owned-jobs", "no-owned-jobs"])
+async def test_get_jobs_200(client, user_headers, reader_headers, reader_role, reader_owner,
+                            db_sessions, job_factory, worker_key, has_owned_jobs, dummy):
+    created_ids = set()
+    for p in (JOB_DEFINITION_PAYLOADS if has_owned_jobs else []):
         r = await client.post("/v1/jobs", json=p, headers=user_headers)
         assert r.status_code == 201, r.text
+        job_id = r.json()["data"]["id"]
+        created_ids.add(job_id)
+        async with db_sessions.begin() as db:
+            (await db.get(model.Job, UUID(job_id))).owner_key_id = reader_owner.id
 
-    r = await client.get("/v1/jobs", headers=user_headers)
+    other_id = await job_factory(ProcessingState.NEW, owner_key_id=worker_key.id)
+    if reader_role == "admin":
+        created_ids.add(str(other_id))
+
+    r = await client.get("/v1/jobs", headers=reader_headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["code"] == AppCode.JOBS_RETRIEVED.value
     data = body["data"]
     assert isinstance(data, list)
-    assert len(data) >= len(JOB_DEFINITION_PAYLOADS)
+    assert {job["id"] for job in data} == created_ids
+
+    for job in data:
+        assert ("log" in job) == (reader_role == "admin")
+        assert "artifacts_deleted_at" not in job or reader_role == "admin"
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.JOBS_RETRIEVED.value])
-async def test_get_jobs_200_with_engines(client, user_headers, created_engine, dummy):
+async def test_get_jobs_200_with_engines(client, user_headers, reader_headers, reader_owner, db_sessions, created_engine, dummy):
     now = datetime.now(timezone.utc)
+    created_ids = set()
     for p in JOB_DEFINITION_PAYLOADS:
         r = await client.post("/v1/jobs", json={**p, "engine_name": created_engine["name"]} , headers=user_headers)
         assert r.status_code == 201, r.text
+        job_id = r.json()["data"]["id"]
+        created_ids.add(job_id)
+        async with db_sessions.begin() as db:
+            (await db.get(model.Job, UUID(job_id))).owner_key_id = reader_owner.id
 
-    r = await client.get("/v1/jobs", params={"from_created_date": now}, headers=user_headers)
+    r = await client.get("/v1/jobs", params={"from_created_date": now}, headers=reader_headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["code"] == AppCode.JOBS_RETRIEVED.value
     data = body["data"]
     assert isinstance(data, list)
-    assert len(data) >= len(JOB_DEFINITION_PAYLOADS)
+    assert {job["id"] for job in data} == created_ids
     for job in data:
         assert job["engine_name"] == created_engine["name"]
         assert job["engine_version"] == created_engine["version"]
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_result_availability(client, reader_headers, reader_role, jobs_with_output_availability):
+    jobs = jobs_with_output_availability
+    response = await client.get("/v1/jobs", params={"result_available": True}, headers=reader_headers)
+    assert response.status_code == 200, response.text
+    assert {job["id"] for job in response.json()["data"]} == ({str(jobs.active), str(jobs.other)} if reader_role == "admin" else {str(jobs.active)})
+    response = await client.get("/v1/jobs", params={"result_available": False}, headers=reader_headers)
+    assert response.status_code == 200, response.text
+    data = {job["id"]: job for job in response.json()["data"]}
+    assert set(data) == {str(jobs.deleted), str(jobs.processing), str(jobs.missing)}
+    deleted = data[str(jobs.deleted)]
+    assert deleted["state"] == "done"
+    assert deleted["results_deleted_at"] is not None
+    assert deleted["inputs_deleted_at"] is not None
+    assert ("artifacts_deleted_at" in deleted) == (reader_role == "admin")
+    # Missing legacy files are unavailable even without a deletion timestamp.
+    if reader_role == "admin":
+        assert data[str(jobs.missing)]["results_deleted_at"] is None
+    else:
+        assert "results_deleted_at" not in data[str(jobs.missing)]
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_jobs_422_invalid_request(client, reader_headers):
+    response = await client.request('GET', '/v1/jobs', headers=reader_headers, params={'state': 'invalid'})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["created_date", "started_date", "last_change", "finished_date"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+async def test_get_jobs_200_date_filter_boundaries(client, reader_headers, job_factory, db_sessions, field, offset):
+    job_id = await job_factory(ProcessingState.DONE)
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(model.Job, job_id), field, when)
+    response = await client.get("/v1/jobs", headers=reader_headers,
+                                params={f"from_{field}": (when + timedelta(seconds=offset)).isoformat()})
+    assert response.status_code == 200, response.text
+    assert {job["id"] for job in response.json()["data"]} == ({str(job_id)} if offset <= 0 else set())
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", list(ProcessingState))
+async def test_get_jobs_200_state_filter(client, reader_headers, job_factory, state):
+    ids = {current: await job_factory(current) for current in ProcessingState}
+    response = await client.get("/v1/jobs", headers=reader_headers, params={"state": state.value})
+    assert response.status_code == 200, response.text
+    assert {job["id"] for job in response.json()["data"]} == {str(ids[state])}
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_engine_filter_combination(client, reader_headers, job_factory, engine_factory, db_sessions):
+    first = await engine_factory(name="A", version="1")
+    second = await engine_factory(name="A", version="2")
+    job_id = await job_factory(ProcessingState.DONE)
+    other_id = await job_factory(ProcessingState.DONE)
+    await job_factory(ProcessingState.DONE)  # A job without an engine is still listable.
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).engine_id = first.id
+        (await db.get(model.Job, other_id)).engine_id = second.id
+    response = await client.get("/v1/jobs", headers=reader_headers,
+                                params={"engine_name": "A", "engine_version": "1", "state": "done"})
+    assert response.status_code == 200, response.text
+    assert {job["id"] for job in response.json()["data"]} == {str(job_id)}
+
+
 #
-# GET /v1/jobs/{job_id} - 200
+# GET /v1/jobs/{job_id} - 200, 403, 404, 422, 500
 #
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_RETRIEVED.value), indirect=True)
-async def test_get_job_200(client, user_headers, created_job):
+async def test_get_job_200(client, reader_headers, reader_role, created_job):
     job = created_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["code"] == AppCode.JOB_RETRIEVED.value
     data = body["data"]
 
+    assert ("log" in data) == (reader_role == "admin")
     assert data["id"] == job_id
     assert data["state"] == base_objects.ProcessingState.NEW.value
     assert len(data["images"]) == len(job["images"])
     for img_post, img_get in zip(job["images"], data["images"]):
-        assert img_post == img_get
+        if reader_role == "admin":
+            assert img_get["id"] is not None
+            assert all(img_get[field] == value for field, value in img_post.items())
+        else:
+            assert img_post == img_get
+            assert "id" not in img_get
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", JOB_DEFINITION_PAYLOADS, ids=partial(job_definition_payload_id, app_code=AppCode.JOB_RETRIEVED.value), indirect=True)
-async def test_get_job_200_with_engine(client, user_headers, created_job_with_engine):
+async def test_get_job_200_with_engine(client, reader_headers, reader_role, created_job_with_engine):
     job = created_job_with_engine["created_job"]
     engine = created_job_with_engine["engine"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["code"] == AppCode.JOB_RETRIEVED.value
     data = body["data"]
 
+    assert ("log" in data) == (reader_role == "admin")
     assert data["id"] == job_id
     assert data["state"] == base_objects.ProcessingState.NEW.value
     assert len(data["images"]) == len(job["images"])
     for img_post, img_get in zip(job["images"], data["images"]):
-        assert img_post == img_get
+        if reader_role == "admin":
+            assert img_get["id"] is not None
+            assert all(img_get[field] == value for field, value in img_post.items())
+        else:
+            assert img_post == img_get
+            assert "id" not in img_get
 
     assert data["engine_name"] == engine["name"]
     assert data["engine_version"] == engine["version"]
-    assert "engine_definition" not in data
+    if reader_role == "admin":
+        assert data["engine_definition"] == engine["definition"]
+    else:
+        assert "engine_definition" not in data
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_200_deletion_visibility(client, reader_headers, reader_role, jobs_with_output_availability):
+    job_id = jobs_with_output_availability.deleted
+    response = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
+    assert response.status_code == 200, response.text
+    job = response.json()["data"]
+    assert job["result_available"] is False
+    assert job["results_deleted_at"] is not None
+    assert job["inputs_deleted_at"] is not None
+    assert ("artifacts_deleted_at" in job) == (reader_role == "admin")
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_404_job_not_found(client, reader_headers):
+    job_id = uuid4()
+    response = await client.request('GET', f'/v1/jobs/{job_id}', headers=reader_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_get_job_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('GET', f'/v1/jobs/{job_id}', headers=user_headers)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_422_invalid_request(client, reader_headers):
+    response = await client.request('GET', '/v1/jobs/not-a-uuid', headers=reader_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_500_database_failure(client, reader_headers, monkeypatch):
+    async def fail(**kwargs):
+        raise RuntimeError("injected database failure")
+    monkeypatch.setattr(general_routes.general_cruds, "get_job", fail)
+    response = await client.get(f"/v1/jobs/{uuid4()}", headers=reader_headers)
+    assert response.status_code == 500, response.text
+    assert response.json()["code"] == AppCode.INTERNAL_ERROR.value
+    assert "injected database failure" not in response.text
 
 
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 404, 409, 415
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_UPLOADED.value], indirect=True)
 async def test_put_image_201(client, user_headers, created_job):
@@ -264,6 +484,16 @@ async def test_put_image_201(client, user_headers, created_job):
     assert body["code"] == AppCode.IMAGE_UPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_201_preserves_deletion_timestamps(client, user_headers, db_sessions, job_with_deletion_timestamps):
+    job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/image", headers=user_headers, files={"file": ("upload", make_white_image_bytes()[0])})
+    assert response.status_code == 201, response.text
+    await assert_deletion_timestamps(db_sessions, job_id, before)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_REUPLOADED.value], indirect=True)
 async def test_put_image_200(client, user_headers, created_job):
@@ -303,6 +533,7 @@ async def test_put_image_200(client, user_headers, created_job):
     assert body["code"] == AppCode.IMAGE_REUPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB.value], indirect=True)
 async def test_put_image_404(client, user_headers, created_job):
@@ -356,6 +587,7 @@ async def test_put_image_409(client, user_headers, job_with_required_uploads_by_
     assert body["code"] == AppCode.JOB_NOT_IN_NEW.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_INVALID.value], indirect=True)
 async def test_put_image_415(client, user_headers, created_job):
@@ -387,10 +619,45 @@ async def test_put_image_415(client, user_headers, created_job):
     assert body["code"] == AppCode.IMAGE_INVALID.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_404_job_not_found(client, user_headers):
+    job_id = uuid4()
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/image', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_image_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/image', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.NEW])
+async def test_put_image_409_job_not_new(client, user_headers, job_factory, state):
+    job_id = await job_factory(state)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/image', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_IN_NEW.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_422_invalid_request(client, user_headers):
+    response = await client.request('PUT', '/v1/jobs/00000000-0000-0000-0000-000000000001/images/page.jpg/files/image', headers=user_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 404, 409, 422
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_UPLOADED.value], indirect=True)
 async def test_put_alto_201(client, user_headers, created_job):
@@ -416,6 +683,16 @@ async def test_put_alto_201(client, user_headers, created_job):
     assert body["code"] == AppCode.ALTO_UPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_201_preserves_deletion_timestamps(client, user_headers, db_sessions, job_with_deletion_timestamps):
+    job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/alto", headers=user_headers, files={"file": ("upload", VALID_ALTO_XML)})
+    assert response.status_code == 201, response.text
+    await assert_deletion_timestamps(db_sessions, job_id, before)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_REUPLOADED.value], indirect=True)
 async def test_put_alto_200(client, user_headers, created_job):
@@ -453,6 +730,7 @@ async def test_put_alto_200(client, user_headers, created_job):
     assert body["code"] == AppCode.ALTO_REUPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.XML_PARSE_ERROR.value], indirect=True)
 async def test_put_alto_400(client, user_headers, created_job):
@@ -480,6 +758,7 @@ async def test_put_alto_400(client, user_headers, created_job):
     assert body["code"] == AppCode.XML_PARSE_ERROR.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB.value], indirect=True)
 async def test_put_alto_404(client, user_headers, created_job):
@@ -505,6 +784,7 @@ async def test_put_alto_404(client, user_headers, created_job):
     assert body["code"] == AppCode.IMAGE_NOT_FOUND_FOR_JOB.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ALTO_NOT_REQUIRED.value], indirect=True)
 async def test_put_alto_409_alto_not_required(client, user_headers, created_job):
@@ -556,6 +836,7 @@ async def test_put_alto_409_job_not_in_new(client, user_headers, job_with_requir
     assert body["code"] == AppCode.JOB_NOT_IN_NEW.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_SCHEMA_INVALID.value], indirect=True)
 async def test_put_alto_422(client, user_headers, created_job):
@@ -585,10 +866,67 @@ async def test_put_alto_422(client, user_headers, created_job):
     assert body["code"] == AppCode.ALTO_SCHEMA_INVALID.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_404_job_not_found(client, user_headers):
+    job_id = uuid4()
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/alto', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_alto_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/alto', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.NEW])
+async def test_put_alto_409_job_not_new(client, user_headers, job_factory, state):
+    job_id = await job_factory(state)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/alto', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_IN_NEW.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_422_invalid_request(client, user_headers):
+    response = await client.request('PUT', '/v1/jobs/00000000-0000-0000-0000-000000000001/images/page.jpg/files/alto', headers=user_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ['namespace', 'has_layout', 'has_page', 'has_text'])
+async def test_put_alto_422_optional_validation(client, user_headers, job_with_deletion_timestamps, monkeypatch, option):
+    monkeypatch.setattr(config, "ALTO_VALIDATION", {**{key: False for key in config.ALTO_VALIDATION}, "root": True, option: True})
+    job_id, _ = await job_with_deletion_timestamps(ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/alto", headers=user_headers,
+                                files={"file": ("input.xml", b"<alto/>")})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.ALTO_SCHEMA_INVALID.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_201_root_validation_disabled(client, user_headers, job_with_deletion_timestamps, monkeypatch):
+    monkeypatch.setattr(config, "ALTO_VALIDATION", {key: False for key in config.ALTO_VALIDATION})
+    job_id, _ = await job_with_deletion_timestamps(ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/alto", headers=user_headers,
+                                files={"file": ("input.xml", b"<other/>")})
+    assert response.status_code == 201, response.text
+
+
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 404, 409, 422
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_UPLOADED.value], indirect=True)
 async def test_put_page_201(client, user_headers, created_job):
@@ -613,6 +951,16 @@ async def test_put_page_201(client, user_headers, created_job):
     assert body["code"] == AppCode.PAGE_UPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_201_preserves_deletion_timestamps(client, user_headers, db_sessions, job_with_deletion_timestamps):
+    job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/page", headers=user_headers, files={"file": ("upload", VALID_PAGE_XML)})
+    assert response.status_code == 201, response.text
+    await assert_deletion_timestamps(db_sessions, job_id, before)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_REUPLOADED.value], indirect=True)
 async def test_put_page_200(client, user_headers, created_job):
@@ -650,6 +998,7 @@ async def test_put_page_200(client, user_headers, created_job):
     assert body["code"] == AppCode.PAGE_REUPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.XML_PARSE_ERROR], indirect=True)
 async def test_put_page_400(client, user_headers, created_job):
@@ -677,6 +1026,7 @@ async def test_put_page_400(client, user_headers, created_job):
     assert body["code"] == AppCode.XML_PARSE_ERROR.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB.value], indirect=True)
 async def test_put_page_404(client, user_headers, created_job):
@@ -702,6 +1052,7 @@ async def test_put_page_404(client, user_headers, created_job):
     assert body["code"] == AppCode.IMAGE_NOT_FOUND_FOR_JOB.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.PAGE_NOT_REQUIRED.value], indirect=True)
 async def test_put_page_409_page_not_required(client, user_headers, created_job):
@@ -753,6 +1104,7 @@ async def test_put_page_409_job_not_in_new(client, user_headers, job_with_requir
     assert body["code"] == AppCode.JOB_NOT_IN_NEW.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_SCHEMA_INVALID.value], indirect=True)
 async def test_put_page_422(client, user_headers, created_job):
@@ -782,10 +1134,67 @@ async def test_put_page_422(client, user_headers, created_job):
     assert body["code"] == AppCode.PAGE_SCHEMA_INVALID.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_404_job_not_found(client, user_headers):
+    job_id = uuid4()
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/page', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_page_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/page', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.NEW])
+async def test_put_page_409_job_not_new(client, user_headers, job_factory, state):
+    job_id = await job_factory(state)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/images/page.jpg/files/page', headers=user_headers, files={'file': ('page', b'data')})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_IN_NEW.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_422_invalid_request(client, user_headers):
+    response = await client.request('PUT', '/v1/jobs/00000000-0000-0000-0000-000000000001/images/page.jpg/files/page', headers=user_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ['namespace', 'has_page', 'has_text'])
+async def test_put_page_422_optional_validation(client, user_headers, job_with_deletion_timestamps, monkeypatch, option):
+    monkeypatch.setattr(config, "PAGE_VALIDATION", {**{key: False for key in config.PAGE_VALIDATION}, "root": True, option: True})
+    job_id, _ = await job_with_deletion_timestamps(ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/page", headers=user_headers,
+                                files={"file": ("input.xml", b'<PcGts xmlns="urn:invalid"/>' if option == "namespace" else b"<PcGts/>")})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.PAGE_SCHEMA_INVALID.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_201_root_validation_disabled(client, user_headers, job_with_deletion_timestamps, monkeypatch):
+    monkeypatch.setattr(config, "PAGE_VALIDATION", {key: False for key in config.PAGE_VALIDATION})
+    job_id, _ = await job_with_deletion_timestamps(ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/images/page.jpg/files/page", headers=user_headers,
+                                files={"file": ("input.xml", b"<other/>")})
+    assert response.status_code == 201, response.text
+
+
 #
-# PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 409, 422
+# PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 403, 404, 409, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.META_JSON_UPLOADED.value], indirect=True)
 async def test_put_metadata_201(client, user_headers, created_job):
@@ -804,6 +1213,16 @@ async def test_put_metadata_201(client, user_headers, created_job):
     assert body["code"] == AppCode.META_JSON_UPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_201_preserves_deletion_timestamps(client, user_headers, db_sessions, job_with_deletion_timestamps):
+    job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.NEW)
+    response = await client.put(f"/v1/jobs/{job_id}/files/metadata", headers=user_headers, json={})
+    assert response.status_code == 201, response.text
+    await assert_deletion_timestamps(db_sessions, job_id, before)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.META_JSON_REUPLOADED.value], indirect=True)
 async def test_put_metadata_200(client, user_headers, created_job):
@@ -830,6 +1249,7 @@ async def test_put_metadata_200(client, user_headers, created_job):
     assert body["code"] == AppCode.META_JSON_REUPLOADED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.META_JSON_NOT_REQUIRED.value], indirect=True)
 async def test_put_metadata_409_meta_json_not_required(client, user_headers, created_job):
@@ -866,6 +1286,7 @@ async def test_put_metadata_409_job_not_in_new(client, user_headers, job_with_re
     assert body["code"] == AppCode.JOB_NOT_IN_NEW.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.REQUEST_VALIDATION_ERROR.value], indirect=True)
 async def test_put_metadata_422(client, user_headers, created_job):
@@ -888,10 +1309,45 @@ async def test_put_metadata_422(client, user_headers, created_job):
     assert isinstance(details, list)
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_404_job_not_found(client, user_headers):
+    job_id = uuid4()
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/files/metadata', headers=user_headers, json={})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_metadata_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/files/metadata', headers=user_headers, json={})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.NEW])
+async def test_put_metadata_409_job_not_new(client, user_headers, job_factory, state):
+    job_id = await job_factory(state)
+    response = await client.request('PUT', f'/v1/jobs/{job_id}/files/metadata', headers=user_headers, json={})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_IN_NEW.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_422_invalid_request(client, user_headers):
+    response = await client.request('PUT', '/v1/jobs/00000000-0000-0000-0000-000000000001/files/metadata', headers=user_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
 #
-# PATCH /v1/jobs/{job_id} - 200, 409
+# PATCH /v1/jobs/{job_id} - 200, 403, 404, 409, 422
 #
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
 async def test_patch_job_200_cancel_new_job(client, user_headers, cancelled_new_job):
@@ -906,6 +1362,7 @@ async def test_patch_job_200_cancel_new_job(client, user_headers, cancelled_new_
     assert datetime.fromisoformat(data["last_change"].replace("Z", "+00:00")) > datetime.fromisoformat(job["last_change"].replace("Z", "+00:00"))
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
 async def test_patch_job_200_cancel_queued_job(client, user_headers, job_with_required_uploads_by_payload_name):
@@ -929,6 +1386,7 @@ async def test_patch_job_200_cancel_queued_job(client, user_headers, job_with_re
     assert data["last_change"] == data["finished_date"]
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
 async def test_patch_job_200_cancel_processing_job(client, user_headers, lease_job):
@@ -952,6 +1410,7 @@ async def test_patch_job_200_cancel_processing_job(client, user_headers, lease_j
     assert data["last_change"] == data["finished_date"]
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
 async def test_patch_job_200_cancel_error_job(client, user_headers, job_marked_error):
@@ -969,6 +1428,7 @@ async def test_patch_job_200_cancel_error_job(client, user_headers, job_marked_e
     assert body["code"] == AppCode.JOB_CANCELLED.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
 async def test_patch_job_409_cancel_cancelled_job(client, user_headers, cancelled_new_job):
@@ -986,6 +1446,7 @@ async def test_patch_job_409_cancel_cancelled_job(client, user_headers, cancelle
     assert body["code"] == AppCode.JOB_UNCANCELLABLE.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
 async def test_patch_job_409_cancel_done_job(client, user_headers, job_marked_done):
@@ -1003,6 +1464,7 @@ async def test_patch_job_409_cancel_done_job(client, user_headers, job_marked_do
     assert body["code"] == AppCode.JOB_UNCANCELLABLE.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UNCANCELLABLE], indirect=True)
 async def test_patch_job_409_cancel_failed_job(client, user_headers, failed_job):
@@ -1020,18 +1482,54 @@ async def test_patch_job_409_cancel_failed_job(client, user_headers, failed_job)
     assert body["code"] == AppCode.JOB_UNCANCELLABLE.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_404_job_not_found(client, user_headers):
+    job_id = uuid4()
+    response = await client.request('PATCH', f'/v1/jobs/{job_id}', headers=user_headers, json={'state': 'cancelled'})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
 
-#
-# GET /v1/jobs/{job_id}/result - 200, 409, 410, 425
-#
 
 @pytest.mark.asyncio
+async def test_patch_job_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('PATCH', f'/v1/jobs/{job_id}', headers=user_headers, json={'state': 'cancelled'})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_422_invalid_request(client, user_headers):
+    response = await client.request('PATCH', '/v1/jobs/not-a-uuid', headers=user_headers, json={})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [None, "new", "queued", "processing", "done", "error", "failed"])
+async def test_patch_job_403_user_may_only_cancel(client, user_headers, db_sessions, job_factory, state):
+    job_id = await job_factory(ProcessingState.NEW)
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=user_headers, json={"state": state, "progress": .5})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_USER_FORBIDDEN.value
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.NEW
+
+
+#
+# GET /v1/jobs/{job_id}/result - 200, 403, 404, 409, 410, 422, 425
+#
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_RETRIEVED], indirect=True)
-async def test_get_job_result_200(client, user_headers, job_marked_done):
+async def test_get_job_result_200(client, reader_headers, job_marked_done):
     job = job_marked_done["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 200, r.text
 
     # check for zip
@@ -1056,57 +1554,74 @@ async def test_get_job_result_200(client, user_headers, job_marked_done):
     assert is_zip
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_CANCELLED], indirect=True)
-async def test_get_job_result_409_job_cancelled(client, user_headers, cancelled_new_job):
+async def test_get_job_result_409_job_cancelled(client, reader_headers, cancelled_new_job):
     job = cancelled_new_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 409, r.text
 
     body = r.json()
     assert body["code"] == AppCode.JOB_CANCELLED.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_FAILED], indirect=True)
-async def test_get_job_result_409_job_failed(client, user_headers, failed_job):
+async def test_get_job_result_409_job_failed(client, reader_headers, failed_job):
     job = failed_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 409, r.text
 
     body = r.json()
     assert body["code"] == AppCode.JOB_FAILED.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_GONE.value], indirect=True)
-async def test_get_job_result_410(client, user_headers, job_marked_done):
+async def test_get_job_result_410(client, reader_headers, job_marked_done, tmp_path):
     job  = job_marked_done["created_job"]
     job_id = job["id"]
 
-    result_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
-    assert os.path.exists(result_path), (f"Result file should exist at {result_path}, "
-                                         f"this will only pass if testing locally with BASE_DIR setup.")
+    result_path = tmp_path / "results" / f"{job_id}.zip"
+    assert os.path.exists(result_path), f"Result file should exist at {result_path} in the test directory"
     os.remove(result_path)
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 410, r.text
 
     body = r.json()
     assert body["code"] == AppCode.JOB_RESULT_GONE.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_result_410_after_cleanup(client, reader_headers, db_sessions, output_storage, output_factory):
+    job_id, _ = await output_factory(ProcessingState.DONE, output_storage - timedelta(days=8))
+    response = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
+    assert response.status_code == 200
+    assert response.content == b"output"
+    async with db_sessions() as db:
+        await cleanup.delete_expired_job_outputs(db)
+    response = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
+    assert response.status_code == 410, response.text
+    assert response.json()["code"] == AppCode.JOB_RESULT_GONE.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_NOT_READY.value], indirect=True)
-async def test_get_job_result_425_job_new(client, user_headers, created_job):
+async def test_get_job_result_425_job_new(client, reader_headers, created_job):
     job = created_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 425, r.text
 
     body = r.json()
@@ -1115,13 +1630,14 @@ async def test_get_job_result_425_job_new(client, user_headers, created_job):
     assert body["details"]["state"] == base_objects.ProcessingState.NEW.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_NOT_READY.value], indirect=True)
-async def test_get_job_result_425_job_queued(client, user_headers, job_with_required_uploads_by_payload_name):
+async def test_get_job_result_425_job_queued(client, reader_headers, job_with_required_uploads_by_payload_name):
     job = job_with_required_uploads_by_payload_name["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 425, r.text
 
     body = r.json()
@@ -1130,13 +1646,14 @@ async def test_get_job_result_425_job_queued(client, user_headers, job_with_requ
     assert body["details"]["state"] == base_objects.ProcessingState.QUEUED.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_NOT_READY.value], indirect=True)
-async def test_get_job_result_425_job_processing(client, user_headers, lease_job):
+async def test_get_job_result_425_job_processing(client, reader_headers, lease_job):
     job = lease_job["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 425, r.text
 
     body = r.json()
@@ -1145,13 +1662,14 @@ async def test_get_job_result_425_job_processing(client, user_headers, lease_job
     assert body["details"]["state"] == base_objects.ProcessingState.PROCESSING.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_NOT_READY.value], indirect=True)
-async def test_get_job_result_425_job_error(client, user_headers, job_marked_error):
+async def test_get_job_result_425_job_error(client, reader_headers, job_marked_error):
     job = job_marked_error["created_job"]
     job_id = job["id"]
 
-    r = await client.get(f"/v1/jobs/{job_id}/result", headers=user_headers)
+    r = await client.get(f"/v1/jobs/{job_id}/result", headers=reader_headers)
     assert r.status_code == 425, r.text
 
     body = r.json()
@@ -1160,7 +1678,120 @@ async def test_get_job_result_425_job_error(client, user_headers, job_marked_err
     assert body["details"]["state"] == base_objects.ProcessingState.ERROR.value
 
 
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_result_404_job_not_found(client, reader_headers):
+    job_id = uuid4()
+    response = await client.request('GET', f'/v1/jobs/{job_id}/result', headers=reader_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_get_job_result_403_job_access_forbidden(client, user_headers, job_factory, worker_key):
+    job_id = await job_factory(base_objects.ProcessingState.NEW, owner_key_id=worker_key.id)
+    response = await client.request('GET', f'/v1/jobs/{job_id}/result', headers=user_headers)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.asyncio
+async def test_get_job_result_422_invalid_request(client, reader_headers):
+    response = await client.request('GET', '/v1/jobs/not-a-uuid/result', headers=reader_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
 
+#
+# GET / - 307
+#
 
+@pytest.mark.asyncio
+async def test_get_root_307_docs_redirect(client):
+    response = await client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+
+
+#
+# GET /v1/engines - 200, 403, 422
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["readonly", "user", "worker"])
+async def test_get_engines_200_public_fields(client, engine_factory, role):
+    await engine_factory(name="Engine10")
+    await engine_factory(name="Engine2")
+    await engine_factory(name="Hidden", active=False)
+    headers = {"X-API-Key": getattr(config, f"TEST_{role.upper()}_KEY")}
+    response = await client.get("/v1/engines", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == AppCode.ENGINES_RETRIEVED.value
+    engines = response.json()["data"]
+    assert [e["name"] for e in engines] == ["Engine2", "Engine10"]
+    for engine in engines:
+        assert all(engine.get(field) is None for field in ("id", "active", "definition", "created_date", "last_used", "files_updated"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params,code", [
+    ({"active": "true"}, AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE),
+    ({"active": "false"}, AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_ACTIVE),
+    ({"show_definition": "true"}, AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION),
+])
+@pytest.mark.parametrize("role", ["readonly", "user", "worker"])
+async def test_get_engines_403_admin_filters(client, params, code, role):
+    response = await client.get("/v1/engines", params=params,
+        headers={"X-API-Key": getattr(config, f"TEST_{role.upper()}_KEY")})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == code.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_get_engines_422_invalid_filter(client, user_headers):
+    response = await client.get("/v1/engines", headers=user_headers, params={"default": "invalid"})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+#
+# GET /openapi.json - 200
+#
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible", [True, False])
+async def test_get_openapi_200_engine_visibility(client, user_headers, monkeypatch, visible):
+    route = next(route for route in main.app.routes if getattr(route, "path", None) == "/v1/engines")
+    # include_in_schema is evaluated by the decorator at startup.
+    monkeypatch.setattr(route, "include_in_schema", visible)
+    monkeypatch.setattr(main.app, "openapi_schema", None)
+    monkeypatch.setattr(config, "SHOW_SECTIONS", {"User", "Worker", "Admin"})
+    schema = await client.get("/openapi.json")
+    assert schema.status_code == 200
+    assert ("/v1/engines" in schema.json()["paths"]) is visible
+    response = await client.get("/v1/engines", headers=user_headers)
+    assert response.status_code == 200, response.text
+
+
+#
+# GET /docs, /docs/oauth2-redirect, /redoc, /openapi.json - 200
+#
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"])
+async def test_get_documentation_200_public_pages(client, path):
+    response = await client.get(path)
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/json" if path == "/openapi.json" else "text/html")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"])
+async def test_head_documentation_200_public_pages(client, path):
+    response = await client.head(path)
+    assert response.status_code == 200, response.text
+    assert not response.content

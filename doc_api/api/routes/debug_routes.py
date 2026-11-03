@@ -13,7 +13,7 @@ from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
-     DocAPIClientErrorException
+     DocAPIClientErrorException, GENERAL_RESPONSES
 from doc_api.db import model
 
 from uuid import UUID
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 POST_JOB_START_RESPONSES = {
+    AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND],
     AppCode.JOB_STARTED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job started successfully.",
@@ -57,6 +58,13 @@ async def start_job(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+
+    if code == AppCode.JOB_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_404_NOT_FOUND,
+            code=AppCode.JOB_NOT_FOUND,
+            detail=POST_JOB_START_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
+        )
 
     if db_job.state == base_objects.ProcessingState.NEW:
         job_started = await user_cruds.start_job(db=db, job_id=job_id)

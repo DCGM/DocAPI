@@ -216,8 +216,8 @@ async def get_engine_files(
     elif code == AppCode.ENGINE_NOT_FOUND:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.ENGINE_FILES_GONE,
-            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_GONE]["detail"],
+            code=AppCode.ENGINE_NOT_FOUND,
+            detail=GET_ENGINE_FILES_RESPONSES[AppCode.ENGINE_NOT_FOUND]["detail"],
         )
 
     raise RouteInvariantError(code=code, request=request)
