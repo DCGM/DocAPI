@@ -85,11 +85,16 @@ def test_settings(monkeypatch, tmp_path):
 
 
 @pytest_asyncio.fixture
-async def client(isolated_database, test_settings, monkeypatch):
-    database = isolated_database
-    await migrate(database.engine, "head")
-    monkeypatch.setattr(db_module, "global_engine", database.engine)
-    monkeypatch.setattr(db_module, "global_async_session_maker", database.sessions)
+async def prepared_database(isolated_database, test_settings, monkeypatch):
+    """Migrated, isolated DB before application startup creates credentials."""
+    await migrate(isolated_database.engine, "head")
+    monkeypatch.setattr(db_module, "global_engine", isolated_database.engine)
+    monkeypatch.setattr(db_module, "global_async_session_maker", isolated_database.sessions)
+    return isolated_database
+
+
+@pytest_asyncio.fixture
+async def client(prepared_database):
     previous_overrides = dict(app.dependency_overrides)
     try:
         async with app.router.lifespan_context(app):

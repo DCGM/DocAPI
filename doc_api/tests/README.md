@@ -42,7 +42,8 @@ Keep endpoint tests grouped by route in `test_user.py`, `test_worker.py`, and
 cross-role workflows in `test_scenario.py`. All these tests share the isolated
 `client` and role-header fixtures in `conftest.py`; test bodies need no database
 setup of their own. Cleanup, migrations, adapter units, schema validation, and
-fixture teardown checks have separate modules. Shared fixtures live in
+fixture teardown checks have separate modules. Application lifespan tests live in
+`test_startup.py`, and server launcher tests in `test_run.py`. Shared fixtures live in
 `conftest.py` and ordinary helper functions in `helpers.py`.
 
 Use `client` with explicit role headers for every API request, for example
@@ -51,7 +52,11 @@ implicitly adds authentication headers. For database setup and assertions,
 request `db_sessions` and use `async with db_sessions() as db:`. The `job_factory`
 and `output_factory` fixtures prepare jobs in specific states for focused tests;
 they use the same database as `client`. Database-only cleanup tests use these
-fixtures directly without a separate API wrapper.
+fixtures directly without a separate API wrapper. Startup tests use the shared
+`prepared_database` fixture to migrate and bind the same temporary database before
+entering the lifespan themselves; this avoids an implicit development startup
+before a production or startup-failure test. Launcher tests mock Uvicorn and DB
+setup calls, so they never start a server or prepare a deployment database.
 
 Name route tests `test_<method>_<resource>_<http_status>_<case>` (for example,
 `test_patch_job_409_update_failed_job`), matching the existing endpoint sections.
@@ -531,7 +536,6 @@ are listed once below instead of repeated under each endpoint.
 - [x] cleanup interval. [`test_input_cleanup.py::test_cleanup_interval`](test_input_cleanup.py).
 - [x] invalid cleanup interval. [`test_input_cleanup.py::test_invalid_cleanup_interval`](test_input_cleanup.py).
 - [x] cleanup skips locked and requeued jobs. [`test_input_cleanup.py::test_cleanup_skips_locked_and_requeued_jobs`](test_input_cleanup.py).
-- [x] cleanup task lifecycle. [`test_input_cleanup.py::test_cleanup_task_lifecycle`](test_input_cleanup.py).
 
 ### Output cleanup
 
@@ -563,6 +567,21 @@ are listed once below instead of repeated under each endpoint.
 
 - [x] adapter failure state. [`test_adapter.py::test_adapter_failure_state`](test_adapter.py).
 
+### Application startup and launcher
+
+- [x] partial development credentials create only missing keys. [`test_startup.py::test_startup_creates_only_missing_test_credentials`](test_startup.py).
+- [x] real uniqueness conflicts roll back credential inserts and prevent serving. [`test_startup.py::test_startup_key_conflict_rolls_back`](test_startup.py).
+- [x] startup creates credentials. [`test_startup.py::test_startup_creates_credentials`](test_startup.py).
+- [x] startup preserves existing credentials. [`test_startup.py::test_startup_preserves_existing_credentials`](test_startup.py).
+- [x] startup rotates configured admin. [`test_startup.py::test_startup_rotates_configured_admin`](test_startup.py).
+- [x] startup without admin setting preserves admin. [`test_startup.py::test_startup_without_admin_setting_preserves_admin`](test_startup.py).
+- [x] startup invalid credentials. [`test_startup.py::test_startup_invalid_credentials`](test_startup.py).
+- [x] startup database failure rolls back. [`test_startup.py::test_startup_database_failure_rolls_back`](test_startup.py).
+- [x] cleanup task lifecycle. [`test_startup.py::test_cleanup_task_lifecycle`](test_startup.py).
+- [x] production configuration. [`test_run.py::test_production_configuration`](test_run.py).
+- [x] runner reload and database setup. [`test_run.py::test_runner_reload_and_database_setup`](test_run.py).
+- [x] runner database failure prevents serving. [`test_run.py::test_runner_database_failure_prevents_serving`](test_run.py).
+
 ### Remaining depth and edge cases
 
 The endpoint/outcome gaps from #19 are covered above, including the two key
@@ -579,9 +598,10 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
   User/Worker/Admin section combination, empty/unknown/General/Debug sections,
   method-level filtering, cached schemas, and fresh-import environment binding.
   Successful calls and authentication are checked independently of visibility.
-- [ ] Expand startup coverage to production mode, admin-key rotation, existing
-  credentials, and startup failures. Current API tests exercise nonproduction
-  startup/shutdown and cleanup-task cancellation.
+- [x] Expand startup coverage to production/development credentials, admin-key
+  creation and rotation, preserved/disabled existing keys, malformed credentials,
+  DB read/commit failures, cleanup-task cancellation, and launcher reload/DB setup.
+  These cases live in `test_startup.py` and `test_run.py`.
 - [ ] Exercise older Alembic transitions and migration failures with legacy data,
   beyond the current pre-cleanup-to-head upgrade, count backfill, downgrade, and
   re-upgrade. New API databases already apply the complete upgrade chain.
