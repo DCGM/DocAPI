@@ -80,3 +80,37 @@ def route_url(path, **values):
     defaults.update(image_name="page.jpg", label="test-user", name="missing", version="1")
     defaults.update(values)
     return path.format(**defaults)
+
+
+# Swagger section membership is independent of the roles allowed to call a route.
+OPENAPI_SECTION_OPERATIONS = {
+    "User": {
+        ("get", "/v1/me"), ("get", "/v1/engines"),
+        ("get", "/v1/jobs"), ("post", "/v1/jobs"),
+        ("get", "/v1/jobs/{job_id}"), ("patch", "/v1/jobs/{job_id}"),
+        *[("put", "/v1/jobs/{job_id}/images/{image_name}/files/" + kind) for kind in ("image", "alto", "page")],
+        ("put", "/v1/jobs/{job_id}/files/metadata"), ("get", "/v1/jobs/{job_id}/result"),
+    },
+    "Worker": {
+        ("post", "/v1/jobs/lease"),
+        ("patch", "/v1/jobs/{job_id}/lease"), ("delete", "/v1/jobs/{job_id}/lease"),
+        ("get", "/v1/engines/{engine_id}/files"),
+        *[("get", "/v1/jobs/{job_id}/images/{image_id}/files/" + kind) for kind in ("image", "alto", "page")],
+        ("get", "/v1/jobs/{job_id}/files/metadata"),
+        ("post", "/v1/jobs/{job_id}/result"), ("post", "/v1/jobs/{job_id}/artifacts"),
+    },
+    "Admin": {
+        ("get", "/v1/admin/keys"), ("post", "/v1/admin/keys"),
+        ("patch", "/v1/admin/keys/{label}"), ("post", "/v1/admin/keys/{label}/secret"),
+        ("post", "/v1/admin/engines"), ("patch", "/v1/admin/engines/{name}/{version}"),
+        ("put", "/v1/admin/engines/{name}/{version}/files"),
+        ("get", "/v1/admin/jobs/{job_id}/artifacts"), ("patch", "/v1/admin/jobs/{job_id}"),
+    },
+}
+
+OPENAPI_VISIBILITY_ROUTES = [
+    ("SHOW_GET_ENGINES", "get", "/v1/engines"),
+    *[(f"SHOW_PUT_{kind.upper()}", "put", "/v1/jobs/{job_id}/images/{image_name}/files/" + kind)
+      for kind in ("image", "alto", "page")],
+    ("SHOW_PUT_METADATA", "put", "/v1/jobs/{job_id}/files/metadata"),
+]

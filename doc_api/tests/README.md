@@ -278,7 +278,9 @@ are listed once below instead of repeated under each endpoint.
 
 #### GET /openapi.json - 200
 
-- [x] **200** — engine visibility. [`test_user.py::test_get_openapi_200_engine_visibility`](test_user.py).
+- [x] **200** — individual engine/upload toggles, cached schema, successful calls, and authentication when hidden. [`test_user.py::test_get_openapi_200_endpoint_visibility`](test_user.py).
+- [x] **200** — every User/Worker/Admin section combination with all/none/mixed toggles, method-level filtering, and successful hidden user/worker/admin/debug operations. [`test_user.py::test_get_openapi_200_sections`](test_user.py).
+- [x] fresh-import environment binding and default flag values. [`test_user.py::test_openapi_visibility_flags_from_environment`](test_user.py).
 
 #### GET /docs, /docs/oauth2-redirect, /redoc, /openapi.json - 200
 
@@ -573,9 +575,10 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
 - [x] Expand date-filter tests: inclusive boundaries for all four fields in UTC,
   positive/negative offsets, and naive UTC; nullable start/finish dates; combined
   date/state/engine/result filters; and descending creation-date ordering.
-- [ ] Extend OpenAPI visibility tests beyond engine listing to all upload toggles
-  and section combinations. Schema visibility and endpoint callability must be
-  checked separately.
+- [x] Extend OpenAPI visibility tests to all engine/upload toggles, every
+  User/Worker/Admin section combination, empty/unknown/General/Debug sections,
+  method-level filtering, cached schemas, and fresh-import environment binding.
+  Successful calls and authentication are checked independently of visibility.
 - [ ] Expand startup coverage to production mode, admin-key rotation, existing
   credentials, and startup failures. Current API tests exercise nonproduction
   startup/shutdown and cleanup-task cancellation.
