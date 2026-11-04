@@ -121,6 +121,20 @@ async def db_sessions(client, isolated_database):
 
 
 @pytest.fixture
+def invariant_errors(monkeypatch):
+    """Capture the actual exception, so any unrelated 500 cannot pass a test."""
+    errors = []
+    original = main.exception_logger.exception
+
+    def record(error, *args, **kwargs):
+        errors.append(error)
+        return original(error, *args, **kwargs)
+
+    monkeypatch.setattr(main.exception_logger, "exception", record)
+    return errors
+
+
+@pytest.fixture
 def readonly_headers(test_settings):
     return {"X-API-Key": config.TEST_READONLY_KEY}
 

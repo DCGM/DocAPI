@@ -6,6 +6,7 @@ import fastapi
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.cruds import general_cruds
+from doc_api.api.guards.general_guards import require_job_record
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.base_objects import KeyRole, ProcessingState
 from doc_api.api.schemas.responses import DocAPIClientErrorException, AppCode, \
@@ -37,6 +38,7 @@ async def _challenge_user_access_to_job(
         key: model.Key,
         job_id: UUID) -> model.Job:
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, code)
 
     if db_job.owner_key_id != key.id:
         raise DocAPIClientErrorException(

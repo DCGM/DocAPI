@@ -17,7 +17,7 @@ from aiofiles import os as aiofiles_os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.guards.general_guards import challenge_job_exists
+from doc_api.api.guards.general_guards import challenge_job_exists, require_job_record
 from doc_api.api.routes import root_router
 from doc_api.api.routes.general_routes import prepare_job_data, result_availability
 from doc_api.api.routes.helpers import RouteInvariantError
@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 POST_JOB_RESPONSES = {
+    AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND],
     AppCode.JOB_CREATED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Job created successfully.",
@@ -149,25 +150,26 @@ async def post_job(
             detail=POST_JOB_RESPONSES[AppCode.ENGINE_INACTIVE]["detail"]
         )
 
-    db_images, images_code = await general_cruds.get_job_images(db=db, job_id=db_job.id)
-    db_engine = None
-    engine_code = None
-    if db_job.engine_id is not None:
-        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
-
-    if job_code == AppCode.JOB_CREATED and images_code == AppCode.IMAGES_RETRIEVED:
-        data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
-        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
-            status=status.HTTP_201_CREATED,
-            code=AppCode.JOB_CREATED,
-            detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
-            data=data), exclude_none=key.role in {base_objects.KeyRole.USER})
-
     if job_code != AppCode.JOB_CREATED:
         raise RouteInvariantError(code=job_code, request=request)
+
+    db_images, images_code = await general_cruds.get_job_images(db=db, job_id=db_job.id)
+    if images_code == AppCode.JOB_NOT_FOUND:
+        require_job_record(None, images_code, request)
     if images_code != AppCode.IMAGES_RETRIEVED:
         raise RouteInvariantError(code=images_code, request=request)
-    raise RouteInvariantError(code=engine_code, request=request)
+    db_engine = None
+    if db_job.engine_id is not None:
+        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
+        if engine_code != AppCode.ENGINE_RETRIEVED:
+            raise RouteInvariantError(code=engine_code, request=request)
+
+    data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+    return validate_ok_response(DocAPIResponseOK[base_objects.Job](
+        status=status.HTTP_201_CREATED,
+        code=AppCode.JOB_CREATED,
+        detail=POST_JOB_RESPONSES[AppCode.JOB_CREATED]["detail"],
+        data=data), exclude_none=key.role in {base_objects.KeyRole.USER})
 
 
 GET_JOBS_RESPONSES = {
@@ -188,6 +190,7 @@ GET_JOBS_RESPONSES = {
     description="Retrieve all jobs associated with the authenticated API key.",
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
+        request: Request,
         state: Optional[base_objects.ProcessingState] = None,
         result_available: Optional[bool] = None,
         engine_name: Optional[str] = None,
@@ -232,6 +235,9 @@ async def get_jobs(
             from_last_change=from_last_change,
             from_finished_date=from_finished_date
         )
+
+    if code != AppCode.JOBS_RETRIEVED:
+        raise RouteInvariantError(code=code, request=request)
 
     availability = await result_availability([job for job, _ in db_jobs_with_engines])
     data = []
@@ -329,7 +335,9 @@ async def put_image(
             db_image = file_save.image
             already_uploaded = db_image.image_uploaded
             image_update = base_objects.ImageUpdate(image_uploaded=True, imagehash=imagehash)
-            await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+            update_code = await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+            if update_code != AppCode.IMAGE_UPDATED:
+                raise RouteInvariantError(code=update_code, request=request)
 
             response_code = AppCode.IMAGE_REUPLOADED if already_uploaded else AppCode.IMAGE_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
@@ -397,7 +405,8 @@ async def put_alto(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, job_code, request)
     if not db_job.alto_required:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
@@ -440,7 +449,9 @@ async def put_alto(
             already_uploaded = db_image.alto_uploaded
             if not already_uploaded:
                 image_update = base_objects.ImageUpdate(alto_uploaded=True)
-                await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+                update_code = await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+                if update_code != AppCode.IMAGE_UPDATED:
+                    raise RouteInvariantError(code=update_code, request=request)
 
             response_code = AppCode.ALTO_REUPLOADED if already_uploaded else AppCode.ALTO_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
@@ -509,7 +520,8 @@ async def put_page(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, job_code, request)
     if not db_job.page_required:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
@@ -552,7 +564,9 @@ async def put_page(
             already_uploaded = db_image.page_uploaded
             if not already_uploaded:
                 image_update = base_objects.ImageUpdate(page_uploaded=True)
-                await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+                update_code = await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+                if update_code != AppCode.IMAGE_UPDATED:
+                    raise RouteInvariantError(code=update_code, request=request)
 
             response_code = AppCode.PAGE_REUPLOADED if already_uploaded else AppCode.PAGE_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
@@ -608,12 +622,14 @@ PUT_META_JSON_RESPONSES = {
 @challenge_job_exists
 @challenge_user_access_to_new_job
 async def put_meta_json(
+        request: Request,
         job_id: UUID,
         meta_json: Annotated[JSONValue, Body(..., openapi_examples=config.META_JSON_EXAMPLES)],
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, job_code, request)
 
     if not db_job.meta_json_required:
         raise DocAPIClientErrorException(
@@ -638,7 +654,9 @@ async def put_meta_json(
         already_uploaded = db_job.meta_json_uploaded
         if not already_uploaded:
             update_job = base_objects.JobUpdate(meta_json_uploaded=True)
-            await general_cruds.update_job(db=file_save.db, job_id=job_id, job_update=update_job)
+            update_code = await general_cruds.update_job(db=file_save.db, job_id=job_id, job_update=update_job)
+            if update_code != AppCode.JOB_UPDATED:
+                raise RouteInvariantError(code=update_code, request=request)
 
         response_code = AppCode.META_JSON_REUPLOADED if already_uploaded else AppCode.META_JSON_UPLOADED
         return validate_ok_response(DocAPIResponseOK[NoneType](
@@ -702,6 +720,7 @@ async def get_result(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, code, route_request)
 
     if db_job.state == base_objects.ProcessingState.CANCELLED:
         raise DocAPIClientErrorException(

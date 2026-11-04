@@ -13,7 +13,7 @@ from natsort import natsort_keygen, natsorted
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.guards.general_guards import challenge_job_exists
+from doc_api.api.guards.general_guards import challenge_job_exists, require_job_record
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
@@ -190,26 +190,25 @@ async def get_job(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, job_code, request)
     db_images, images_code = await general_cruds.get_job_images(db=db, job_id=job_id)
-    db_engine = None
-    engine_code = None
-    if db_job.engine_id is not None:
-        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
-
-    if job_code == AppCode.JOB_RETRIEVED and images_code == AppCode.IMAGES_RETRIEVED:
-        data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
-        return validate_ok_response(DocAPIResponseOK[base_objects.Job](
-            status=status.HTTP_200_OK,
-            code=AppCode.JOB_RETRIEVED,
-            detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
-            data=data
-        ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
-
-    if job_code != AppCode.JOB_RETRIEVED:
-        raise RouteInvariantError(code=job_code, request=request)
+    if images_code == AppCode.JOB_NOT_FOUND:
+        require_job_record(None, images_code, request)
     if images_code != AppCode.IMAGES_RETRIEVED:
         raise RouteInvariantError(code=images_code, request=request)
-    raise RouteInvariantError(code=engine_code, request=request)
+    db_engine = None
+    if db_job.engine_id is not None:
+        db_engine, engine_code = await general_cruds.get_engine(db=db, engine_id=db_job.engine_id)
+        if engine_code != AppCode.ENGINE_RETRIEVED:
+            raise RouteInvariantError(code=engine_code, request=request)
+
+    data = await prepare_job_data(db_job=db_job, db_images=db_images, key=key, db_engine=db_engine)
+    return validate_ok_response(DocAPIResponseOK[base_objects.Job](
+        status=status.HTTP_200_OK,
+        code=AppCode.JOB_RETRIEVED,
+        detail=GET_JOB_RESPONSES[AppCode.JOB_RETRIEVED]["detail"],
+        data=data
+    ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
 
 
 async def result_availability(jobs):
@@ -444,6 +443,7 @@ async def patch_job(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code_get_job = await general_cruds.get_job(db=db, job_id=job_id)
+    db_job = require_job_record(db_job, code_get_job, request)
     code_update_job = None
 
     # user guards
@@ -521,6 +521,8 @@ async def patch_job(
     if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.ADMIN} and \
             job_progress_update.state == base_objects.ProcessingState.CANCELLED:
         code_update_job = await user_cruds.cancel_job(db, job_id)
+        if code_update_job == AppCode.JOB_NOT_FOUND:
+            require_job_record(None, code_update_job, request)
         if code_update_job == AppCode.JOB_CANCELLED:
             return DocAPIResponseOK[NoneType](
                 status=status.HTTP_200_OK,
@@ -535,6 +537,8 @@ async def patch_job(
                 detail=PATCH_JOB_RESPONSES[AppCode.JOB_UNCANCELLABLE]["detail"],
                 details={"state": db_job.state.value},
             )
+
+        raise RouteInvariantError(code=code_update_job, request=request)
 
     if key.role in {base_objects.KeyRole.WORKER, base_objects.KeyRole.ADMIN}:
         db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(

@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+from doc_api.tests.helpers import assert_route_invariant, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
 from doc_api.api import file_saving as upload_helpers
 from starlette.datastructures import UploadFile
 import asyncio
@@ -354,6 +356,18 @@ async def test_post_job_lease_200_lost_response(client, worker_headers, worker_p
         assert job.previous_attempts == 0
 
 
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_cruds, "lease_job_to_worker", AsyncMock(return_value=(None, None, None, code)))
+    response = await client.request("POST", f"/v1/jobs/lease", headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
 #
 # PATCH /v1/jobs/{job_id}/lease - 200, 403, 404, 409, 422
 #
@@ -432,6 +446,41 @@ async def test_patch_job_lease_409_cancellation_during_request(client, worker_he
     await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
                                     job_factory, db_sessions, monkeypatch,
                                     operation='extend', concurrent_change="cancellation")
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_cruds, "update_processing_job_lease", AsyncMock(return_value=(None, None, code)))
+    response = await client.request("PATCH", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_lease_404_disappeared_after_check(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    delete_job_after_exists(monkeypatch, db_sessions, job_id)
+    response = await client.request("PATCH", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_lease_404_disappeared_before_update(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    delete_job_before_crud(monkeypatch, db_sessions, job_id, worker_cruds, "update_processing_job_lease")
+    response = await client.request("PATCH", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
 
 
 #
@@ -548,6 +597,41 @@ async def test_delete_job_lease_409_cancellation_during_request(client, worker_h
     await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
                                     job_factory, db_sessions, monkeypatch,
                                     operation='release', concurrent_change="cancellation")
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_delete_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_cruds, "release_job_lease", AsyncMock(return_value=code))
+    response = await client.request("DELETE", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_delete_job_lease_404_disappeared_after_check(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    delete_job_after_exists(monkeypatch, db_sessions, job_id)
+    response = await client.request("DELETE", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_delete_job_lease_404_disappeared_before_update(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    delete_job_before_crud(monkeypatch, db_sessions, job_id, worker_cruds, "release_job_lease")
+    response = await client.request("DELETE", f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
 
 
 #
@@ -755,6 +839,18 @@ async def test_get_image_200_stream_failure(client, worker_headers, download_cas
     assert retry.content == case.content
 
 
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_image_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
+    case = await download_case("image")
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_routes.general_cruds, "get_image_for_job", AsyncMock(return_value=(None, code)))
+    response = await client.get(case.url, headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
 #
 # GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 #
@@ -923,6 +1019,18 @@ async def test_get_alto_200_stream_failure(client, worker_headers, download_case
     retry = await client.get(case.url, headers=worker_headers)
     assert retry.status_code == 200, retry.text
     assert retry.content == case.content
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_alto_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
+    case = await download_case("alto")
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_routes.general_cruds, "get_image_for_job", AsyncMock(return_value=(None, code)))
+    response = await client.get(case.url, headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -1095,6 +1203,18 @@ async def test_get_page_200_stream_failure(client, worker_headers, download_case
     assert retry.content == case.content
 
 
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_page_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
+    case = await download_case("page")
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_routes.general_cruds, "get_image_for_job", AsyncMock(return_value=(None, code)))
+    response = await client.get(case.url, headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
 #
 # GET /v1/jobs/{job_id}/files/metadata - 200, 403, 404, 409, 410, 422
 #
@@ -1227,6 +1347,18 @@ async def test_get_metadata_200_stream_failure(client, worker_headers, download_
     assert retry.content == case.content
 
 
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_metadata_404_disappeared_after_check(client, worker_headers, download_case, db_sessions, monkeypatch):
+    case = await download_case("metadata")
+    delete_job_after_exists(monkeypatch, db_sessions, case.records[0][1])
+    response = await client.get(case.url, headers=worker_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
 #
 # GET /v1/engines/{engine_id}/files - 200, 404, 410, 422
 #
@@ -1348,6 +1480,18 @@ async def test_get_engine_files_200_stream_failure(client, worker_headers, downl
     retry = await client.get(case.url, headers=worker_headers)
     assert retry.status_code == 200, retry.text
     assert retry.content == case.content
+
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_engine_files_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
+    case = await download_case("engine")
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_routes.general_cruds, "get_engine", AsyncMock(return_value=(None, code)))
+    response = await client.get(case.url, headers=worker_headers)
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -1687,6 +1831,21 @@ async def test_post_job_result_422_multipart(client, worker_headers, zip_upload_
                                     method="POST", variant=variant)
 
 
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_404_disappeared_before_install(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("result")
+    entity, record_id, _ = case.records[0]
+    delete_before_file_install(monkeypatch, db_sessions, entity, record_id)
+    response = await client.request("POST", case.url, headers=worker_headers,
+                                    files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
 #
 # POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
@@ -1963,6 +2122,21 @@ async def test_post_job_artifacts_422_multipart(client, worker_headers, zip_uplo
     case = await zip_upload_case("artifacts")
     await assert_multipart_rejected(client, worker_headers, case, db_sessions,
                                     method="POST", variant=variant)
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_404_disappeared_before_install(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("artifacts")
+    entity, record_id, _ = case.records[0]
+    delete_before_file_install(monkeypatch, db_sessions, entity, record_id)
+    response = await client.request("POST", case.url, headers=worker_headers,
+                                    files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
 
 
 #
@@ -2400,3 +2574,29 @@ async def test_patch_job_200_409_concurrent_error_and_failure(client, worker_hea
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("state", [None, "done", "error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors, state):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(VALID_ZIP)
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(worker_cruds, "update_job_progress", AsyncMock(return_value=(None, None, None, code)))
+    payload = {"progress": 0.5} if state is None else {"state": state}
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json=payload)
+    assert_route_invariant(response, invariant_errors, code)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("state", [None, "done", "error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_404_disappeared_before_update(client, worker_headers, job_factory, db_sessions, monkeypatch, state):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(VALID_ZIP)
+    delete_job_before_crud(monkeypatch, db_sessions, job_id, worker_cruds, "update_job_progress")
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                   json={"progress": 0.5} if state is None else {"state": state})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value

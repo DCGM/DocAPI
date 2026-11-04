@@ -284,6 +284,61 @@ def assert_internal_transfer_error(response):
     assert "injected transfer failure" not in response.text
 
 
+def assert_route_invariant(response, errors, code):
+    from doc_api.api.routes.helpers import RouteInvariantError
+    assert_internal_transfer_error(response)
+    assert len(errors) == 1
+    assert isinstance(errors[0], RouteInvariantError), repr(errors[0])
+    assert errors[0].code == code
+    assert "Unexpected code" not in response.text
+
+
+def delete_job_after_exists(monkeypatch, db_sessions, job_id):
+    """Remove real rows after the initial existence guard has succeeded."""
+    from sqlalchemy import delete
+    from doc_api.api.guards import general_guards
+    original = general_guards._challenge_job_exists
+
+    async def checked(**kwargs):
+        job = await original(**kwargs)
+        if kwargs["job_id"] == job_id:
+            async with db_sessions.begin() as db:
+                await db.execute(delete(model.Image).where(model.Image.job_id == job_id))
+                await db.execute(delete(model.Job).where(model.Job.id == job_id))
+        return job
+
+    monkeypatch.setattr(general_guards, "_challenge_job_exists", checked)
+
+
+def delete_before_file_install(monkeypatch, db_sessions, entity, record_id):
+    """Remove a real record after staging but before the final locked lookup."""
+    from sqlalchemy import delete
+    from doc_api.api import file_saving
+    original = file_saving.FileSaveTransaction.install
+
+    async def install(file_save):
+        async with db_sessions.begin() as db:
+            if entity is model.Job:
+                await db.execute(delete(model.Image).where(model.Image.job_id == record_id))
+            await db.execute(delete(entity).where(entity.id == record_id))
+        await original(file_save)
+
+    monkeypatch.setattr(file_saving.FileSaveTransaction, "install", install)
+
+
+def delete_job_before_crud(monkeypatch, db_sessions, job_id, module, method):
+    from sqlalchemy import delete
+    original = getattr(module, method)
+
+    async def deleted(*args, **kwargs):
+        async with db_sessions.begin() as db:
+            await db.execute(delete(model.Image).where(model.Image.job_id == job_id))
+            await db.execute(delete(model.Job).where(model.Job.id == job_id))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(module, method, deleted)
+
+
 async def assert_records_unchanged(sessions, records):
     async with sessions() as db:
         for entity, record_id, before in records:
