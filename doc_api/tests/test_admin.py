@@ -15,7 +15,8 @@ from sqlalchemy import select
 from doc_api.api.routes import admin_routes
 from doc_api.api import main
 from doc_api.api.database import DBError
-from doc_api.tests.helpers import (interrupted_upload_body, interrupted_upload_headers,
+from doc_api.tests.helpers import (assert_generated_zip_save, assert_multipart_rejected,
+                                   interrupted_upload_body, interrupted_upload_headers,
                                    assert_internal_transfer_error, assert_records_unchanged,
                                    interrupt_download, inject_zip_upload_failure)
 
@@ -1205,6 +1206,40 @@ async def test_put_engine_files_200_backup_cleanup_failure(client, admin_headers
 
 
 
+
+
+
+@pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
+@pytest.mark.asyncio
+async def test_put_engine_files_200_generated_zip(client, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("engine")
+    await assert_generated_zip_save(client, admin_headers, admin_headers, case, db_sessions,
+                                    kind="engine", variant=variant, code=AppCode.ENGINE_FILES_REUPLOADED, invalid=False)
+
+
+@pytest.mark.parametrize("variant", ["truncated", "invalid_directory"])
+@pytest.mark.asyncio
+async def test_put_engine_files_415_generated_zip(client, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("engine")
+    await assert_generated_zip_save(client, admin_headers, admin_headers, case, db_sessions,
+                                    kind="engine", variant=variant, code=AppCode.ENGINE_FILES_INVALID, invalid=True)
+
+
+
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_put_engine_files_400_multipart(client, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("engine")
+    await assert_multipart_rejected(client, admin_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_put_engine_files_422_multipart(client, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("engine")
+    await assert_multipart_rejected(client, admin_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
 
 
 #

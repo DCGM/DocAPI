@@ -714,6 +714,53 @@ that no complete body or second response is sent, that stored data is unchanged,
 and that a subsequent complete download succeeds. Buffered HTTPX responses
 alone would hide these failures and could misleadingly appear successful.
 
+### Generated payloads and validation combinations
+
+Payloads are constructed at test runtime in `dummy_data.py`; no large binary
+fixtures are stored in the repository. ALTO and PAGE cases cover Unicode,
+UTF-16 declarations, 64 nested groups, XML above 1 MiB, malformed encodings,
+truncated/empty XML, and rejected entity declarations. Every validation-toggle
+subset is exercised against a document with an unsupported namespace and no
+text structures; the enabled checks determine acceptance. These are basic
+structural checks, rather than full XSD validation.
+
+Real ZIP archives cover empty archives, 400 entries, Unicode entry names, an
+empty directory, a deflated text entry, and an uncompressed 3 MiB entry.
+Successful saves are downloaded and compared byte for byte. Truncated or damaged central directories are rejected
+without changing previous files or DB records, followed by a successful retry.
+Multipart cases cover missing boundaries, invalid bodies, wrong field names,
+empty filenames, and text fields supplied instead of files. User and worker
+cases also run with admin authentication. Invalid file fields retain their
+validation messages and return 422; exception objects in validation details are
+encoded as strings to avoid an internal serialization error.
+
+- [x] put image 400 multipart. [`test_user.py::test_put_image_400_multipart`](test_user.py).
+- [x] put image 422 multipart. [`test_user.py::test_put_image_422_multipart`](test_user.py).
+- [x] put alto 201 generated xml. [`test_user.py::test_put_alto_201_generated_xml`](test_user.py).
+- [x] put alto 400 generated xml. [`test_user.py::test_put_alto_400_generated_xml`](test_user.py).
+- [x] put alto 201 validation combinations. [`test_user.py::test_put_alto_201_validation_combinations`](test_user.py).
+- [x] put alto 422 validation combinations. [`test_user.py::test_put_alto_422_validation_combinations`](test_user.py).
+- [x] put alto 400 multipart. [`test_user.py::test_put_alto_400_multipart`](test_user.py).
+- [x] put alto 422 multipart. [`test_user.py::test_put_alto_422_multipart`](test_user.py).
+- [x] put page 201 generated xml. [`test_user.py::test_put_page_201_generated_xml`](test_user.py).
+- [x] put page 400 generated xml. [`test_user.py::test_put_page_400_generated_xml`](test_user.py).
+- [x] put page 201 validation combinations. [`test_user.py::test_put_page_201_validation_combinations`](test_user.py).
+- [x] put page 422 validation combinations. [`test_user.py::test_put_page_422_validation_combinations`](test_user.py).
+- [x] put page 400 multipart. [`test_user.py::test_put_page_400_multipart`](test_user.py).
+- [x] put page 422 multipart. [`test_user.py::test_put_page_422_multipart`](test_user.py).
+- [x] post job result 200 generated zip. [`test_worker.py::test_post_job_result_200_generated_zip`](test_worker.py).
+- [x] post job result 415 generated zip. [`test_worker.py::test_post_job_result_415_generated_zip`](test_worker.py).
+- [x] post job result 400 multipart. [`test_worker.py::test_post_job_result_400_multipart`](test_worker.py).
+- [x] post job result 422 multipart. [`test_worker.py::test_post_job_result_422_multipart`](test_worker.py).
+- [x] post job artifacts 200 generated zip. [`test_worker.py::test_post_job_artifacts_200_generated_zip`](test_worker.py).
+- [x] post job artifacts 415 generated zip. [`test_worker.py::test_post_job_artifacts_415_generated_zip`](test_worker.py).
+- [x] post job artifacts 400 multipart. [`test_worker.py::test_post_job_artifacts_400_multipart`](test_worker.py).
+- [x] post job artifacts 422 multipart. [`test_worker.py::test_post_job_artifacts_422_multipart`](test_worker.py).
+- [x] put engine files 200 generated zip. [`test_admin.py::test_put_engine_files_200_generated_zip`](test_admin.py).
+- [x] put engine files 415 generated zip. [`test_admin.py::test_put_engine_files_415_generated_zip`](test_admin.py).
+- [x] put engine files 400 multipart. [`test_admin.py::test_put_engine_files_400_multipart`](test_admin.py).
+- [x] put engine files 422 multipart. [`test_admin.py::test_put_engine_files_422_multipart`](test_admin.py).
+
 ### Cleanup concurrency and API responsiveness
 
 - [x] input/result/artifact deletion is held while API reads, file downloads, and
@@ -800,9 +847,10 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
   optional image-record deletion, and cleanup during final file installation.
   Cleanup tests also cover failed deletion, failed commits, recovery, and
   locked/requeued jobs.
-- [ ] Add deeper validator combinations and large or unusual multipart/XML/ZIP
-  payloads. Current tests cover each configured XML check, ZIP-validation bypass,
-  extension policy, missing files, and selected malformed payloads.
+- [x] Add validator-toggle combinations and generated multipart/XML/ZIP payloads,
+  including Unicode, larger files, malformed data, preservation after rejection,
+  and successful ZIP round trips. These are bounded regression cases; throughput
+  and resource-exhaustion stress tests remain outside this scope.
 - [ ] Add stress coverage for multiple workers leasing many jobs, retry/error
   races, and reconnect/cancellation behavior. Current tests cover one-job
   concurrent assignment, timeout/grace boundaries, retry exhaustion, and release

@@ -1,7 +1,71 @@
 import itertools
+import io
+import zipfile
+from xml.etree import ElementTree
 
 import cv2
 import numpy as np
+
+
+def make_xml_payload(kind, variant):
+    """Build bounded XML cases at test runtime, without checked-in large files."""
+    namespace = ("http://www.loc.gov/standards/alto/ns-v4#" if kind == "alto" else
+                 "http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15")
+    if variant == "validation_combinations":
+        namespace = "urn:unsupported-test-namespace"
+    def tag(name):
+        return f"{{{namespace}}}{name}"
+
+    root = ElementTree.Element(tag("alto" if kind == "alto" else "PcGts"))
+    parent = ElementTree.SubElement(root, tag("Layout")) if kind == "alto" else root
+    parent = ElementTree.SubElement(parent, tag("Page"))
+    if variant != "validation_combinations":
+        if variant == "deep":
+            for _ in range(64):
+                parent = ElementTree.SubElement(parent, tag("Group"))
+        for index in range(15000 if variant == "large" else 1):
+            line = ElementTree.SubElement(parent, tag("TextLine"), id=f"line-{index}")
+            text = "Příliš žluťoučký kůň — Ελληνικά 中文 😀 & < > " * 2
+            if kind == "alto":
+                ElementTree.SubElement(line, tag("String"), CONTENT=text)
+            else:
+                ElementTree.SubElement(line, tag("Unicode")).text = text
+    payload = ElementTree.tostring(root, encoding="utf-16" if variant == "utf16" else "utf-8",
+                                   xml_declaration=True)
+    if variant == "truncated":
+        return payload[:-20]
+    if variant == "invalid_encoding":
+        return payload.replace(b"</ns0:Page>", b"\xff</ns0:Page>")
+    if variant == "entity":
+        return b'<!DOCTYPE root [<!ENTITY injected "text">]><root>&injected;</root>'
+    if variant == "empty":
+        return b""
+    return payload
+
+
+def make_zip_payload(variant):
+    """Generate real archives, including multipart-spooling and rejection cases."""
+    buffer = io.BytesIO()
+    compression = zipfile.ZIP_DEFLATED if variant == "compressed" else zipfile.ZIP_STORED
+    with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
+        if variant == "many_entries":
+            for index in range(400):
+                archive.writestr(f"pages/{index:04d}.xml", f"<page id='{index}'/>")
+        elif variant == "large":
+            archive.writestr("large.bin", bytes(range(256)) * 12288)  # 3 MiB, no compression.
+        elif variant == "compressed":
+            archive.writestr("repeated.txt", b"generated text\n" * 100000)
+        elif variant == "unicode":
+            archive.writestr("výsledky/中文 😀.xml", "<text>Příliš žluťoučký kůň</text>")
+            archive.writestr("empty-directory/", b"")
+        elif variant != "empty":
+            archive.writestr("page.xml", "<page/>")
+    payload = buffer.getvalue()
+    if variant == "truncated":
+        return payload[:-22]  # Remove the end-of-central-directory record.
+    if variant == "invalid_directory":
+        return payload.replace(b"PK\x01\x02", b"BAD!", 1)
+    return payload
 
 #
 # Generate combinations of job definition payloads for testing

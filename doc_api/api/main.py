@@ -8,6 +8,7 @@ import fastapi
 from fastapi import FastAPI, Request
 from fastapi.dependencies.models import Dependant
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 
@@ -269,7 +270,9 @@ async def validation_handler(_: Request, exc: RequestValidationError):
         status=fastapi.status.HTTP_422_UNPROCESSABLE_CONTENT,
         code=AppCode.REQUEST_VALIDATION_ERROR,
         detail=VALIDATION_RESPONSE[AppCode.REQUEST_VALIDATION_ERROR]["detail"],
-        details=exc.errors()
+        # UploadFile/type validators can include exception objects in ctx.
+        # Preserve their messages without turning a client error into a 500.
+        details=jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
     )
     return validate_client_error_response(payload)
 
