@@ -6,13 +6,15 @@ import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSessionTransaction
 
 from doc_api.api.routes import worker_routes
 from doc_api.api import main
-from doc_api.tests.helpers import (assert_generated_zip_save, assert_multipart_rejected,
+from doc_api.tests.helpers import (assert_generated_zip_save, assert_multipart_rejected, assert_worker_update_race,
                                    interrupted_upload_body, interrupted_upload_headers,
                                    assert_internal_transfer_error, assert_records_unchanged,
                                    interrupt_download, inject_zip_upload_failure)
@@ -161,6 +163,197 @@ async def test_post_job_lease_200_concurrent_assignment(client, worker_headers, 
         assert (await db.get(model.Job, job_id)).previous_attempts == 0
 
 
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, job_factory, db_sessions, monkeypatch):
+    monkeypatch.setattr(config, "JOB_MAX_ATTEMPTS", 3)
+    old = datetime.now(timezone.utc) - timedelta(days=1)
+    expected = {}
+    for state, count, attempts in [(ProcessingState.QUEUED, 16, None), (ProcessingState.ERROR, 8, 0),
+                                    (ProcessingState.PROCESSING, 8, 1), (ProcessingState.ERROR, 4, 2),
+                                    (ProcessingState.PROCESSING, 4, 2), (ProcessingState.DONE, 2, 0),
+                                    (ProcessingState.FAILED, 2, 0), (ProcessingState.CANCELLED, 2, 0)]:
+        for _ in range(count):
+            job_id = await job_factory(state)
+            expected[job_id] = (state, attempts)
+    async with db_sessions.begin() as db:
+        for job in await db.scalars(select(model.Job)):
+            job.previous_attempts = expected[job.id][1]
+            job.last_change = old
+            if job.state != ProcessingState.QUEUED:
+                job.started_date = old
+    gate = asyncio.Event()
+
+    async def lease(worker):
+        await gate.wait()
+        response = await client.post("/v1/jobs/lease", headers=worker.headers)
+        assert response.status_code == 200, response.text
+        return worker, response.json()
+
+    # More requests than available connections/jobs exercise pool queuing and
+    # competing retry scans without assuming a particular scheduling order.
+    tasks = [asyncio.create_task(lease(worker)) for _ in range(12) for worker in worker_pool]
+    try:
+        gate.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=60)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    # SKIP LOCKED can report an empty queue while another transaction holds
+    # retryable jobs. Poll after each concurrent wave has finished as workers do.
+    for _ in range(8):
+        if sum(body["code"] == AppCode.JOB_LEASED.value for _, body in results) == 32:
+            break
+        results.extend(await asyncio.wait_for(asyncio.gather(*(lease(worker) for worker in worker_pool)), timeout=30))
+    leased = [(worker, UUID(body["data"]["id"])) for worker, body in results
+              if body["code"] == AppCode.JOB_LEASED.value]
+    assert len(leased) == 32
+    assert len({job_id for _, job_id in leased}) == 32, "A job was assigned more than once"
+    assert sum(body["code"] == AppCode.JOB_QUEUE_EMPTY.value for _, body in results) >= 16
+    assignments = {job_id: worker.id for worker, job_id in leased}
+    async with db_sessions() as db:
+        for job in await db.scalars(select(model.Job)):
+            state, attempts = expected[job.id]
+            if job.id in assignments:
+                assert job.state == ProcessingState.PROCESSING
+                assert job.worker_key_id == assignments[job.id]
+                assert job.previous_attempts == (0 if attempts is None else attempts + 1)
+                assert job.last_change > old
+                if state != ProcessingState.QUEUED:
+                    assert job.started_date == old
+                    assert job.progress == 0.0
+                    assert job.log.count("ATTEMPT ") == 1
+                    assert job.log_user.count("ATTEMPT ") == 1
+            elif state in {ProcessingState.ERROR, ProcessingState.PROCESSING}:
+                assert job.state == ProcessingState.FAILED
+                assert job.previous_attempts == 2
+                assert job.finished_date > old and job.progress == 1.0
+            else:
+                assert job.state == state
+                assert job.previous_attempts == attempts
+    response = await client.post("/v1/jobs/lease", headers=worker_pool[0].headers)
+    assert response.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_lease_cancelled_before_commit(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.QUEUED)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).previous_attempts = None
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_exit = AsyncSessionTransaction.__aexit__
+
+    async def exit_transaction(transaction, exc_type, exc, traceback):
+        if exc_type is None and any(isinstance(row, model.Job) and row.id == job_id
+                                    and row.state == ProcessingState.PROCESSING
+                                    for row in transaction.session.dirty):
+            entered.set()
+            try:
+                await release.wait()
+            except BaseException as error:
+                await original_exit(transaction, type(error), error, error.__traceback__)
+                raise
+        return await original_exit(transaction, exc_type, exc, traceback)
+
+    monkeypatch.setattr(AsyncSessionTransaction, "__aexit__", exit_transaction)
+    task = asyncio.create_task(client.post("/v1/jobs/lease", headers=worker_headers))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.QUEUED
+        assert job.previous_attempts is None
+    # A new request uses the same credentials after the cancelled connection.
+    retry = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["data"]["id"] == str(job_id)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).previous_attempts == 0
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("interruption", ["cancellation", "disconnect"])
+@pytest.mark.asyncio
+async def test_post_job_lease_200_lost_response(client, worker_headers, worker_pool, job_factory,
+                                              db_sessions, monkeypatch, interruption):
+    jobs = {await job_factory(ProcessingState.QUEUED) for _ in range(2)}
+    async with db_sessions.begin() as db:
+        for job in await db.scalars(select(model.Job)):
+            job.previous_attempts = None
+    committed, release = asyncio.Event(), asyncio.Event()
+    original_lease = worker_cruds.lease_job_to_worker
+    lost_id = None
+
+    async def lease(**kwargs):
+        nonlocal lost_id
+        result = await original_lease(**kwargs)
+        if not committed.is_set():
+            lost_id = result[0].id
+            committed.set()
+            if interruption == "cancellation":
+                await release.wait()
+        return result
+
+    monkeypatch.setattr(worker_cruds, "lease_job_to_worker", lease)
+    if interruption == "cancellation":
+        task = asyncio.create_task(client.post("/v1/jobs/lease", headers=worker_headers))
+        try:
+            await asyncio.wait_for(committed.wait(), timeout=10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    else:
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                assert message["status"] == 200
+                raise OSError("client disconnected before receiving lease")
+
+        url = "/v1/jobs/lease"
+        scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+                 "http_version": "1.1", "method": "POST", "scheme": "http", "path": url,
+                 "raw_path": url.encode(), "root_path": "", "query_string": b"",
+                 "headers": [(key.lower().encode(), value.encode()) for key, value in worker_headers.items()],
+                 "server": ("test", 80), "client": ("127.0.0.1", 1234)}
+        with pytest.raises(OSError, match="client disconnected"):
+            await main.app(scope, receive, send)
+    assert lost_id in jobs
+    async with db_sessions() as db:
+        job = await db.get(model.Job, lost_id)
+        assert job.state == ProcessingState.PROCESSING and job.previous_attempts == 0
+    # Retrying POST creates another lease; it cannot undo a committed assignment
+    # whose response was lost. The first lease is recoverable by release/timeout.
+    retry = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert UUID(retry.json()["data"]["id"]) == (jobs - {lost_id}).pop()
+    empty = await client.post("/v1/jobs/lease", headers=worker_pool[0].headers)
+    assert empty.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
+    released = await client.delete(f"/v1/jobs/{lost_id}/lease", headers=worker_headers)
+    assert released.status_code == 204, released.text
+    recovered = await client.post("/v1/jobs/lease", headers=worker_pool[0].headers)
+    assert recovered.json()["data"]["id"] == str(lost_id)
+    async with db_sessions() as db:
+        job = await db.get(model.Job, lost_id)
+        assert job.worker_key_id == worker_pool[0].id
+        assert job.previous_attempts == 0
+
+
 #
 # PATCH /v1/jobs/{job_id}/lease - 200, 403, 404, 409, 422
 #
@@ -220,6 +413,25 @@ async def test_patch_job_lease_422_invalid_request(client, worker_headers):
     response = await client.request('PATCH', '/v1/jobs/not-a-uuid/lease', headers=worker_headers)
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+
+@pytest.mark.asyncio
+async def test_patch_job_lease_403_reassignment_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation='extend', concurrent_change="reassignment")
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_lease_409_cancellation_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation='extend', concurrent_change="cancellation")
 
 
 #
@@ -317,6 +529,25 @@ async def test_delete_job_lease_204_attempts_restored(client, worker_headers, jo
         assert job.previous_attempts == (attempts - 1 if attempts else None)
         assert job.worker_key_id is None
         assert job.state == ProcessingState.QUEUED
+
+
+
+@pytest.mark.asyncio
+async def test_delete_job_lease_403_reassignment_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation='release', concurrent_change="reassignment")
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_delete_job_lease_409_cancellation_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation='release', concurrent_change="cancellation")
 
 
 #
@@ -2003,6 +2234,7 @@ async def test_patch_job_409_failure_invalid_source_state(client, worker_headers
         await db.rollback()
         # The transaction-level check also rejects a stale request after a state change.
         _, _, _, code = await worker_cruds.update_job_progress(
+            worker_key_id=None,
             db=db, job_id=job_id, job_progress_update=JobProgressUpdate(state="failed"))
         assert code == AppCode.JOB_UNFINISHABLE
 
@@ -2044,3 +2276,127 @@ async def test_patch_job_200_progress_clamped(client, worker_headers, job_factor
     assert response.json()["code"] == AppCode.JOB_UPDATED.value
     async with db_sessions() as db:
         assert (await db.get(model.Job, job_id)).progress == expected
+
+
+@pytest.mark.parametrize("operation", ["progress", "done", "error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_403_reassignment_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch, operation):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation=operation, concurrent_change="reassignment")
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("operation", ["progress", "done", "error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_409_cancellation_during_request(client, worker_headers, other_worker_headers,
+                                                        user_headers, job_factory, db_sessions, monkeypatch, operation):
+    await assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                    job_factory, db_sessions, monkeypatch,
+                                    operation=operation, concurrent_change="cancellation")
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("exhausted", [False, True])
+@pytest.mark.asyncio
+async def test_patch_job_200_error_during_lease_poll(client, worker_headers, other_worker_headers,
+                                                   job_factory, db_sessions, monkeypatch, exhausted):
+    monkeypatch.setattr(config, "JOB_MAX_ATTEMPTS", 3)
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).previous_attempts = 2 if exhausted else 0
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_exit = AsyncSessionTransaction.__aexit__
+
+    async def exit_transaction(transaction, exc_type, exc, traceback):
+        if exc_type is None and any(isinstance(row, model.Job) and row.id == job_id
+                                    and row.state == ProcessingState.ERROR
+                                    for row in transaction.session.dirty):
+            entered.set()
+            try:
+                await release.wait()
+            except BaseException as error:
+                await original_exit(transaction, type(error), error, error.__traceback__)
+                raise
+        return await original_exit(transaction, exc_type, exc, traceback)
+
+    monkeypatch.setattr(AsyncSessionTransaction, "__aexit__", exit_transaction)
+    report = asyncio.create_task(client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                              json={"state": "error", "log": "retry race"}))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        # The pending ERROR is uncommitted; another worker must not lease it.
+        before = await asyncio.wait_for(client.post("/v1/jobs/lease", headers=other_worker_headers), timeout=10)
+        assert before.status_code == 200, before.text
+        assert before.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
+        release.set()
+        response = await asyncio.wait_for(report, timeout=10)
+        assert response.json()["code"] == AppCode.JOB_MARKED_ERROR.value
+    finally:
+        release.set()
+        report.cancel()
+        await asyncio.gather(report, return_exceptions=True)
+    after = await client.post("/v1/jobs/lease", headers=other_worker_headers)
+    assert after.status_code == 200, after.text
+    assert after.json()["code"] == (AppCode.JOB_QUEUE_EMPTY if exhausted else AppCode.JOB_LEASED).value
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == (ProcessingState.FAILED if exhausted else ProcessingState.PROCESSING)
+        assert job.previous_attempts == (2 if exhausted else 1)
+        assert job.log.count("retry race") == 1
+        assert job.log.count("ATTEMPT ") == (0 if exhausted else 1)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("first_state", ["error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_200_409_concurrent_error_and_failure(client, worker_headers, job_factory,
+                                                            db_sessions, monkeypatch, first_state):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    entered = asyncio.Event()
+    release = {state: asyncio.Event() for state in ["error", "failed"]}
+    original = worker_cruds.update_job_progress
+    arrivals = 0
+
+    async def update(**kwargs):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            entered.set()
+        await release[kwargs["job_progress_update"].state.value].wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(worker_cruds, "update_job_progress", update)
+    tasks = [asyncio.create_task(client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                              json={"state": state, "log": f"report-{state}"}))
+             for state in ["error", "failed"]]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        # Both requests passed their initial guards. Exercise both commit
+        # orders explicitly so the stale ERROR-after-FAILED path cannot hide.
+        release[first_state].set()
+        await asyncio.wait_for(tasks[0 if first_state == "error" else 1], timeout=10)
+        release["failed" if first_state == "error" else "error"].set()
+        error, failure = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+        assert failure.status_code == 200, failure.text
+        assert failure.json()["code"] == AppCode.JOB_MARKED_FAILED.value
+        assert error.status_code == (200 if first_state == "error" else 409), error.text
+        expected_code = AppCode.JOB_MARKED_ERROR if error.status_code == 200 else AppCode.JOB_UNFINISHABLE
+        assert error.json()["code"] == expected_code.value
+        async with db_sessions() as db:
+            job = await db.get(model.Job, job_id)
+            assert job.state == ProcessingState.FAILED and job.progress == 1.0
+            assert job.finished_date is not None
+            assert job.log.count("report-failed") == 1
+            assert job.log.count("report-error") == (1 if error.status_code == 200 else 0)
+        retry = await client.post("/v1/jobs/lease", headers=worker_headers)
+        assert retry.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
+    finally:
+        for event in release.values():
+            event.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

@@ -98,6 +98,65 @@ async def assert_multipart_rejected(client, headers, case, db_sessions, *, metho
     assert not list(case.path.parent.glob("*.docapi-tmp-*"))
 
 
+async def assert_worker_update_race(client, worker_headers, other_worker_headers, user_headers,
+                                     job_factory, db_sessions, monkeypatch, *, operation, concurrent_change):
+    """Change assignment/state after route guards but before the locking write."""
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from doc_api.api.cruds import worker_cruds
+    from doc_api.api.schemas.base_objects import ProcessingState
+    from doc_api.api.schemas.responses import AppCode
+    from doc_api.config import config
+    from doc_api.tests.dummy_data import VALID_ZIP
+
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    old = datetime.now(timezone.utc) - timedelta(days=1)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.last_change, job.previous_attempts = old, 0
+    (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(VALID_ZIP)
+    name = {"extend": "update_processing_job_lease", "release": "release_job_lease"}.get(operation, "update_job_progress")
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = getattr(worker_cruds, name)
+
+    async def delayed(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(worker_cruds, name, delayed)
+    url = f"/v1/jobs/{job_id}" + ("/lease" if operation in {"extend", "release"} else "")
+    kwargs = {} if operation in {"extend", "release"} else {"json": {"progress": 0.8} if operation == "progress" else {"state": operation}}
+    task = asyncio.create_task(client.request("DELETE" if operation == "release" else "PATCH", url,
+                                              headers=worker_headers, **kwargs))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        if concurrent_change == "reassignment":
+            takeover = await client.post("/v1/jobs/lease", headers=other_worker_headers)
+            assert takeover.status_code == 200, takeover.text
+            assert takeover.json()["data"]["id"] == str(job_id)
+        else:
+            cancelled = await client.patch(f"/v1/jobs/{job_id}", headers=user_headers, json={"state": "cancelled"})
+            assert cancelled.status_code == 200, cancelled.text
+        async with db_sessions() as db:
+            before = model.orm2dict(await db.get(model.Job, job_id))
+        release.set()
+        response = await asyncio.wait_for(task, timeout=10)
+        if concurrent_change == "reassignment":
+            assert response.status_code == 403, response.text
+            assert response.json()["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+        else:
+            assert response.status_code == 409, response.text
+            code = AppCode.JOB_NOT_IN_PROCESSING if operation in {"extend", "release", "progress"} else AppCode.JOB_UNFINISHABLE
+            assert response.json()["code"] == code.value
+        async with db_sessions() as db:
+            assert model.orm2dict(await db.get(model.Job, job_id)) == before
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def migrate(engine, revision, *, downgrade=False):
     """Run the actual Alembic environment on the test's existing connection."""
     cfg = Config()

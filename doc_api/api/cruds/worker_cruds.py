@@ -16,6 +16,19 @@ from doc_api.api.schemas import base_objects
 logger = logging.getLogger(__name__)
 
 
+async def _lock_job_for_worker(db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> Tuple[Optional[model.Job], AppCode]:
+    # Route guards run before this transaction. Refresh under the lock because
+    # a timeout/reassignment may have happened after those guards succeeded.
+    job = await db.scalar(select(model.Job).where(model.Job.id == job_id)
+                          .execution_options(populate_existing=True).with_for_update())
+    if job is None:
+        return None, AppCode.JOB_NOT_FOUND
+    # None is passed explicitly for admins, who can act on another worker's job.
+    if worker_key_id is not None and job.worker_key_id != worker_key_id:
+        return job, AppCode.API_KEY_FORBIDDEN_FOR_JOB
+    return job, AppCode.JOB_RETRIEVED
+
+
 async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
@@ -106,17 +119,12 @@ def get_new_lease(server_time: datetime = None) -> Tuple[datetime, datetime]:
     return lease_expire_at, server_time
 
 
-async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[datetime], Optional[datetime], AppCode]:
+async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> Tuple[Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
-            result = await db.execute(
-                select(model.Job)
-                .where(model.Job.id == job_id)
-                .with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return None, None, AppCode.JOB_NOT_FOUND
+            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            if code != AppCode.JOB_RETRIEVED:
+                return None, None, code
 
             if db_job.state != base_objects.ProcessingState.PROCESSING:
                 return None, None, AppCode.JOB_NOT_IN_PROCESSING
@@ -130,15 +138,12 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID) -> Tupl
         raise DBError("Failed updating job lease.") from e
 
 
-async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
+async def release_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> AppCode:
     try:
         async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return AppCode.JOB_NOT_FOUND
+            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            if code != AppCode.JOB_RETRIEVED:
+                return code
 
             if db_job.state != base_objects.ProcessingState.PROCESSING:
                 return AppCode.JOB_NOT_IN_PROCESSING
@@ -159,15 +164,23 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID) -> AppCode:
         raise DBError("Failed releasing job lease.") from e
 
 
-async def update_job_progress(*, db: AsyncSession, job_id: UUID, job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
+async def update_job_progress(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID], job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-            if db_job is None:
-                return None, None, None, AppCode.JOB_NOT_FOUND
+            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            if code != AppCode.JOB_RETRIEVED:
+                return db_job, None, None, code
+
+            # State may also have changed after the route checked it. A rejected
+            # transition must not be reported as successful or renew a lease.
+            allowed_states = {
+                None: {base_objects.ProcessingState.PROCESSING},
+                base_objects.ProcessingState.DONE: {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.DONE},
+                base_objects.ProcessingState.ERROR: {base_objects.ProcessingState.PROCESSING, base_objects.ProcessingState.ERROR},
+            }
+            if job_progress_update.state in allowed_states and db_job.state not in allowed_states[job_progress_update.state]:
+                code = AppCode.JOB_NOT_IN_PROCESSING if job_progress_update.state is None else AppCode.JOB_UNFINISHABLE
+                return db_job, None, None, code
 
             update_logs = False
             lease_expire_at = None
