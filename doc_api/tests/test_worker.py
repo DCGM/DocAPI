@@ -12,7 +12,8 @@ import pytest
 
 from doc_api.api.routes import worker_routes
 from doc_api.api import main
-from doc_api.tests.helpers import (interrupted_upload_body, interrupted_upload_headers,
+from doc_api.tests.helpers import (assert_generated_zip_save, assert_multipart_rejected,
+                                   interrupted_upload_body, interrupted_upload_headers,
                                    assert_internal_transfer_error, assert_records_unchanged,
                                    interrupt_download, inject_zip_upload_failure)
 
@@ -1417,6 +1418,44 @@ async def test_post_job_result_cancelled_during_preparation(client, worker_heade
 
 
 
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
+@pytest.mark.asyncio
+async def test_post_job_result_200_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("result")
+    await assert_generated_zip_save(client, worker_headers, admin_headers, case, db_sessions,
+                                    kind="result", variant=variant, code=AppCode.JOB_RESULT_REUPLOADED, invalid=False)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["truncated", "invalid_directory"])
+@pytest.mark.asyncio
+async def test_post_job_result_415_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("result")
+    await assert_generated_zip_save(client, worker_headers, admin_headers, case, db_sessions,
+                                    kind="result", variant=variant, code=AppCode.JOB_RESULT_INVALID, invalid=True)
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_post_job_result_400_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("result")
+    await assert_multipart_rejected(client, worker_headers, case, db_sessions,
+                                    method="POST", variant=variant)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_post_job_result_422_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("result")
+    await assert_multipart_rejected(client, worker_headers, case, db_sessions,
+                                    method="POST", variant=variant)
+
+
 #
 # POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
@@ -1655,6 +1694,44 @@ async def test_post_job_artifacts_200_progress_during_staging(client, worker_hea
 
 
 
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_200_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("artifacts")
+    await assert_generated_zip_save(client, worker_headers, admin_headers, case, db_sessions,
+                                    kind="artifacts", variant=variant, code=AppCode.JOB_ARTIFACTS_REUPLOADED, invalid=False)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["truncated", "invalid_directory"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_415_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("artifacts")
+    await assert_generated_zip_save(client, worker_headers, admin_headers, case, db_sessions,
+                                    kind="artifacts", variant=variant, code=AppCode.JOB_ARTIFACTS_INVALID, invalid=True)
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_400_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("artifacts")
+    await assert_multipart_rejected(client, worker_headers, case, db_sessions,
+                                    method="POST", variant=variant)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_422_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
+    case = await zip_upload_case("artifacts")
+    await assert_multipart_rejected(client, worker_headers, case, db_sessions,
+                                    method="POST", variant=variant)
 
 
 #

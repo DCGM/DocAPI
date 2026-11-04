@@ -1,12 +1,101 @@
 import io
 import urllib.parse
 from pathlib import Path
+from itertools import combinations
 
 
 from alembic import command
 from alembic.config import Config
 
 from doc_api.db import model
+
+
+def xml_validation_combinations(kind, *, accepted):
+    """Every toggle subset against XML with a wrong namespace and no text."""
+    options = ["root", "namespace", "has_page", "has_text"]
+    if kind == "alto":
+        options.append("has_layout")
+    return [enabled for size in range(len(options) + 1) for enabled in combinations(options, size)
+            if (not bool({"namespace", "has_text"}.intersection(enabled))) == accepted]
+
+
+async def assert_generated_xml_save(client, headers, case, db_sessions, *, payload, status, code):
+    response = await client.put(case.url, headers=headers,
+                                files={"file": ("../žluťoučký 中文.xml", payload, "application/xml")})
+    assert response.status_code == status, response.text
+    assert response.json()["code"] == code.value
+    if status == 201:
+        assert case.path.read_bytes() == payload
+    else:
+        assert not case.path.exists()
+    assert not list(case.path.parent.glob("*.docapi-tmp-*"))
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag) is (status == 201)
+
+
+async def assert_generated_zip_save(client, headers, admin_headers, case, db_sessions,
+                                    *, kind, variant, code, invalid=False):
+    from doc_api.api.schemas.base_objects import ProcessingState
+    from doc_api.tests.dummy_data import make_zip_payload
+
+    payload = make_zip_payload(variant)
+    method = "PUT" if kind == "engine" else "POST"
+    response = await client.request(method, case.url, headers=headers,
+                                    files={"file": ("../výsledky 中文.zip", payload, "application/zip")})
+    assert response.status_code == (415 if invalid else 200), response.text
+    assert response.json()["code"] == code.value
+    if invalid:
+        assert case.path.read_bytes() == case.old
+        await assert_records_unchanged(db_sessions, case.records)
+        payload = make_zip_payload("unicode")
+        retry = await client.request(method, case.url, headers=headers,
+                                      files={"file": ("retry.zip", payload, "application/zip")})
+        assert retry.status_code == 200, retry.text
+    assert case.path.read_bytes() == payload
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    record_id = case.records[0][1]
+    if kind == "result":
+        async with db_sessions.begin() as db:
+            (await db.get(model.Job, record_id)).state = ProcessingState.DONE
+    url = {"engine": f"/v1/engines/{record_id}/files", "result": f"/v1/jobs/{record_id}/result",
+           "artifacts": f"/v1/admin/jobs/{record_id}/artifacts"}[kind]
+    downloaded = await client.get(url, headers=admin_headers)
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == payload
+
+
+async def assert_multipart_rejected(client, headers, case, db_sessions, *, method, variant):
+    """Parser failures must not reach file installation or alter existing data."""
+    from doc_api.api.schemas.responses import AppCode
+
+    if variant in {"missing_boundary", "invalid_body"}:
+        content_type = "multipart/form-data"
+        if variant == "invalid_body":
+            content_type += "; boundary=docapi-generated-boundary"
+        kwargs = {"headers": {**headers, "Content-Type": content_type}, "content": b"not a multipart body"}
+        status, code = 400, AppCode.HTTP_ERROR
+    else:
+        file = {"wrong_field": {"other": ("page.xml", b"<page/>")},
+                "empty_filename": {"file": ("", b"<page/>")},
+                "text_field": {"file": (None, "not an uploaded file")}}[variant]
+        kwargs = {"headers": headers, "files": file}
+        status, code = 422, AppCode.REQUEST_VALIDATION_ERROR
+    response = await client.request(method, case.url, **kwargs)
+    assert response.status_code == status, response.text
+    assert response.json()["code"] == code.value
+    if variant in {"empty_filename", "text_field"}:
+        errors = response.json()["details"]
+        assert errors[0]["loc"] == ["body", "file"]
+        assert "Expected UploadFile" in errors[0]["msg"]
+        assert "Expected UploadFile" in errors[0]["ctx"]["error"]
+    if hasattr(case, "old"):
+        assert case.path.read_bytes() == case.old
+        await assert_records_unchanged(db_sessions, case.records)
+    else:
+        assert not case.path.exists()
+        async with db_sessions() as db:
+            assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+    assert not list(case.path.parent.glob("*.docapi-tmp-*"))
 
 
 async def migrate(engine, revision, *, downgrade=False):

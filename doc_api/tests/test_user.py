@@ -24,7 +24,8 @@ from doc_api.api.database import DBError
 import pytest
 
 from doc_api.api import cleanup
-from doc_api.tests.helpers import (assert_deletion_timestamps, _ename, _put_file,
+from doc_api.tests.helpers import (assert_generated_xml_save, xml_validation_combinations,
+                                   assert_multipart_rejected, assert_deletion_timestamps, _ename, _put_file,
                                    OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES,
                                    interrupted_upload_body, interrupted_upload_headers,
                                    assert_internal_transfer_error, assert_records_unchanged, interrupt_download)
@@ -32,7 +33,9 @@ from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, JOB_DEFINITION_PAYLOADS, \
-    job_definition_payload_id, VALID_ZIP
+    job_definition_payload_id, VALID_ZIP, make_xml_payload
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -1099,6 +1102,25 @@ async def test_put_image_500_restore_before_readiness_unlock(client, user_header
 
 
 
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_put_image_400_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("image")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_put_image_422_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("image")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
 #
 # PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422, 500
 #
@@ -1533,6 +1555,75 @@ async def test_put_alto_500_commit_failure(client, user_headers, input_upload_ca
 
 
 
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["unicode", "utf16", "deep", "large"])
+@pytest.mark.asyncio
+async def test_put_alto_201_generated_xml(client, user_headers, input_upload_case, db_sessions, monkeypatch, variant):
+    case = await input_upload_case("alto")
+    monkeypatch.setattr(config, "ALTO_VALIDATION", {key: True for key in config.ALTO_VALIDATION})
+    payload = make_xml_payload("alto", variant)
+    if variant == "large":
+        assert len(payload) > 1024 ** 2  # Exercise multipart's disk-spooling path.
+    await assert_generated_xml_save(client, user_headers, case, db_sessions, payload=payload,
+                                    status=201, code=AppCode.ALTO_UPLOADED)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["truncated", "invalid_encoding", "entity", "empty"])
+@pytest.mark.asyncio
+async def test_put_alto_400_generated_xml(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("alto")
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("alto", variant),
+                                    status=400, code=AppCode.XML_PARSE_ERROR)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("enabled", xml_validation_combinations("alto", accepted=True),
+                         ids=lambda enabled: "+".join(enabled) or "none")
+@pytest.mark.asyncio
+async def test_put_alto_201_validation_combinations(client, user_headers, input_upload_case,
+                                                         db_sessions, monkeypatch, enabled):
+    case = await input_upload_case("alto")
+    monkeypatch.setattr(config, "ALTO_VALIDATION", {key: key in enabled for key in config.ALTO_VALIDATION})
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("alto", "validation_combinations"),
+                                    status=201, code=AppCode.ALTO_UPLOADED)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("enabled", xml_validation_combinations("alto", accepted=False),
+                         ids=lambda enabled: "+".join(enabled) or "none")
+@pytest.mark.asyncio
+async def test_put_alto_422_validation_combinations(client, user_headers, input_upload_case,
+                                                         db_sessions, monkeypatch, enabled):
+    case = await input_upload_case("alto")
+    monkeypatch.setattr(config, "ALTO_VALIDATION", {key: key in enabled for key in config.ALTO_VALIDATION})
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("alto", "validation_combinations"),
+                                    status=422, code=AppCode.ALTO_SCHEMA_INVALID)
+
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_put_alto_400_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("alto")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_put_alto_422_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("alto")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
 #
 # PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422, 500
 #
@@ -1964,6 +2055,75 @@ async def test_put_page_500_commit_failure(client, user_headers, input_upload_ca
 
 
 
+
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["unicode", "utf16", "deep", "large"])
+@pytest.mark.asyncio
+async def test_put_page_201_generated_xml(client, user_headers, input_upload_case, db_sessions, monkeypatch, variant):
+    case = await input_upload_case("page")
+    monkeypatch.setattr(config, "PAGE_VALIDATION", {key: True for key in config.PAGE_VALIDATION})
+    payload = make_xml_payload("page", variant)
+    if variant == "large":
+        assert len(payload) > 1024 ** 2  # Exercise multipart's disk-spooling path.
+    await assert_generated_xml_save(client, user_headers, case, db_sessions, payload=payload,
+                                    status=201, code=AppCode.PAGE_UPLOADED)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["truncated", "invalid_encoding", "entity", "empty"])
+@pytest.mark.asyncio
+async def test_put_page_400_generated_xml(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("page")
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("page", variant),
+                                    status=400, code=AppCode.XML_PARSE_ERROR)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("enabled", xml_validation_combinations("page", accepted=True),
+                         ids=lambda enabled: "+".join(enabled) or "none")
+@pytest.mark.asyncio
+async def test_put_page_201_validation_combinations(client, user_headers, input_upload_case,
+                                                         db_sessions, monkeypatch, enabled):
+    case = await input_upload_case("page")
+    monkeypatch.setattr(config, "PAGE_VALIDATION", {key: key in enabled for key in config.PAGE_VALIDATION})
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("page", "validation_combinations"),
+                                    status=201, code=AppCode.PAGE_UPLOADED)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("enabled", xml_validation_combinations("page", accepted=False),
+                         ids=lambda enabled: "+".join(enabled) or "none")
+@pytest.mark.asyncio
+async def test_put_page_422_validation_combinations(client, user_headers, input_upload_case,
+                                                         db_sessions, monkeypatch, enabled):
+    case = await input_upload_case("page")
+    monkeypatch.setattr(config, "PAGE_VALIDATION", {key: key in enabled for key in config.PAGE_VALIDATION})
+    await assert_generated_xml_save(client, user_headers, case, db_sessions,
+                                    payload=make_xml_payload("page", "validation_combinations"),
+                                    status=422, code=AppCode.PAGE_SCHEMA_INVALID)
+
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
+@pytest.mark.asyncio
+async def test_put_page_400_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("page")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
+@pytest.mark.asyncio
+async def test_put_page_422_multipart(client, user_headers, input_upload_case, db_sessions, variant):
+    case = await input_upload_case("page")
+    await assert_multipart_rejected(client, user_headers, case, db_sessions,
+                                    method="PUT", variant=variant)
 
 
 #
