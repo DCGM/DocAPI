@@ -1,11 +1,20 @@
+from doc_api.api import file_saving as upload_helpers
+from starlette.datastructures import UploadFile
 import asyncio
 import logging
 import os
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from uuid import uuid4
 
 import pytest
+
+from doc_api.api.routes import worker_routes
+from doc_api.api import main
+from doc_api.tests.helpers import (interrupted_upload_body, interrupted_upload_headers,
+                                   assert_internal_transfer_error, assert_records_unchanged,
+                                   interrupt_download, inject_zip_upload_failure)
 
 from doc_api.config import config
 from doc_api.api.cruds import worker_cruds
@@ -501,6 +510,19 @@ async def test_get_image_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_image_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("image")
+    await interrupt_download(main.app, case.url, worker_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
+
+
 #
 # GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 #
@@ -656,6 +678,19 @@ async def test_get_alto_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/images/00000000-0000-0000-0000-000000000001/files/alto', headers=worker_headers)
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_alto_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("alto")
+    await interrupt_download(main.app, case.url, worker_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
 
 
 #
@@ -815,6 +850,19 @@ async def test_get_page_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_page_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("page")
+    await interrupt_download(main.app, case.url, worker_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
+
+
 #
 # GET /v1/jobs/{job_id}/files/metadata - 200, 403, 404, 409, 410, 422
 #
@@ -934,6 +982,19 @@ async def test_get_metadata_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_metadata_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("metadata")
+    await interrupt_download(main.app, case.url, worker_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
+
+
 #
 # GET /v1/engines/{engine_id}/files - 200, 404, 410, 422
 #
@@ -1044,8 +1105,21 @@ async def test_get_engine_files_404_engine_not_found(client, worker_headers):
     assert response.json()["code"] == AppCode.ENGINE_NOT_FOUND.value
 
 
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_engine_files_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("engine")
+    await interrupt_download(main.app, case.url, worker_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=worker_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
+
+
 #
-# POST /v1/jobs/{job_id}/result - 201, 200, 403, 404, 409, 415, 422
+# POST /v1/jobs/{job_id}/result - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
@@ -1145,8 +1219,206 @@ async def test_post_job_result_201_validation_disabled(client, worker_headers, j
     assert response.json()["code"] == AppCode.JOB_RESULT_UPLOADED.value
 
 
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.parametrize("failure", ["read", "write", "replace"])
+@pytest.mark.asyncio
+async def test_post_job_result_500_upload_failure(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing, failure):
+    case = await zip_upload_case("result", existing=existing)
+    with monkeypatch.context() as patch:
+        inject_zip_upload_failure(case.path, failure, patch)
+        response = await client.post(case.url, headers=worker_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.post(case.url, headers=worker_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_415_preserves_existing_file(client, worker_headers, zip_upload_case, db_sessions):
+    case = await zip_upload_case("result")
+    response = await client.post(case.url, headers=worker_headers, files={"file": ("invalid.zip", b"invalid")})
+    assert response.status_code == 415, response.text
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_post_job_result_400_interrupted_upload(client, worker_headers, zip_upload_case, db_sessions, existing):
+    case = await zip_upload_case("result", existing=existing)
+    response = await client.post(case.url, headers=interrupted_upload_headers(worker_headers),
+                                    content=interrupted_upload_body())
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_post_job_result_cancelled_upload(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing):
+    case = await zip_upload_case("result", existing=existing)
+    started = asyncio.Event()
+    block = asyncio.Event()
+    reads = 0
+    original_read = UploadFile.read
+    async def interrupted_read(upload, size=-1):
+        nonlocal reads
+        if reads:
+            started.set()
+            await block.wait()
+        reads += 1
+        return await original_read(upload, 16)
+    with monkeypatch.context() as patch:
+        patch.setattr(UploadFile, "read", interrupted_read)
+        request = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("upload.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            block.set()
+            if not request.done():
+                request.cancel()
+                try:
+                    await request
+                except asyncio.CancelledError:
+                    pass
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.post(case.url, headers=worker_headers, files={"file": ("upload.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_409_file_save_in_progress(client, worker_headers, zip_upload_case, monkeypatch, db_sessions):
+    from doc_api.tests.helpers import assert_file_save_conflict
+    case = await zip_upload_case("result")
+    await assert_file_save_conflict(client, method="POST", url=case.url, headers=worker_headers,
+                                   kwargs={"files": {"file": ("replacement.zip", VALID_ZIP)}}, path=case.path,
+                                   monkeypatch=monkeypatch, db_sessions=db_sessions, first_status=200)
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_200_progress_during_staging(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("result")
+    started, release = asyncio.Event(), asyncio.Event()
+    original_read = UploadFile.read
+    reads = 0
+    async def slow_read(upload, size=-1):
+        nonlocal reads
+        if reads:
+            started.set()
+            await release.wait()
+        reads += 1
+        return await original_read(upload, 16)
+    with monkeypatch.context() as patch:
+        patch.setattr(UploadFile, "read", slow_read)
+        request = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("new.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            job_id = case.records[0][1]
+            response = await asyncio.wait_for(client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                                           json={"progress": 0.7}), timeout=5)
+            assert response.status_code == 200, response.text
+            assert response.json()["code"] == AppCode.JOB_UPDATED.value
+            assert not request.done()
+            release.set()
+            uploaded = await asyncio.wait_for(request, timeout=10)
+            assert uploaded.status_code == 200, uploaded.text
+        finally:
+            release.set()
+            if not request.done():
+                request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    assert case.path.read_bytes() == VALID_ZIP
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).progress == 0.7
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_200_responsive_during_preparation(client, worker_headers, zip_upload_case, db_sessions, blocked_upload_preparation):
+    case = await zip_upload_case("result")
+    blocked = blocked_upload_preparation
+    request = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("new.zip", VALID_ZIP)}))
+    try:
+        assert await asyncio.to_thread(blocked.started.wait, 10)
+        assert not blocked.release.is_set(), "Filesystem preparation blocked the event loop"
+        job_id = case.records[0][1]
+        response = await asyncio.wait_for(client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                                       json={"progress": 0.6}), timeout=10)
+        assert response.status_code == 200, response.text
+        assert not blocked.release.is_set()
+        blocked.release.set()
+        uploaded = await asyncio.wait_for(request, timeout=10)
+        assert uploaded.status_code == 200, uploaded.text
+    finally:
+        blocked.release.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).progress == 0.6
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_result_cancelled_during_preparation(client, worker_headers, zip_upload_case, blocked_upload_preparation, db_sessions):
+    case = await zip_upload_case("result")
+    blocked = blocked_upload_preparation
+    first = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("first.zip", VALID_ZIP)}))
+    try:
+        assert await asyncio.to_thread(blocked.started.wait, 10)
+        assert db_sessions.kw["bind"].pool.checkedout() == 0
+        first.cancel()
+        second = await asyncio.wait_for(client.post(case.url, headers=worker_headers,
+            files={"file": ("second.zip", VALID_ZIP + b"second")}), timeout=5)
+        assert second.status_code == 409, second.text
+        assert second.json()["code"] == AppCode.FILE_SAVE_IN_PROGRESS.value
+        assert not first.done()
+        blocked.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        response = await client.post(case.url, headers=worker_headers,
+            files={"file": ("second.zip", VALID_ZIP + b"second")})
+        assert response.status_code == 200, response.text
+    finally:
+        blocked.release.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+    assert case.path.read_bytes() == VALID_ZIP + b"second"
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+
+
+
+
+
 #
-# POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422
+# POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
@@ -1243,6 +1515,146 @@ async def test_post_job_artifacts_201_validation_disabled(client, worker_headers
                                  files={"file": ("output.zip", b"not a ZIP")})
     assert response.status_code == 201, response.text
     assert response.json()["code"] == AppCode.JOB_ARTIFACTS_UPLOADED.value
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.parametrize("failure", ["read", "write", "replace"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_500_upload_failure(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing, failure):
+    case = await zip_upload_case("artifacts", existing=existing)
+    with monkeypatch.context() as patch:
+        inject_zip_upload_failure(case.path, failure, patch)
+        response = await client.post(case.url, headers=worker_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.post(case.url, headers=worker_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_415_preserves_existing_file(client, worker_headers, zip_upload_case, db_sessions):
+    case = await zip_upload_case("artifacts")
+    response = await client.post(case.url, headers=worker_headers, files={"file": ("invalid.zip", b"invalid")})
+    assert response.status_code == 415, response.text
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_400_interrupted_upload(client, worker_headers, zip_upload_case, db_sessions, existing):
+    case = await zip_upload_case("artifacts", existing=existing)
+    response = await client.post(case.url, headers=interrupted_upload_headers(worker_headers),
+                                    content=interrupted_upload_body())
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_cancelled_upload(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing):
+    case = await zip_upload_case("artifacts", existing=existing)
+    started = asyncio.Event()
+    block = asyncio.Event()
+    reads = 0
+    original_read = UploadFile.read
+    async def interrupted_read(upload, size=-1):
+        nonlocal reads
+        if reads:
+            started.set()
+            await block.wait()
+        reads += 1
+        return await original_read(upload, 16)
+    with monkeypatch.context() as patch:
+        patch.setattr(UploadFile, "read", interrupted_read)
+        request = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("upload.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            block.set()
+            if not request.done():
+                request.cancel()
+                try:
+                    await request
+                except asyncio.CancelledError:
+                    pass
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.post(case.url, headers=worker_headers, files={"file": ("upload.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_409_file_save_in_progress(client, worker_headers, zip_upload_case, monkeypatch, db_sessions):
+    from doc_api.tests.helpers import assert_file_save_conflict
+    case = await zip_upload_case("artifacts")
+    await assert_file_save_conflict(client, method="POST", url=case.url, headers=worker_headers,
+                                   kwargs={"files": {"file": ("replacement.zip", VALID_ZIP)}}, path=case.path,
+                                   monkeypatch=monkeypatch, db_sessions=db_sessions, first_status=200)
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_artifacts_200_progress_during_staging(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("artifacts")
+    started, release = asyncio.Event(), asyncio.Event()
+    original_read = UploadFile.read
+    reads = 0
+    async def slow_read(upload, size=-1):
+        nonlocal reads
+        if reads:
+            started.set()
+            await release.wait()
+        reads += 1
+        return await original_read(upload, 16)
+    with monkeypatch.context() as patch:
+        patch.setattr(UploadFile, "read", slow_read)
+        request = asyncio.create_task(client.post(case.url, headers=worker_headers, files={"file": ("new.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            job_id = case.records[0][1]
+            response = await asyncio.wait_for(client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                                           json={"progress": 0.7}), timeout=5)
+            assert response.status_code == 200, response.text
+            assert response.json()["code"] == AppCode.JOB_UPDATED.value
+            assert not request.done()
+            release.set()
+            uploaded = await asyncio.wait_for(request, timeout=10)
+            assert uploaded.status_code == 200, uploaded.text
+        finally:
+            release.set()
+            if not request.done():
+                request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    assert case.path.read_bytes() == VALID_ZIP
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).progress == 0.7
+
+
+
 
 
 #

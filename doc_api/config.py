@@ -69,6 +69,9 @@ class Config:
         #         - the job is marked as QUEUED
         #     else
         #         - the job is marked as ERROR
+        self.JOB_READINESS_CHECK_INTERVAL_SECONDS = int(os.getenv("JOB_READINESS_CHECK_INTERVAL_SECONDS", "5"))
+        if self.JOB_READINESS_CHECK_INTERVAL_SECONDS <= 0:
+            raise ValueError("JOB_READINESS_CHECK_INTERVAL_SECONDS must be a positive integer")
         self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)

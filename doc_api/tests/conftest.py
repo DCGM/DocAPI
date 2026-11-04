@@ -17,7 +17,7 @@ import os.path
 import pytest
 import pytest_asyncio
 
-from doc_api.api import cleanup
+from doc_api.api import cleanup, job_readiness, main
 from doc_api.api import database as db_module
 from doc_api.api.main import app
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -64,6 +64,12 @@ async def isolated_database():
 
 @pytest.fixture
 def test_settings(monkeypatch, tmp_path):
+    # Route tests advance readiness explicitly; lifecycle/loop tests exercise
+    # the real background task without timing-dependent state changes.
+    async def idle_readiness():
+        import asyncio
+        await asyncio.Event().wait()
+    monkeypatch.setattr(main, "run_job_readiness_checks", idle_readiness)
     # Disregard deployment settings: startup must only create test credentials,
     # and uploads/cleanup must never reach the application's data directories.
     monkeypatch.setattr(config, "PRODUCTION", False)
@@ -349,6 +355,8 @@ async def _job_with_required_uploads_by_payload_name(client, user_headers, creat
                 )
                 assert r.status_code == 200, r.text
 
+    async with db_module.open_session() as db:
+        await job_readiness.queue_ready_jobs(db)
     return created_job
 
 
@@ -693,3 +701,150 @@ async def engine_factory(db_sessions):
             db.add(engine)
         return engine
     return create
+
+
+@pytest_asyncio.fixture
+async def input_upload_case(db_sessions, job_factory):
+    async def create(kind):
+        job_id = await job_factory(ProcessingState.NEW)
+        image_id = uuid4()
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            job.meta_json_required = kind == "metadata"
+            job.alto_required = kind == "alto"
+            job.page_required = kind == "page"
+            if kind != "metadata":
+                db.add(model.Image(id=image_id, job_id=job_id, name="page.jpg", order=0,
+                                   image_uploaded=kind != "image"))
+        batch = Path(config.JOBS_DIR) / str(job_id)
+        if kind == "metadata":
+            path = batch / "meta.json"
+            url = f"/v1/jobs/{job_id}/files/metadata"
+            kwargs = {"json": {"source": "transfer test"}}
+            entity, record_id, flag = model.Job, job_id, "meta_json_uploaded"
+        else:
+            suffix = {"image": ".jpg", "alto": ".alto.xml", "page": ".page.xml"}[kind]
+            path = batch / f"{image_id}{suffix}"
+            url = f"/v1/jobs/{job_id}/images/page.jpg/files/{kind}"
+            data = {"image": make_white_image_bytes()[0], "alto": VALID_ALTO_XML, "page": VALID_PAGE_XML}[kind]
+            kwargs = {"files": {"file": ("upload", data)}}
+            entity, record_id, flag = model.Image, image_id, f"{kind}_uploaded"
+        return SimpleNamespace(job_id=job_id, path=path, url=url, kwargs=kwargs,
+                               entity=entity, record_id=record_id, flag=flag)
+    return create
+
+
+@pytest_asyncio.fixture
+async def zip_upload_case(db_sessions, job_factory, engine_factory):
+    async def create(kind, *, existing=True):
+        if kind == "engine":
+            engine = await engine_factory(files_updated=datetime(2026, 1, 1, tzinfo=timezone.utc) if existing else None)
+            path = Path(config.ENGINES_DIR) / f"{engine.id}.zip"
+            url = f"/v1/admin/engines/{engine.name}/{engine.version}/files"
+            entity, record_id = model.Engine, engine.id
+        else:
+            job_id = await job_factory(ProcessingState.PROCESSING)
+            directory = config.RESULTS_DIR if kind == "result" else config.ARTIFACTS_DIR
+            path = Path(directory) / f"{job_id}.zip"
+            url = f"/v1/jobs/{job_id}/{kind}"
+            entity, record_id = model.Job, job_id
+        old = VALID_ZIP + b"previous upload"
+        if existing:
+            path.write_bytes(old)
+        async with db_sessions() as db:
+            before = model.orm2dict(await db.get(entity, record_id))
+        return SimpleNamespace(path=path, url=url, existing=existing, old=old,
+                               records=[(entity, record_id, before)])
+    return create
+
+
+@pytest_asyncio.fixture
+async def download_case(db_sessions, job_factory, engine_factory):
+    async def create(kind):
+        if kind == "engine":
+            engine = await engine_factory(files_updated=datetime(2026, 1, 1, tzinfo=timezone.utc))
+            path = Path(config.ENGINES_DIR) / f"{engine.id}.zip"
+            url = f"/v1/engines/{engine.id}/files"
+            entity, record_id = model.Engine, engine.id
+        else:
+            state = ProcessingState.DONE if kind in {"result", "artifacts"} else ProcessingState.PROCESSING
+            job_id = await job_factory(state)
+            if kind in {"result", "artifacts"}:
+                directory = config.RESULTS_DIR if kind == "result" else config.ARTIFACTS_DIR
+                path = Path(directory) / f"{job_id}.zip"
+                url = f"/v1/jobs/{job_id}/result" if kind == "result" else f"/v1/admin/jobs/{job_id}/artifacts"
+            else:
+                batch = Path(config.JOBS_DIR) / str(job_id)
+                batch.mkdir()
+                image_id = uuid4()
+                async with db_sessions.begin() as db:
+                    job = await db.get(model.Job, job_id)
+                    job.meta_json_uploaded = True
+                    job.meta_json_required = True
+                    job.alto_required = True
+                    job.page_required = True
+                    db.add(model.Image(id=image_id, job_id=job_id, name="page.jpg", order=0,
+                                       image_uploaded=True, alto_uploaded=True, page_uploaded=True))
+                suffix = {"image": ".jpg", "alto": ".alto.xml", "page": ".page.xml", "metadata": ""}[kind]
+                path = batch / ("meta.json" if kind == "metadata" else f"{image_id}{suffix}")
+                url = (f"/v1/jobs/{job_id}/files/metadata" if kind == "metadata"
+                       else f"/v1/jobs/{job_id}/images/{image_id}/files/{kind}")
+            entity, record_id = model.Job, job_id
+        content = b"download bytes" * 20000  # Multiple FileResponse chunks.
+        path.write_bytes(content)
+        async with db_sessions() as db:
+            before = model.orm2dict(await db.get(entity, record_id))
+        return SimpleNamespace(path=path, url=url, content=content,
+                               records=[(entity, record_id, before)])
+    return create
+
+
+@pytest.fixture
+def reject_upload_commit():
+    from contextlib import contextmanager
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import SQLAlchemyError
+
+    @contextmanager
+    def reject(path, *, old=None):
+        observed = []
+        def before_commit(session):
+            if not session.info.get("file_save_transaction"):
+                return
+            backups = list(path.parent.glob(path.name + ".docapi-tmp-rollback-backup-*"))
+            staging = list(path.parent.glob(path.name + ".docapi-tmp-upload-staging-*"))
+            assert path.is_file() and not staging
+            assert len(backups) == (0 if old is None else 1)
+            if old is not None:
+                assert backups[0].read_bytes() == old
+            observed.append(True)
+            raise SQLAlchemyError("injected upload commit failure")
+        event.listen(Session, "before_commit", before_commit)
+        try:
+            yield observed
+        finally:
+            event.remove(Session, "before_commit", before_commit)
+    return reject
+
+
+@pytest.fixture
+def blocked_upload_preparation(monkeypatch):
+    import threading
+    from doc_api.api.file_saving import FileSaveTransaction
+    started, release = threading.Event(), threading.Event()
+    original = FileSaveTransaction.create_staging
+    def prepare(upload):
+        started.set()
+        if not release.wait(timeout=30):
+            raise RuntimeError("Upload preparation watchdog expired")
+        return original(upload)
+    monkeypatch.setattr(FileSaveTransaction, "create_staging", prepare)
+    watchdog = threading.Timer(30, release.set)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        yield SimpleNamespace(started=started, release=release)
+    finally:
+        release.set()
+        watchdog.cancel()

@@ -1,10 +1,23 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from doc_api.api import file_saving as upload_helpers
+from starlette.datastructures import UploadFile
+import asyncio
 import os
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+
+from doc_api.api.routes import admin_routes
+from doc_api.api import main
+from doc_api.api.database import DBError
+from doc_api.tests.helpers import (interrupted_upload_body, interrupted_upload_headers,
+                                   assert_internal_transfer_error, assert_records_unchanged,
+                                   interrupt_download, inject_zip_upload_failure)
 
 from doc_api.api.cruds import admin_cruds
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -777,7 +790,7 @@ async def test_patch_engine_422_invalid_request(client, admin_headers):
 
 
 #
-# PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 404, 415, 422
+# PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 404, 415, 422, 400, 500
 #
 
 @pytest.mark.asyncio
@@ -907,6 +920,293 @@ async def test_put_engine_files_201_validation_disabled(client, admin_headers, e
     assert response.json()["code"] == AppCode.ENGINE_FILES_UPLOADED.value
 
 
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.parametrize("failure", ["read", "write", "replace"])
+@pytest.mark.asyncio
+async def test_put_engine_files_500_upload_failure(client, admin_headers, zip_upload_case, db_sessions, monkeypatch, existing, failure):
+    case = await zip_upload_case("engine", existing=existing)
+    with monkeypatch.context() as patch:
+        inject_zip_upload_failure(case.path, failure, patch)
+        response = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_415_preserves_existing_file(client, admin_headers, zip_upload_case, db_sessions):
+    case = await zip_upload_case("engine")
+    response = await client.put(case.url, headers=admin_headers, files={"file": ("invalid.zip", b"invalid")})
+    assert response.status_code == 415, response.text
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_engine_files_400_interrupted_upload(client, admin_headers, zip_upload_case, db_sessions, existing):
+    case = await zip_upload_case("engine", existing=existing)
+    response = await client.put(case.url, headers=interrupted_upload_headers(admin_headers),
+                                    content=interrupted_upload_body())
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+async def test_put_engine_files_500_database_failure(client, admin_headers, zip_upload_case, db_sessions, monkeypatch, existing):
+    case = await zip_upload_case("engine", existing=existing)
+    with monkeypatch.context() as patch:
+        patch.setattr(admin_routes.admin_cruds, "update_engine_files_updated",
+                      AsyncMock(side_effect=DBError("injected transfer failure")))
+        response = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-rollback-backup-*"))
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Engine, case.records[0][1])).files_updated != case.records[0][2]["files_updated"]
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_engine_files_cancelled_upload(client, admin_headers, zip_upload_case, db_sessions, monkeypatch, existing):
+    case = await zip_upload_case("engine", existing=existing)
+    started = asyncio.Event()
+    block = asyncio.Event()
+    reads = 0
+    original_read = UploadFile.read
+    async def interrupted_read(upload, size=-1):
+        nonlocal reads
+        if reads:
+            started.set()
+            await block.wait()
+        reads += 1
+        return await original_read(upload, 16)
+    with monkeypatch.context() as patch:
+        patch.setattr(UploadFile, "read", interrupted_read)
+        request = asyncio.create_task(client.put(case.url, headers=admin_headers, files={"file": ("upload.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            block.set()
+            if not request.done():
+                request.cancel()
+                try:
+                    await request
+                except asyncio.CancelledError:
+                    pass
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-upload-staging-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.put(case.url, headers=admin_headers, files={"file": ("upload.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_engine_files_500_commit_failure(client, admin_headers, zip_upload_case, db_sessions, reject_upload_commit, existing):
+    case = await zip_upload_case("engine", existing=existing)
+    with reject_upload_commit(case.path, old=case.old if existing else None) as observed:
+        response = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert observed == [True]
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.put(case.url, headers=admin_headers, files={"file": ("replacement.zip", VALID_ZIP)})
+    assert retry.status_code == (200 if existing else 201), retry.text
+    assert case.path.read_bytes() == VALID_ZIP
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_409_file_save_in_progress(client, admin_headers, zip_upload_case, monkeypatch, db_sessions):
+    from doc_api.tests.helpers import assert_file_save_conflict
+    case = await zip_upload_case("engine")
+    await assert_file_save_conflict(client, method="PUT", url=case.url, headers=admin_headers,
+                                   kwargs={"files": {"file": ("replacement.zip", VALID_ZIP)}}, path=case.path,
+                                   monkeypatch=monkeypatch, db_sessions=db_sessions, first_status=500, fail_first=True)
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_409_other_process_saving(client, admin_headers, zip_upload_case, db_sessions):
+    import subprocess
+    import sys
+    case = await zip_upload_case("engine")
+    lock_path = case.path.with_name(f".{case.path.name}.docapi-save.lock")
+    code = """
+import fcntl, sys
+with open(sys.argv[1], "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print("locked", flush=True)
+    sys.stdin.read()
+"""
+    process = subprocess.Popen([sys.executable, "-c", code, str(lock_path)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(process.stdout.readline), timeout=10) == "locked\n"
+        response = await client.put(case.url, headers=admin_headers,
+                                    files={"file": ("replacement.zip", VALID_ZIP)})
+        assert response.status_code == 409, response.text
+        assert response.json()["code"] == AppCode.FILE_SAVE_IN_PROGRESS.value
+        assert case.path.read_bytes() == case.old
+        assert db_sessions.kw["bind"].pool.checkedout() == 0
+    finally:
+        # An abrupt exit must release the OS lock without deleting its file.
+        process.kill()
+        await asyncio.to_thread(process.communicate, timeout=10)
+    assert lock_path.exists()
+    response = await client.put(case.url, headers=admin_headers,
+                                files={"file": ("replacement.zip", VALID_ZIP)})
+    assert response.status_code == 200, response.text
+    assert case.path.read_bytes() == VALID_ZIP
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.parametrize("phase", ["metadata", "commit"])
+@pytest.mark.asyncio
+async def test_put_engine_files_cancelled_after_install(client, admin_headers, zip_upload_case, db_sessions, monkeypatch, existing, phase):
+    case = await zip_upload_case("engine", existing=existing)
+    started, release = asyncio.Event(), asyncio.Event()
+    original_update = admin_cruds.update_engine_files_updated
+    original_commit = AsyncSession.commit
+    async def update(**kwargs):
+        started.set()
+        await release.wait()
+        return await original_update(**kwargs)
+    async def commit(session):
+        if session.info.get("file_save_transaction"):
+            started.set()
+            await release.wait()
+        return await original_commit(session)
+    with monkeypatch.context() as patch:
+        if phase == "metadata":
+            patch.setattr(admin_cruds, "update_engine_files_updated", update)
+        else:
+            patch.setattr(AsyncSession, "commit", commit)
+        request = asyncio.create_task(client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=10)
+            request.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            release.set()
+            if not request.done():
+                request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    if phase == "commit":
+        assert case.path.read_bytes() == VALID_ZIP
+        async with db_sessions() as db:
+            assert (await db.get(model.Engine, case.records[0][1])).files_updated != case.records[0][2]["files_updated"]
+    else:
+        assert case.path.exists() == existing
+        if existing:
+            assert case.path.read_bytes() == case.old
+        await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_500_unknown_commit_outcome(client, admin_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("engine")
+    original_commit = AsyncSession.commit
+    async def lost_acknowledgement(session):
+        await original_commit(session)
+        if session.info.get("file_save_transaction"):
+            raise OSError("injected lost commit acknowledgement")
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "commit", lost_acknowledgement)
+        response = await client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 500, response.text
+    assert response.json()["code"] == AppCode.INTERNAL_ERROR.value
+    # A lost acknowledgement must not restore old bytes over committed metadata.
+    assert case.path.read_bytes() == VALID_ZIP
+    backups = list(case.path.parent.glob(case.path.name + ".docapi-tmp-rollback-backup-*"))
+    assert len(backups) == 1 and backups[0].read_bytes() == case.old
+    async with db_sessions() as db:
+        assert (await db.get(model.Engine, case.records[0][1])).files_updated != case.records[0][2]["files_updated"]
+    retry = await client.put(case.url, headers=admin_headers, files={"file": ("retry.zip", VALID_ZIP)})
+    assert retry.status_code == 500, retry.text
+    assert len(list(case.path.parent.glob(case.path.name + "*"))) == 2
+    assert backups[0].read_bytes() == case.old
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_500_unresolved_backup(client, admin_headers, zip_upload_case, db_sessions):
+    case = await zip_upload_case("engine")
+    backup = case.path.with_name(case.path.name + ".docapi-tmp-rollback-backup-leftover.zip")
+    backup.write_bytes(b"retained original")
+    response = await client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)})
+    assert_internal_transfer_error(response)
+    assert case.path.read_bytes() == case.old
+    assert backup.read_bytes() == b"retained original"
+    assert len(list(case.path.parent.glob(case.path.name + "*"))) == 2
+    await assert_records_unchanged(db_sessions, case.records)
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_200_abandoned_staging(client, admin_headers, zip_upload_case):
+    case = await zip_upload_case("engine")
+    staging = case.path.with_name(case.path.name + ".docapi-tmp-upload-staging-leftover.zip")
+    staging.write_bytes(b"incomplete")
+    response = await client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 200, response.text
+    assert case.path.read_bytes() == VALID_ZIP
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_200_backup_cleanup_failure(client, admin_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("engine")
+    original_remove = upload_helpers.os.remove
+    def failed_cleanup(path):
+        if ".docapi-tmp-rollback-backup-" in str(path):
+            raise OSError("injected backup cleanup failure")
+        return original_remove(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(upload_helpers.os, "remove", failed_cleanup)
+        response = await client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 200, response.text
+    assert case.path.read_bytes() == VALID_ZIP
+    backups = list(case.path.parent.glob(case.path.name + ".docapi-tmp-rollback-backup-*"))
+    assert len(backups) == 1 and backups[0].read_bytes() == case.old
+    async with db_sessions() as db:
+        assert (await db.get(model.Engine, case.records[0][1])).files_updated != case.records[0][2]["files_updated"]
+
+
+
+
+
+
+
 #
 # GET /v1/admin/jobs/{job_id}/artifacts - 200, 404, 422
 #
@@ -953,6 +1253,18 @@ async def test_get_artifacts_404_job_not_found(client, admin_headers):
     response = await client.get(f"/v1/admin/jobs/{uuid4()}/artifacts", headers=admin_headers)
     assert response.status_code == 404, response.text
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_artifacts_200_stream_failure(client, admin_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("artifacts")
+    await interrupt_download(main.app, case.url, admin_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=admin_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
 
 
 #

@@ -99,7 +99,7 @@ async def test_output_cleanup_preserves_unknown_files_and_symlinks(db_sessions, 
     unknown.write_bytes(b"retain")
     unrelated = Path(config.RESULTS_DIR) / "unrelated.zip"
     unrelated.write_bytes(b"retain")
-    temporary = Path(config.RESULTS_DIR) / f"{job_id}.zip.validating"
+    temporary = Path(config.RESULTS_DIR) / f"{job_id}.zip.docapi-tmp-upload-staging-{uuid4().hex}.zip"
     temporary.write_bytes(b"retain")
     async with db_sessions() as db:
         await cleanup.delete_expired_job_outputs(db)

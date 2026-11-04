@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
-from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
+from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.database import DBError
@@ -141,85 +141,6 @@ async def get_image_by_job_and_name(*, db: AsyncSession, job_id: UUID, image_nam
 
     except exc.SQLAlchemyError as e:
         raise DBError(f"Failed reading image.") from e
-
-
-async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
-    try:
-        async with db.begin():
-            img_missing = exists(
-                select(literal(1))
-                .select_from(model.Image)
-                .where(
-                    model.Image.job_id == job_id,
-                    model.Image.image_uploaded.is_(False),
-                )
-            )
-            alto_missing = exists(
-                select(literal(1))
-                .select_from(model.Image)
-                .where(
-                    model.Image.job_id == job_id,
-                    model.Image.alto_uploaded.is_(False),
-                )
-            )
-            page_missing = exists(
-                select(literal(1))
-                .select_from(model.Image)
-                .where(
-                    model.Image.job_id == job_id,
-                    model.Image.page_uploaded.is_(False),
-                )
-            )
-
-            # Implication forms
-            meta_ok = or_(
-                model.Job.meta_json_required.is_(False),
-                model.Job.meta_json_uploaded.is_(True),
-            )
-
-            images_ok = and_(
-                not_(img_missing),
-                or_(model.Job.alto_required.is_(False), not_(alto_missing)),
-                or_(model.Job.page_required.is_(False), not_(page_missing)),
-            )
-
-            now = datetime.now(timezone.utc)
-
-            stmt = (
-                update(model.Job)
-                .where(
-                    model.Job.id == job_id,
-                    model.Job.state == base_objects.ProcessingState.NEW,
-                    meta_ok,
-                    images_ok,
-                )
-                .values(
-                    state=base_objects.ProcessingState.QUEUED,
-                    last_change=now,
-                )
-                .returning(model.Job.id, model.Job.engine_id)
-            )
-
-            res = await db.execute(stmt)
-            row = res.first()
-
-            if not row:
-                return False
-
-            _job_id, engine_id = row
-
-            if engine_id is not None:
-                await db.execute(
-                    update(model.Engine)
-                    .where(model.Engine.id == engine_id)
-                    .values(last_used=now)
-                )
-
-            return True
-
-    except exc.SQLAlchemyError as e:
-        raise DBError("Failed updating job state.") from e
-
 
 
 async def cancel_job(db: AsyncSession, job_id: UUID) -> AppCode:

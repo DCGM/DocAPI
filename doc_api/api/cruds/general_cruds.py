@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select, exc, Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.database import DBError
+from doc_api.api.database import DBError, transaction
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.db import model
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def get_job(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[model.Job], AppCode]:
     try:
-        async with db.begin():
+        async with transaction(db):
             result = await db.execute(
                 select(model.Job).where(model.Job.id == job_id)
             )
@@ -74,7 +74,7 @@ async def get_jobs_with_engines(*, db: AsyncSession,
 
 async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate) -> AppCode:
     try:
-        async with db.begin():
+        async with transaction(db):
             result = await db.execute(
                 select(model.Job).where(model.Job.id == job_id).with_for_update()
             )
@@ -135,7 +135,7 @@ async def get_image_for_job(*, db: AsyncSession, job_id: UUID, image_id: UUID) -
 
 async def update_image(*, db: AsyncSession, image_id: UUID, image_update: base_objects.ImageUpdate) -> AppCode:
     try:
-        async with db.begin():
+        async with transaction(db):
             result = await db.execute(
                 select(model.Image).where(model.Image.id == image_id).with_for_update()
             )

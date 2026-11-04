@@ -23,6 +23,7 @@ from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSE
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
 from doc_api.api.cleanup import run_cleanup
+from doc_api.api.job_readiness import run_job_readiness_checks
 from doc_api.api.routes import admin_router, debug_router, root_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
@@ -194,16 +195,20 @@ async def lifespan(app: FastAPI):
             await db.commit()
 
 
+    readiness_task = asyncio.create_task(run_job_readiness_checks())
     cleanup_task = None
     if config.DELETE_JOB_INPUTS_ON_COMPLETION or config.DELETE_JOB_OUTPUTS:
         cleanup_task = asyncio.create_task(run_cleanup())
     try:
         yield
     finally:
+        readiness_task.cancel()
         if cleanup_task is not None:
             cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await cleanup_task
+        with suppress(asyncio.CancelledError):
+            await readiness_task
         logger.info("Application shutdown complete.")
 
 

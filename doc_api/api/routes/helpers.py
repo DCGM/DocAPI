@@ -1,5 +1,3 @@
-
-
 class RouteInvariantError(RuntimeError):
     """Raised when a route reaches an impossible or unhandled state."""
 
