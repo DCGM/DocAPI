@@ -727,6 +727,16 @@ to those jobs may wait for slow deletion of another job in the same batch. Reads
 and writes outside that batch remain responsive in these tests. This is a
 concurrency regression check, not a disk-load or API throughput benchmark.
 
+- [x] Cleanup removes inputs, results, and artifacts before a download, after
+  response headers, or after the first chunk. Before opening, deletion produces
+  the usual missing-data response or aborts an already-started stream; an open
+  file remains readable through completion on Linux. Subsequent requests report
+  missing data, and deletion timestamps are committed. Input cases also cover
+  optional image-record deletion. [`test_cleanup_concurrency.py::test_download_during_cleanup`](test_cleanup_concurrency.py).
+- [x] Cleanup skips a terminal job while any of its six job-file save endpoints
+  holds the final installation row lock, then removes its files and records the
+  timestamp after the save commits. [`test_cleanup_concurrency.py::test_cleanup_skips_installing_file`](test_cleanup_concurrency.py).
+
 ### Application startup and launcher
 
 - [x] partial development credentials create only missing keys. [`test_startup.py::test_startup_creates_only_missing_test_credentials`](test_startup.py).
@@ -786,9 +796,10 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
 - [x] Add upload parsing/read/write/replacement and DB failure tests, preserved
   ZIP replacements, retry recovery, and download open/read/client-disconnect
   failures. These cases stay in the corresponding user/worker/admin route files.
-- [ ] Add races with cleanup actually removing files during requests. Current
-  concurrency tests hold deletion while requests run; cleanup tests also cover
-  failed deletion, failed commits, recovery, and locked/requeued jobs.
+- [x] Add races with cleanup actually removing files during downloads, including
+  optional image-record deletion, and cleanup during final file installation.
+  Cleanup tests also cover failed deletion, failed commits, recovery, and
+  locked/requeued jobs.
 - [ ] Add deeper validator combinations and large or unusual multipart/XML/ZIP
   payloads. Current tests cover each configured XML check, ZIP-validation bypass,
   extension policy, missing files, and selected malformed payloads.
