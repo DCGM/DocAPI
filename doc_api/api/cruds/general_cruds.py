@@ -19,7 +19,9 @@ async def get_job(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[model.Job
     try:
         async with transaction(db):
             result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id)
+                # Sessions retain ORM objects after commit. A subsequent read
+                # must refresh them if another transaction changed the job.
+                select(model.Job).where(model.Job.id == job_id).execution_options(populate_existing=True)
             )
             db_job = result.scalar_one_or_none()
 

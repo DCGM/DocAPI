@@ -1,3 +1,4 @@
+from doc_api.tests.helpers import assert_route_invariant, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
 from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api import file_saving as upload_helpers
 from starlette.datastructures import UploadFile
@@ -48,6 +49,16 @@ async def test_get_keys_200(client, admin_headers, dummy):
         assert "label" in item
         assert "role" in item
         assert "active" in item
+
+
+
+
+@pytest.mark.asyncio
+async def test_get_keys_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "get_keys", AsyncMock(return_value=([], code)))
+    response = await client.request("GET", "/v1/admin/keys", headers=admin_headers, **{})
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -131,6 +142,16 @@ async def test_post_keys_409_generation_failure(client, admin_headers, monkeypat
         assert (await db.execute(select(model.Key).where(model.Key.label == "collision"))).scalar_one_or_none() is None
 
 
+
+
+@pytest.mark.asyncio
+async def test_post_keys_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "new_key", AsyncMock(return_value=(None, code)))
+    response = await client.request("POST", "/v1/admin/keys", headers=admin_headers, **{"json": {"label": "invariant", "role": "user"}})
+    assert_route_invariant(response, invariant_errors, code)
+
+
 #
 # POST /v1/admin/keys/{label}/secret - 201, 404, 409
 #
@@ -186,6 +207,16 @@ async def test_post_keys_secret_201_rotates_credentials(client, admin_headers, u
     new_response = await client.get("/v1/me", headers=new_headers)
     assert new_response.status_code == 200, new_response.text
     assert new_response.json()["data"]["label"] == "test-user"
+
+
+
+
+@pytest.mark.asyncio
+async def test_post_key_secret_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "new_secret", AsyncMock(return_value=(None, code)))
+    response = await client.request("POST", "/v1/admin/keys/test-user/secret", headers=admin_headers, **{})
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -337,6 +368,16 @@ async def test_patch_key_422_invalid_request(client, admin_headers):
     response = await client.request('PATCH', '/v1/admin/keys/test-user', headers=admin_headers, json={'role': 'invalid'})
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+
+
+@pytest.mark.asyncio
+async def test_patch_key_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "update_key", AsyncMock(return_value=code))
+    response = await client.request("PATCH", "/v1/admin/keys/test-user", headers=admin_headers, **{"json": {"active": False}})
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -551,6 +592,16 @@ async def test_post_engine_422_invalid_request(client, admin_headers):
     response = await client.request('POST', '/v1/admin/engines', headers=admin_headers, json={})
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+
+
+@pytest.mark.asyncio
+async def test_post_engine_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "new_engine", AsyncMock(return_value=(None, code)))
+    response = await client.request("POST", "/v1/admin/engines", headers=admin_headers, **{"json": {"name": "Engine", "version": "1", "description": "test"}})
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -788,6 +839,16 @@ async def test_patch_engine_422_invalid_request(client, admin_headers):
     response = await client.request('PATCH', '/v1/admin/engines/missing/1', headers=admin_headers, json={'active': 'invalid'})
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+
+
+@pytest.mark.asyncio
+async def test_patch_engine_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "update_engine", AsyncMock(return_value=code))
+    response = await client.request("PATCH", "/v1/admin/engines/Engine/1", headers=admin_headers, **{"json": {"active": False}})
+    assert_route_invariant(response, invariant_errors, code)
 
 
 #
@@ -1242,6 +1303,34 @@ async def test_put_engine_files_422_multipart(client, admin_headers, zip_upload_
                                     method="PUT", variant=variant)
 
 
+
+@pytest.mark.asyncio
+async def test_put_engine_files_404_disappeared_before_install(client, admin_headers, zip_upload_case, db_sessions, monkeypatch):
+    case = await zip_upload_case("engine")
+    entity, record_id, _ = case.records[0]
+    delete_before_file_install(monkeypatch, db_sessions, entity, record_id)
+    response = await client.request("PUT", case.url, headers=admin_headers,
+                                    files={"file": ("new.zip", VALID_ZIP)})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.ENGINE_NOT_FOUND.value
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+
+@pytest.mark.asyncio
+async def test_put_engine_files_500_unexpected_metadata_result(client, admin_headers, zip_upload_case,
+                                                              db_sessions, monkeypatch, invariant_errors):
+    case = await zip_upload_case("engine")
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "update_engine_files_updated", AsyncMock(return_value=code))
+    response = await client.put(case.url, headers=admin_headers, files={"file": ("new.zip", VALID_ZIP)})
+    assert_route_invariant(response, invariant_errors, code)
+    assert case.path.read_bytes() == case.old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, case.records)
+
+
 #
 # GET /v1/admin/jobs/{job_id}/artifacts - 200, 404, 422
 #
@@ -1374,6 +1463,25 @@ async def test_patch_job_404_job_not_found(client, admin_headers):
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
 
 
+
+@pytest.mark.asyncio
+async def test_patch_job_404_disappeared_before_update(client, admin_headers, job_factory, db_sessions, monkeypatch):
+    job_id = await job_factory(ProcessingState.NEW)
+    delete_job_before_crud(monkeypatch, db_sessions, job_id, admin_cruds, "update_job")
+    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"progress": 0.5})
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_patch_job_500_unexpected_crud_result(client, admin_headers, job_factory, monkeypatch, invariant_errors):
+    job_id = await job_factory(ProcessingState.NEW)
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_cruds, "update_job", AsyncMock(return_value=code))
+    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"progress": 0.5})
+    assert_route_invariant(response, invariant_errors, code)
+
+
 #
 # PUT /debug/jobs/{job_id}/start - 200, 404, 409, 422
 #
@@ -1419,6 +1527,40 @@ async def test_put_job_start_404_job_not_found(client, admin_headers):
     response = await client.put(f"/debug/jobs/{uuid4()}/start", headers=admin_headers)
     assert response.status_code == 404, response.text
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
+    code = AppCode.API_KEY_VALID
+    monkeypatch.setattr(admin_routes.general_cruds, "get_job", AsyncMock(return_value=(None, code)))
+    response = await client.put(f"/debug/jobs/{uuid4()}/start", headers=admin_headers)
+    assert_route_invariant(response, invariant_errors, code)
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_404_disappeared_before_update(client, admin_headers, job_factory, db_sessions, monkeypatch):
+    from doc_api.api import job_readiness
+    job_id = await job_factory(ProcessingState.NEW)
+    delete_job_before_crud(monkeypatch, db_sessions, job_id, job_readiness, "start_job")
+    response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.asyncio
+async def test_put_job_start_409_queued_during_request(client, admin_headers, job_factory, db_sessions, monkeypatch):
+    from doc_api.api import job_readiness
+    job_id = await job_factory(ProcessingState.NEW)
+    original = job_readiness.start_job
+    async def queued(**kwargs):
+        async with db_sessions.begin() as db:
+            (await db.get(model.Job, job_id)).state = ProcessingState.QUEUED
+        return await original(**kwargs)
+    monkeypatch.setattr(job_readiness, "start_job", queued)
+    response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_ALREADY_STARTED.value
 
 
 #

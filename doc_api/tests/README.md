@@ -714,6 +714,81 @@ that no complete body or second response is sent, that stored data is unchanged,
 and that a subsequent complete download succeeds. Buffered HTTPX responses
 alone would hide these failures and could misleadingly appear successful.
 
+### Defensive CRUD results and disappearing records
+
+Route tests inject unexpected CRUD result codes. They assert that the logged
+exception is `RouteInvariantError`, rather than accepting an unrelated crash as sufficient evidence of a 500. Responses
+retain the generic `INTERNAL_ERROR` envelope without internal diagnostic text.
+CRUD success codes are trusted to guarantee their corresponding result; routes
+do not recheck successful payloads. Coverage includes job creation/listing/details,
+referenced engine and image lookups, lease/progress operations, input metadata updates, engine-file metadata,
+and admin key/engine/job operations. Lists and input saves check their CRUD result
+codes instead of returning success unconditionally. An unexpected cancellation
+result cannot fall through into an admin's worker-update path.
+
+Other tests delete actual records in the isolated database after existence
+checks, before image retrieval, before updates, or after staging but before file
+installation. Missing jobs/images/engines return the appropriate 404 response;
+staged data is discarded and previous files remain intact. Input update failures
+roll back the file installation and retain the previous upload flags. The debug
+start route rechecks an unsuccessful conditional start, distinguishing missing
+jobs, incomplete inputs, and a job queued by another operation. Job lookups
+refresh cached ORM records so repeated reads observe committed state changes.
+
+User/worker cases also run under admin authentication where applicable; read
+cases include readonly credentials. These tests cover explicit route contracts
+and selected races; arbitrary malformed return structures and every possible
+server fault are not enumerated.
+
+- [x] post job 500 unexpected crud result. [`test_user.py::test_post_job_500_unexpected_crud_result`](test_user.py).
+- [x] get jobs 500 unexpected crud result. [`test_user.py::test_get_jobs_500_unexpected_crud_result`](test_user.py).
+- [x] get job 500 unexpected crud result. [`test_user.py::test_get_job_500_unexpected_crud_result`](test_user.py).
+- [x] get job 404 disappeared after check. [`test_user.py::test_get_job_404_disappeared_after_check`](test_user.py).
+- [x] get job 404 disappeared before images. [`test_user.py::test_get_job_404_disappeared_before_images`](test_user.py).
+- [x] put image 500 unexpected crud result. [`test_user.py::test_put_image_500_unexpected_crud_result`](test_user.py).
+- [x] put image 404 disappeared before install. [`test_user.py::test_put_image_404_disappeared_before_install`](test_user.py).
+- [x] put alto 500 unexpected crud result. [`test_user.py::test_put_alto_500_unexpected_crud_result`](test_user.py).
+- [x] put alto 404 disappeared before install. [`test_user.py::test_put_alto_404_disappeared_before_install`](test_user.py).
+- [x] put page 500 unexpected crud result. [`test_user.py::test_put_page_500_unexpected_crud_result`](test_user.py).
+- [x] put page 404 disappeared before install. [`test_user.py::test_put_page_404_disappeared_before_install`](test_user.py).
+- [x] put metadata 500 unexpected crud result. [`test_user.py::test_put_metadata_500_unexpected_crud_result`](test_user.py).
+- [x] put metadata 404 disappeared after check. [`test_user.py::test_put_metadata_404_disappeared_after_check`](test_user.py).
+- [x] put metadata 404 disappeared before install. [`test_user.py::test_put_metadata_404_disappeared_before_install`](test_user.py).
+- [x] patch job 404 disappeared after check. [`test_user.py::test_patch_job_404_disappeared_after_check`](test_user.py).
+- [x] patch job 500 unexpected cancel result. [`test_user.py::test_patch_job_500_unexpected_cancel_result`](test_user.py).
+- [x] patch job 404 disappeared before update. [`test_user.py::test_patch_job_404_disappeared_before_update`](test_user.py).
+- [x] get job result 404 disappeared after check. [`test_user.py::test_get_job_result_404_disappeared_after_check`](test_user.py).
+- [x] get engines 500 unexpected crud result. [`test_user.py::test_get_engines_500_unexpected_crud_result`](test_user.py).
+- [x] post job lease 500 unexpected crud result. [`test_worker.py::test_post_job_lease_500_unexpected_crud_result`](test_worker.py).
+- [x] patch job lease 500 unexpected crud result. [`test_worker.py::test_patch_job_lease_500_unexpected_crud_result`](test_worker.py).
+- [x] patch job lease 404 disappeared after check. [`test_worker.py::test_patch_job_lease_404_disappeared_after_check`](test_worker.py).
+- [x] patch job lease 404 disappeared before update. [`test_worker.py::test_patch_job_lease_404_disappeared_before_update`](test_worker.py).
+- [x] delete job lease 500 unexpected crud result. [`test_worker.py::test_delete_job_lease_500_unexpected_crud_result`](test_worker.py).
+- [x] delete job lease 404 disappeared after check. [`test_worker.py::test_delete_job_lease_404_disappeared_after_check`](test_worker.py).
+- [x] delete job lease 404 disappeared before update. [`test_worker.py::test_delete_job_lease_404_disappeared_before_update`](test_worker.py).
+- [x] get image 500 unexpected crud result. [`test_worker.py::test_get_image_500_unexpected_crud_result`](test_worker.py).
+- [x] get alto 500 unexpected crud result. [`test_worker.py::test_get_alto_500_unexpected_crud_result`](test_worker.py).
+- [x] get page 500 unexpected crud result. [`test_worker.py::test_get_page_500_unexpected_crud_result`](test_worker.py).
+- [x] get metadata 404 disappeared after check. [`test_worker.py::test_get_metadata_404_disappeared_after_check`](test_worker.py).
+- [x] get engine files 500 unexpected crud result. [`test_worker.py::test_get_engine_files_500_unexpected_crud_result`](test_worker.py).
+- [x] post job result 404 disappeared before install. [`test_worker.py::test_post_job_result_404_disappeared_before_install`](test_worker.py).
+- [x] post job artifacts 404 disappeared before install. [`test_worker.py::test_post_job_artifacts_404_disappeared_before_install`](test_worker.py).
+- [x] patch job 500 unexpected crud result. [`test_worker.py::test_patch_job_500_unexpected_crud_result`](test_worker.py).
+- [x] patch job 404 disappeared before update. [`test_worker.py::test_patch_job_404_disappeared_before_update`](test_worker.py).
+- [x] get keys 500 unexpected crud result. [`test_admin.py::test_get_keys_500_unexpected_crud_result`](test_admin.py).
+- [x] post keys 500 unexpected crud result. [`test_admin.py::test_post_keys_500_unexpected_crud_result`](test_admin.py).
+- [x] post key secret 500 unexpected crud result. [`test_admin.py::test_post_key_secret_500_unexpected_crud_result`](test_admin.py).
+- [x] patch key 500 unexpected crud result. [`test_admin.py::test_patch_key_500_unexpected_crud_result`](test_admin.py).
+- [x] post engine 500 unexpected crud result. [`test_admin.py::test_post_engine_500_unexpected_crud_result`](test_admin.py).
+- [x] patch engine 500 unexpected crud result. [`test_admin.py::test_patch_engine_500_unexpected_crud_result`](test_admin.py).
+- [x] put engine files 404 disappeared before install. [`test_admin.py::test_put_engine_files_404_disappeared_before_install`](test_admin.py).
+- [x] put engine files 500 unexpected metadata result. [`test_admin.py::test_put_engine_files_500_unexpected_metadata_result`](test_admin.py).
+- [x] patch job 404 disappeared before update. [`test_admin.py::test_patch_job_404_disappeared_before_update`](test_admin.py).
+- [x] patch job 500 unexpected crud result. [`test_admin.py::test_patch_job_500_unexpected_crud_result`](test_admin.py).
+- [x] put job start 500 unexpected crud result. [`test_admin.py::test_put_job_start_500_unexpected_crud_result`](test_admin.py).
+- [x] put job start 404 disappeared before update. [`test_admin.py::test_put_job_start_404_disappeared_before_update`](test_admin.py).
+- [x] put job start 409 queued during request. [`test_admin.py::test_put_job_start_409_queued_during_request`](test_admin.py).
+
 ### Concurrent workers, retries, and interrupted requests
 
 Four independent API identities send 48 concurrent lease requests against 32
@@ -897,6 +972,7 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
   requests with the same credentials. Existing timeout/grace, exhaustion, and
   release-attempt cases remain covered; TCP and throughput tests are outside
   this scope.
-- [ ] Review and test defensive invariant failures caused by DB races or
-  unexpected CRUD results. Generic internal-error serialization has a focused
-  failure-injection test; arbitrary server faults are not enumerated per route.
+- [x] Review defensive invariant failures and test unexpected CRUD codes
+  and actual record deletion during requests. Check
+  explicit invariant diagnostics, generic error envelopes, appropriate 404s, and
+  save rollback. Arbitrary server faults remain outside the enumerated scope.

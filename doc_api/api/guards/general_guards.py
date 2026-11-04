@@ -13,6 +13,23 @@ from doc_api.db import model
 JOB_EXISTS_GUARD_RESPONSES = {
     AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND]
 }
+
+
+def require_job_record(db_job, code: AppCode, request=None) -> model.Job:
+    """Validate each lookup; an earlier existence check does not retain a row."""
+    if code == AppCode.JOB_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND, code=code,
+            detail=GENERAL_RESPONSES[code]["detail"],
+        )
+    if code != AppCode.JOB_RETRIEVED:
+        # Import on the error path to avoid initializing the routes package
+        # while its guard modules are still being imported.
+        from doc_api.api.routes.helpers import RouteInvariantError
+        raise RouteInvariantError(code=code, request=request)
+    return db_job
+
+
 def challenge_job_exists(fn):
     @wraps(fn)
     async def wrapper(*args, **kwargs):
@@ -32,14 +49,7 @@ async def _challenge_job_exists(
         job_id: UUID) -> model.Job:
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
-    if code == AppCode.JOB_NOT_FOUND:
-        raise DocAPIClientErrorException(
-            status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.JOB_NOT_FOUND,
-            detail=JOB_EXISTS_GUARD_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
-        )
-
-    return db_job
+    return require_job_record(db_job, code)
 
 
 def _get_job_exists_params(kwargs: dict) -> Tuple[UUID, AsyncSession]:

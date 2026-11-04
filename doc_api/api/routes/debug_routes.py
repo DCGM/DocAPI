@@ -2,12 +2,12 @@ import logging
 from types import NoneType
 
 import fastapi
-from fastapi import Depends, status
+from fastapi import Depends, status, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.routes import debug_router
-from doc_api.api.guards.user_guards import challenge_user_access_to_job
+from doc_api.api.guards.general_guards import require_job_record
 from doc_api.api.authentication import require_api_key, require_admin_key
 from doc_api.api import job_readiness
 from doc_api.api.cruds import general_cruds
@@ -54,18 +54,14 @@ POST_JOB_START_RESPONSES = {
                 "as jobs are started automatically when all required files have been uploaded.",
     responses=make_responses(POST_JOB_START_RESPONSES))
 async def start_job(
+        request: Request,
         job_id: UUID,
         key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
-    if code == AppCode.JOB_NOT_FOUND:
-        raise DocAPIClientErrorException(
-            status=status.HTTP_404_NOT_FOUND,
-            code=AppCode.JOB_NOT_FOUND,
-            detail=POST_JOB_START_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
-        )
+    db_job = require_job_record(db_job, code, request)
 
     if db_job.state == base_objects.ProcessingState.NEW:
         job_started = await job_readiness.start_job(db=db, job_id=job_id)
@@ -76,10 +72,15 @@ async def start_job(
                 detail=POST_JOB_START_RESPONSES[AppCode.JOB_STARTED]["detail"]
             )
         else:
+            # The readiness checker, cancellation, or deletion may have won
+            # between the first lookup and the conditional start operation.
+            db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
+            db_job = require_job_record(db_job, code, request)
+            result_code = (AppCode.JOB_NOT_READY if db_job.state == base_objects.ProcessingState.NEW
+                           else AppCode.JOB_ALREADY_STARTED)
             raise DocAPIClientErrorException(
-                status=status.HTTP_409_CONFLICT,
-                code=AppCode.JOB_NOT_READY,
-                detail=POST_JOB_START_RESPONSES[AppCode.JOB_NOT_READY]["detail"]
+                status=status.HTTP_409_CONFLICT, code=result_code,
+                detail=POST_JOB_START_RESPONSES[result_code]["detail"]
             )
     else:
         raise DocAPIClientErrorException(

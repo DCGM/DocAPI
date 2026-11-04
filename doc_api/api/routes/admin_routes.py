@@ -248,9 +248,12 @@ GET_KEYS_RESPONSES = {
     description="Retrieve a list of all API keys in the system.",
     responses=make_responses(GET_KEYS_RESPONSES))
 async def get_keys(
+        request: Request,
         key: model.Key = Depends(require_admin_key),
         db: AsyncSession = Depends(get_async_session)):
     db_keys, code = await admin_cruds.get_keys(db=db)
+    if code != AppCode.KEYS_RETRIEVED:
+        raise RouteInvariantError(code=code, request=request)
     return DocAPIResponseOK[List[base_objects.Key]](
         status=fastapi.status.HTTP_200_OK,
         code=AppCode.KEYS_RETRIEVED,

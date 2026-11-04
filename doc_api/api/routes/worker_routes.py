@@ -485,6 +485,12 @@ async def get_metadata(
             )
         return FileResponse(meta_json_path, media_type="application/json", filename="meta.json")
 
+    if code == AppCode.JOB_NOT_FOUND:
+        raise DocAPIClientErrorException(
+            status=fastapi.status.HTTP_404_NOT_FOUND, code=code,
+            detail=GENERAL_RESPONSES[code]["detail"],
+        )
+
     raise RouteInvariantError(code=code, request=request)
 
 
