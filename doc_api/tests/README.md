@@ -100,14 +100,14 @@ coverage and greenlet support, which is needed to measure code reached through
 async SQLAlchemy calls correctly. Coverage percentages complement the endpoint
 checklist; they do not establish that every input combination is covered.
 
-## Coverage and backlog
+## Test coverage
 
-This is the maintained version of [issue #19's testing backlog](https://github.com/DCGM/DocAPI/issues/19),
-updated against the current endpoints, test functions, and response assertions.
-Checked items have implemented tests. Unchecked items describe remaining
-coverage work. The list tracks test functions, including parameterized cases,
-rather than a fixed test count. It is not a claim that all combinations of inputs and configuration have
-been exhausted.
+This inventory documents implemented tests for the current endpoints and response
+assertions, incorporating the coverage originally tracked in
+[issue #19](https://github.com/DCGM/DocAPI/issues/19). Entries reference test
+functions, including their parameterized cases, rather than a fixed test count.
+The sections describe covered behavior; they do not imply that every combination
+of inputs and configuration has been exhausted.
 
 `test_readme_references_current_tests` checks that every current test function is
 listed and that no reference points to a removed function. Update this inventory
@@ -119,6 +119,11 @@ key checks, plus checks for each disallowed role. These authentication matrices
 are listed once below instead of repeated under each endpoint.
 
 ### Cross-role scenarios
+
+Successful user and worker route tests also run with admin credentials where
+applicable. Shared read tests run as user, readonly, and admin for job listing,
+details, results, filters, and data visibility. Readonly coverage includes
+own-job listing and access to known jobs belonging to other owners.
 
 - [x] upload job files. [`test_scenario.py::test_upload_job_files`](test_scenario.py).
 - [x] download job files; `JOB_RETRIEVED`. [`test_scenario.py::test_download_job_files`](test_scenario.py).
@@ -160,6 +165,11 @@ are listed once below instead of repeated under each endpoint.
 - [x] **422** — extension policy; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_post_job_422_extension_policy`](test_user.py).
 
 #### GET /v1/jobs - 200, 422
+
+Date-filter tests cover inclusive boundaries for all four date fields, UTC and
+positive/negative offsets, naive UTC values, and nullable start/finish dates.
+They also cover combined date/state/engine/result filters and descending
+creation-date ordering.
 
 - [x] **200** — default case; `JOBS_RETRIEVED`. [`test_user.py::test_get_jobs_200`](test_user.py).
 - [x] **200** — with engines; `JOBS_RETRIEVED`. [`test_user.py::test_get_jobs_200_with_engines`](test_user.py).
@@ -307,6 +317,11 @@ are listed once below instead of repeated under each endpoint.
 - [x] **422** — invalid filter; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_get_engines_422_invalid_filter`](test_user.py).
 
 #### GET /openapi.json - 200
+
+Visibility tests cover all engine/upload toggles, User/Worker/Admin section
+combinations, empty/unknown/General/Debug sections, method-level filtering,
+cached schemas, and fresh-import environment binding. Successful calls and
+authentication are checked independently of documentation visibility.
 
 - [x] **200** — individual engine/upload toggles, cached schema, successful calls, and authentication when hidden. [`test_user.py::test_get_openapi_200_endpoint_visibility`](test_user.py).
 - [x] **200** — every User/Worker/Admin section combination with all/none/mixed toggles, method-level filtering, and successful hidden user/worker/admin/debug operations. [`test_user.py::test_get_openapi_200_sections`](test_user.py).
@@ -614,6 +629,11 @@ are listed once below instead of repeated under each endpoint.
 
 ### Alembic migrations
 
+The last two migrations are covered: cleanup timestamps and image-count backfill.
+Tests use existing data and exercise upgrade, downgrade, and re-upgrade. Older
+migration transitions and additional migration-failure scenarios are outside the
+current coverage scope.
+
 - [x] upgrade existing jobs. [`test_migrations.py::test_upgrade_existing_jobs`](test_migrations.py).
 
 ### Test isolation and documentation consistency
@@ -902,6 +922,12 @@ concurrency regression check, not a disk-load or API throughput benchmark.
 
 ### Application startup and launcher
 
+Startup tests cover production/development credential settings, admin-key
+creation and rotation, preserved/disabled existing keys, partial and malformed
+credentials, and database read/commit failures. Task lifecycle tests verify
+cleanup cancellation; launcher tests cover reload and database setup failures.
+These cases live in `test_startup.py` and `test_run.py`.
+
 - [x] partial development credentials create only missing keys. [`test_startup.py::test_startup_creates_only_missing_test_credentials`](test_startup.py).
 - [x] real uniqueness conflicts roll back credential inserts and prevent serving. [`test_startup.py::test_startup_key_conflict_rolls_back`](test_startup.py).
 - [x] startup creates credentials. [`test_startup.py::test_startup_creates_credentials`](test_startup.py).
@@ -931,48 +957,3 @@ concurrency regression check, not a disk-load or API throughput benchmark.
 - [x] put inputs 409 conflicting saves; staging holds no DB connection. [`test_user.py::test_put_input_409_file_save_in_progress`](test_user.py).
 - [x] put image 201 parallel input formats. [`test_user.py::test_put_image_201_parallel_input_formats`](test_user.py).
 - [x] put image 409 state changed during staging. [`test_user.py::test_put_image_409_state_changed_during_staging`](test_user.py).
-
-### Remaining depth and edge cases
-
-The endpoint/outcome gaps from #19 are covered above, including the two key
-creation/rotation failure branches that were previously marked done without
-actual tests. The remaining work concerns deeper combinations and fault paths:
-
-- [x] Expand successful readonly cases: shared read tests run as user, readonly,
-  and admin for job listing, job details, results, filters, and data visibility.
-  Own-job listing and access to known jobs belonging to other owners are covered.
-- [x] Expand date-filter tests: inclusive boundaries for all four fields in UTC,
-  positive/negative offsets, and naive UTC; nullable start/finish dates; combined
-  date/state/engine/result filters; and descending creation-date ordering.
-- [x] Extend OpenAPI visibility tests to all engine/upload toggles, every
-  User/Worker/Admin section combination, empty/unknown/General/Debug sections,
-  method-level filtering, cached schemas, and fresh-import environment binding.
-  Successful calls and authentication are checked independently of visibility.
-- [x] Expand startup coverage to production/development credentials, admin-key
-  creation and rotation, preserved/disabled existing keys, malformed credentials,
-  DB read/commit failures, cleanup-task cancellation, and launcher reload/DB setup.
-  These cases live in `test_startup.py` and `test_run.py`.
-- [x] Migration coverage is scoped to the last two migrations: cleanup timestamps
-  and image-count backfill, including existing data, downgrade, and re-upgrade.
-  This coverage is sufficient for the current scope; older transitions and
-  additional migration-failure scenarios are not planned here.
-- [x] Add upload parsing/read/write/replacement and DB failure tests, preserved
-  ZIP replacements, retry recovery, and download open/read/client-disconnect
-  failures. These cases stay in the corresponding user/worker/admin route files.
-- [x] Add races with cleanup actually removing files during downloads, including
-  optional image-record deletion, and cleanup during final file installation.
-  Cleanup tests also cover failed deletion, failed commits, recovery, and
-  locked/requeued jobs.
-- [x] Add validator-toggle combinations and generated multipart/XML/ZIP payloads,
-  including Unicode, larger files, malformed data, preservation after rejection,
-  and successful ZIP round trips. These are bounded regression cases; throughput
-  and resource-exhaustion stress tests remain outside this scope.
-- [x] Add bounded concurrency coverage for multiple workers leasing many jobs,
-  retry/error races, request cancellation, lost responses, and subsequent
-  requests with the same credentials. Existing timeout/grace, exhaustion, and
-  release-attempt cases remain covered; TCP and throughput tests are outside
-  this scope.
-- [x] Review defensive invariant failures and test unexpected CRUD codes
-  and actual record deletion during requests. Check
-  explicit invariant diagnostics, generic error envelopes, appropriate 404s, and
-  save rollback. Arbitrary server faults remain outside the enumerated scope.
