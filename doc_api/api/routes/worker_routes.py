@@ -18,7 +18,8 @@ from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
 from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.file_saving import file_save_transaction, write_zip_to_staging
-from doc_api.api.guards.worker_guards import challenge_worker_access_to_processing_job
+from doc_api.api.guards.worker_guards import (challenge_worker_access_to_processing_job,
+                                             WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES)
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
     DocAPIResponseClientError, DocAPIClientErrorException, make_responses, GENERAL_RESPONSES, validate_ok_response
@@ -107,7 +108,13 @@ async def patch_lease(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    lease_expire_at, server_time, code = await worker_cruds.update_processing_job_lease(db=db, job_id=job_id)
+    lease_expire_at, server_time, code = await worker_cruds.update_processing_job_lease(
+        db=db, job_id=job_id, worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None)
+
+    if code in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB, AppCode.JOB_NOT_IN_PROCESSING}:
+        response = (GENERAL_RESPONSES[code] if code != AppCode.JOB_NOT_IN_PROCESSING else
+                    WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES[code])
+        raise DocAPIClientErrorException(status=response["status"], code=code, detail=response["detail"])
 
     if code == AppCode.JOB_LEASE_EXTENDED:
         return DocAPIResponseOK[base_objects.JobLease](
@@ -144,7 +151,13 @@ async def delete_lease(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    code = await worker_cruds.release_job_lease(db=db, job_id=job_id)
+    code = await worker_cruds.release_job_lease(
+        db=db, job_id=job_id, worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None)
+
+    if code in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB, AppCode.JOB_NOT_IN_PROCESSING}:
+        response = (GENERAL_RESPONSES[code] if code != AppCode.JOB_NOT_IN_PROCESSING else
+                    WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES[code])
+        raise DocAPIClientErrorException(status=response["status"], code=code, detail=response["detail"])
 
     if code == AppCode.JOB_LEASE_RELEASED:
         return validate_ok_response(DocAPIResponseOK[NoneType](

@@ -714,6 +714,47 @@ that no complete body or second response is sent, that stored data is unchanged,
 and that a subsequent complete download succeeds. Buffered HTTPX responses
 alone would hide these failures and could misleadingly appear successful.
 
+### Concurrent workers, retries, and interrupted requests
+
+Four independent API identities send 48 concurrent lease requests against 32
+eligible jobs plus exhausted and terminal jobs. The test checks unique
+assignments, matching worker IDs, exactly one attempt increment, preserved retry
+start times/logs, and exhaustion without leasing terminal jobs. It polls in
+bounded waves because `SKIP LOCKED` can return an empty queue while another
+transaction holds eligible jobs. This is bounded concurrency coverage, rather
+than a throughput benchmark. The same scenario runs with admin identities.
+
+Controlled pauses exercise reassignment and user cancellation between route
+checks and the final database write. Lease renewal/release and job updates
+refresh the job and recheck ownership/state under its row lock: old workers
+receive 403 after reassignment; cancelled jobs reject updates with 409. Admins
+retain their ownership override. Ownership distinguishes API keys, rather than
+separate worker processes sharing the same key.
+
+Cancellation before lease commit rolls back the assignment. Cancellation after
+commit, or a disconnect simulated during ASGI response sending, retains the
+assignment. A subsequent POST may lease another job; it does not recover the
+lost response. The tests release the known original lease and verify it can be
+leased again without consuming an extra attempt. These are application-level
+request tests, rather than TCP reconnect tests.
+
+An uncommitted ERROR cannot be leased. After it commits, polling either retries
+it or permanently fails it at the attempt limit. Concurrent ERROR and FAILED
+reports must leave the job permanently failed; an ERROR arriving after failure
+is rejected without appending its log.
+
+- [x] post job lease 200 many workers and retries. [`test_worker.py::test_post_job_lease_200_many_workers_and_retries`](test_worker.py).
+- [x] post job lease cancelled before commit. [`test_worker.py::test_post_job_lease_cancelled_before_commit`](test_worker.py).
+- [x] post job lease 200 lost response. [`test_worker.py::test_post_job_lease_200_lost_response`](test_worker.py).
+- [x] patch job lease 403 reassignment during request. [`test_worker.py::test_patch_job_lease_403_reassignment_during_request`](test_worker.py).
+- [x] patch job lease 409 cancellation during request. [`test_worker.py::test_patch_job_lease_409_cancellation_during_request`](test_worker.py).
+- [x] delete job lease 403 reassignment during request. [`test_worker.py::test_delete_job_lease_403_reassignment_during_request`](test_worker.py).
+- [x] delete job lease 409 cancellation during request. [`test_worker.py::test_delete_job_lease_409_cancellation_during_request`](test_worker.py).
+- [x] patch job 403 reassignment during request. [`test_worker.py::test_patch_job_403_reassignment_during_request`](test_worker.py).
+- [x] patch job 409 cancellation during request. [`test_worker.py::test_patch_job_409_cancellation_during_request`](test_worker.py).
+- [x] patch job 200 error during lease poll. [`test_worker.py::test_patch_job_200_error_during_lease_poll`](test_worker.py).
+- [x] patch job 200 409 concurrent error and failure. [`test_worker.py::test_patch_job_200_409_concurrent_error_and_failure`](test_worker.py).
+
 ### Generated payloads and validation combinations
 
 Payloads are constructed at test runtime in `dummy_data.py`; no large binary
@@ -851,10 +892,11 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
   including Unicode, larger files, malformed data, preservation after rejection,
   and successful ZIP round trips. These are bounded regression cases; throughput
   and resource-exhaustion stress tests remain outside this scope.
-- [ ] Add stress coverage for multiple workers leasing many jobs, retry/error
-  races, and reconnect/cancellation behavior. Current tests cover one-job
-  concurrent assignment, timeout/grace boundaries, retry exhaustion, and release
-  attempt restoration.
+- [x] Add bounded concurrency coverage for multiple workers leasing many jobs,
+  retry/error races, request cancellation, lost responses, and subsequent
+  requests with the same credentials. Existing timeout/grace, exhaustion, and
+  release-attempt cases remain covered; TCP and throughput tests are outside
+  this scope.
 - [ ] Review and test defensive invariant failures caused by DB races or
   unexpected CRUD results. Generic internal-error serialization has a focused
   failure-injection test; arbitrary server faults are not enumerated per route.

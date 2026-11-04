@@ -20,10 +20,11 @@ from doc_api.api.guards.user_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds, worker_cruds
 from doc_api.api.database import get_async_session
-from doc_api.api.guards.worker_guards import challenge_worker_access_to_job
+from doc_api.api.guards.worker_guards import (challenge_worker_access_to_job,
+                                             WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES)
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
-    DocAPIClientErrorException, validate_ok_response
+    DocAPIClientErrorException, GENERAL_RESPONSES, validate_ok_response
 
 from doc_api.db import model
 from doc_api.config import config
@@ -261,6 +262,7 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
 
 
 PATCH_JOB_RESPONSES = {
+    AppCode.JOB_NOT_IN_PROCESSING: WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES[AppCode.JOB_NOT_IN_PROCESSING],
     # user cancels job
     AppCode.API_KEY_USER_FORBIDDEN: {
         "status": fastapi.status.HTTP_403_FORBIDDEN,
@@ -538,8 +540,17 @@ async def patch_job(
         db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
             db=db,
             job_id=job_id,
+            worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
             job_progress_update=job_progress_update
         )
+        if code_update_job in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB,
+                               AppCode.JOB_NOT_IN_PROCESSING, AppCode.JOB_UNFINISHABLE}:
+            response = (GENERAL_RESPONSES[code_update_job] if code_update_job in GENERAL_RESPONSES
+                        else PATCH_JOB_RESPONSES[code_update_job])
+            raise DocAPIClientErrorException(
+                status=response["status"], code=code_update_job, detail=response["detail"],
+                details={"state": db_job.state.value} if code_update_job in {AppCode.JOB_NOT_IN_PROCESSING, AppCode.JOB_UNFINISHABLE} else None,
+            )
         if job_progress_update.state == base_objects.ProcessingState.DONE:
             if code_update_job == AppCode.JOB_COMPLETED:
                 return DocAPIResponseOK[NoneType](
@@ -574,13 +585,6 @@ async def patch_job(
                     status=status.HTTP_200_OK,
                     code=code_update_job,
                     detail=PATCH_JOB_RESPONSES[code_update_job]["detail"],
-                )
-            if code_update_job == AppCode.JOB_UNFINISHABLE:
-                raise DocAPIClientErrorException(
-                    status=status.HTTP_409_CONFLICT,
-                    code=code_update_job,
-                    detail=PATCH_JOB_RESPONSES[code_update_job]["detail"],
-                    details={"state": db_job.state.value},
                 )
 
         elif job_progress_update.state is None:

@@ -3,7 +3,7 @@ import os
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 from sqlalchemy import select
@@ -180,6 +180,21 @@ async def other_worker_headers(client, admin_headers):
                                  json={"label": "other-worker", "role": "worker"})
     assert response.status_code == 201, response.text
     return {"X-API-Key": response.json()["data"]["secret"]}
+
+
+@pytest_asyncio.fixture
+async def worker_pool(client, admin_headers, worker_role):
+    """Independent identities for concurrent lease requests, including admins."""
+    workers = []
+    for index in range(4):
+        response = await client.post("/v1/admin/keys", headers=admin_headers,
+                                     json={"label": f"concurrent-worker-{index}", "role": worker_role})
+        assert response.status_code == 201, response.text
+        headers = {"X-API-Key": response.json()["data"]["secret"]}
+        identity = await client.get("/v1/me", headers=headers)
+        assert identity.status_code == 200, identity.text
+        workers.append(SimpleNamespace(headers=headers, id=UUID(identity.json()["data"]["id"])))
+    return workers
 
 
 @pytest_asyncio.fixture
