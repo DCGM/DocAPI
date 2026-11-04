@@ -1,10 +1,8 @@
 import logging
 import os.path
-import zipfile
 from types import NoneType
 from uuid import UUID
 
-import aiofiles
 import fastapi
 from fastapi import Depends, Request, UploadFile, File
 from fastapi.responses import FileResponse
@@ -16,7 +14,8 @@ from doc_api.api.authentication import require_admin_key
 from doc_api.api.cruds import admin_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.guards.general_guards import challenge_job_exists
-from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.helpers import RouteInvariantError
+from doc_api.api.file_saving import file_save_transaction, write_zip_to_staging
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import make_responses, DocAPIResponseOK, AppCode, DocAPIClientErrorException, \
     validate_ok_response, DocAPIResponseClientError, GENERAL_RESPONSES
@@ -370,6 +369,7 @@ async def patch_engine(
 
 
 POST_ENGINE_FILES_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.ENGINE_FILES_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Engine files ZIP archive uploaded successfully.",
@@ -414,42 +414,30 @@ async def post_engine_files(
     if code == AppCode.ENGINE_RETRIEVED:
         await aiofiles_os.makedirs(config.ENGINES_DIR, exist_ok=True)
         final_path = os.path.join(config.ENGINES_DIR, f"{db_engine.id}.zip")
-        tmp_path = final_path + ".validating"
+        async with file_save_transaction(
+            db=db, path=final_path, entity=model.Engine,
+            record_id=db_engine.id, key=key, kind="engine-files",
+        ) as file_save:
+            await write_zip_to_staging(
+                file, file_save.staged,
+                validate=config.ENGINE_FILES_ZIP_VALIDATION,
+                invalid_code=AppCode.ENGINE_FILES_INVALID,
+                invalid_detail=POST_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_INVALID]["detail"],
+            )
 
-        async with aiofiles.open(tmp_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024):
-                await f.write(chunk)
+            await file_save.install()
+            db_engine = file_save.record
+            already_uploaded = file_save.existed
+            code = await admin_cruds.update_engine_files_updated(db=file_save.db, engine_id=db_engine.id)
+            if code != AppCode.ENGINE_UPDATED:
+                raise RouteInvariantError(request=request, code=code)
 
-        if config.ENGINE_FILES_ZIP_VALIDATION:
-            try:
-                with zipfile.ZipFile(tmp_path):
-                    pass
-            except zipfile.BadZipFile as e:
-                await aiofiles_os.remove(tmp_path)
-                raise DocAPIClientErrorException(
-                    status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                    code=AppCode.ENGINE_FILES_INVALID,
-                    detail=POST_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_INVALID]["detail"],
-                    details={"reason": str(e)}
-                )
-
-        already_exists = await aiofiles_os.path.exists(final_path)
-        os.replace(tmp_path, final_path)
-
-        code = await admin_cruds.update_engine_files_updated(db=db, engine_id=db_engine.id)
-        if code == AppCode.ENGINE_UPDATED:
-            if already_exists:
-                return validate_ok_response(DocAPIResponseOK[NoneType](
-                    status=fastapi.status.HTTP_200_OK,
-                    code=AppCode.ENGINE_FILES_REUPLOADED,
-                    detail=POST_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_REUPLOADED]["detail"]
-                ))
-            else:
-                return validate_ok_response(DocAPIResponseOK[NoneType](
-                    status=fastapi.status.HTTP_201_CREATED,
-                    code=AppCode.ENGINE_FILES_UPLOADED,
-                    detail=POST_ENGINE_FILES_RESPONSES[AppCode.ENGINE_FILES_UPLOADED]["detail"]
-                ))
+            response_code = AppCode.ENGINE_FILES_REUPLOADED if already_uploaded else AppCode.ENGINE_FILES_UPLOADED
+            return validate_ok_response(DocAPIResponseOK[NoneType](
+                status=POST_ENGINE_FILES_RESPONSES[response_code]["status"],
+                code=response_code,
+                detail=POST_ENGINE_FILES_RESPONSES[response_code]["detail"],
+            ))
 
     elif code == AppCode.ENGINE_NOT_FOUND:
         raise DocAPIClientErrorException(

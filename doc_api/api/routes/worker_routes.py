@@ -1,10 +1,8 @@
 import logging
 import mimetypes
 import os
-import zipfile
 from types import NoneType
 
-import aiofiles
 import fastapi
 from fastapi import Depends, UploadFile, File, Request
 from fastapi.responses import FileResponse
@@ -18,7 +16,8 @@ from doc_api.api.cruds import worker_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
-from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.helpers import RouteInvariantError
+from doc_api.api.file_saving import file_save_transaction, write_zip_to_staging
 from doc_api.api.guards.worker_guards import challenge_worker_access_to_processing_job
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, \
@@ -477,6 +476,7 @@ async def get_metadata(
 
 
 POST_RESULT_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.JOB_RESULT_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Result ZIP archive uploaded successfully.",
@@ -518,43 +518,29 @@ async def post_result(
 
     await aiofiles_os.makedirs(config.RESULTS_DIR, exist_ok=True)
     final_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
-    tmp_path = final_path + ".validating"
+    async with file_save_transaction(
+        db=db, path=final_path, entity=model.Job,
+        record_id=job_id, key=key, kind="result",
+    ) as file_save:
+        await write_zip_to_staging(
+            file, file_save.staged,
+            validate=config.RESULT_ZIP_VALIDATION,
+            invalid_code=AppCode.JOB_RESULT_INVALID,
+            invalid_detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
+        )
 
-    async with aiofiles.open(tmp_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            await f.write(chunk)
-
-    if config.RESULT_ZIP_VALIDATION:
-        try:
-            with zipfile.ZipFile(tmp_path):
-                pass
-        except zipfile.BadZipFile as e:
-            await aiofiles_os.remove(tmp_path)
-            raise DocAPIClientErrorException(
-                status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                code=AppCode.JOB_RESULT_INVALID,
-                detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_INVALID]["detail"],
-                details={"reason": str(e)}
-            )
-
-    already_exists = await aiofiles_os.path.exists(final_path)
-    os.replace(tmp_path, final_path)
-
-    if already_exists:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=fastapi.status.HTTP_200_OK,
-            code=AppCode.JOB_RESULT_REUPLOADED,
-            detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_REUPLOADED]["detail"]
-        ))
-    else:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=fastapi.status.HTTP_201_CREATED,
-            code=AppCode.JOB_RESULT_UPLOADED,
-            detail=POST_RESULT_RESPONSES[AppCode.JOB_RESULT_UPLOADED]["detail"]
+        await file_save.install()
+        already_uploaded = file_save.existed
+        response_code = AppCode.JOB_RESULT_REUPLOADED if already_uploaded else AppCode.JOB_RESULT_UPLOADED
+        return validate_ok_response(DocAPIResponseOK(
+            status=POST_RESULT_RESPONSES[response_code]["status"],
+            code=response_code,
+            detail=POST_RESULT_RESPONSES[response_code]["detail"],
         ))
 
 
 POST_ARTIFACTS_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.JOB_ARTIFACTS_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Artifacts ZIP archive uploaded successfully.",
@@ -596,37 +582,22 @@ async def post_artifacts(
 
     await aiofiles_os.makedirs(config.ARTIFACTS_DIR, exist_ok=True)
     final_path = os.path.join(config.ARTIFACTS_DIR, f"{job_id}.zip")
-    tmp_path = final_path + ".validating"
+    async with file_save_transaction(
+        db=db, path=final_path, entity=model.Job,
+        record_id=job_id, key=key, kind="artifacts",
+    ) as file_save:
+        await write_zip_to_staging(
+            file, file_save.staged,
+            validate=config.ARTIFACTS_ZIP_VALIDATION,
+            invalid_code=AppCode.JOB_ARTIFACTS_INVALID,
+            invalid_detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_INVALID]["detail"],
+        )
 
-    async with aiofiles.open(tmp_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            await f.write(chunk)
-
-    if config.ARTIFACTS_ZIP_VALIDATION:
-        try:
-            with zipfile.ZipFile(tmp_path):
-                pass
-        except zipfile.BadZipFile as e:
-            await aiofiles_os.remove(tmp_path)
-            raise DocAPIClientErrorException(
-                status=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                code=AppCode.JOB_ARTIFACTS_INVALID,
-                detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_INVALID]["detail"],
-                details={"reason": str(e)}
-            )
-
-    already_exists = await aiofiles_os.path.exists(final_path)
-    os.replace(tmp_path, final_path)
-
-    if already_exists:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=fastapi.status.HTTP_200_OK,
-            code=AppCode.JOB_ARTIFACTS_REUPLOADED,
-            detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_REUPLOADED]["detail"]
-        ))
-    else:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=fastapi.status.HTTP_201_CREATED,
-            code=AppCode.JOB_ARTIFACTS_UPLOADED,
-            detail=POST_ARTIFACTS_RESPONSES[AppCode.JOB_ARTIFACTS_UPLOADED]["detail"]
+        await file_save.install()
+        already_uploaded = file_save.existed
+        response_code = AppCode.JOB_ARTIFACTS_REUPLOADED if already_uploaded else AppCode.JOB_ARTIFACTS_UPLOADED
+        return validate_ok_response(DocAPIResponseOK(
+            status=POST_ARTIFACTS_RESPONSES[response_code]["status"],
+            code=response_code,
+            detail=POST_ARTIFACTS_RESPONSES[response_code]["detail"],
         ))

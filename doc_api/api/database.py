@@ -1,6 +1,6 @@
 import os, asyncio
 from contextlib import asynccontextmanager
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from doc_api.config import config
 
@@ -50,3 +50,14 @@ class DBError(Exception):
 
 
 
+
+
+@asynccontextmanager
+async def transaction(db: AsyncSession):
+    """Join a caller-owned transaction, or commit a standalone CRUD operation."""
+    if db.in_transaction():
+        yield
+        await db.flush()
+    else:
+        async with db.begin():
+            yield

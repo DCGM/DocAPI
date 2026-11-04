@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
 from doc_api.api.routes.general_routes import prepare_job_data, result_availability
-from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.helpers import RouteInvariantError
+from doc_api.api.file_saving import file_save_transaction
 from doc_api.api.guards.user_guards import challenge_user_access_to_new_job, challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds
@@ -257,6 +258,7 @@ async def get_jobs(
 
 
 PUT_IMAGE_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.IMAGE_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "IMAGE file uploaded successfully.",
@@ -300,40 +302,40 @@ async def put_image(
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
 
     if code == AppCode.IMAGE_RETRIEVED:
-        raw_input = file.file.read()
-        contents = np.asarray(bytearray(raw_input), dtype="uint8")
-        image = cv2.imdecode(contents, cv2.IMREAD_COLOR)
-        if image is None:
-            raise DocAPIClientErrorException(
-                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                code=AppCode.IMAGE_INVALID,
-                detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_INVALID]["detail"]
-            )
-
-        imagehash = hashlib.md5(raw_input).hexdigest()
-
         batch_path = os.path.join(config.JOBS_DIR, str(job_id))
         await aiofiles_os.makedirs(batch_path, exist_ok=True)
         image_path = os.path.join(batch_path, f'{db_image.id}.jpg')
-        cv2.imwrite(image_path, image)
+        async with file_save_transaction(
+            db=db, path=image_path, entity=model.Job,
+            record_id=job_id, key=key, kind="inputs",
+            image_id=db_image.id,
+        ) as file_save:
+            raw_input = await file.read()
+            contents = np.asarray(bytearray(raw_input), dtype="uint8")
+            image = cv2.imdecode(contents, cv2.IMREAD_COLOR)
+            if image is None:
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    code=AppCode.IMAGE_INVALID,
+                    detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_INVALID]["detail"]
+                )
 
-        image_already_uploaded = db_image.image_uploaded
-        image_update = base_objects.ImageUpdate(image_uploaded=True, imagehash=imagehash)
-        await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
+            imagehash = hashlib.md5(raw_input).hexdigest()
 
-        if not image_already_uploaded:
-            # TODO this can potentially lead to inconsistent state if the job start fails after image upload
-            job_started = await user_cruds.start_job(db=db, job_id=job_id)
+            if not cv2.imwrite(file_save.staged, image):
+                raise OSError("Could not save uploaded image")
+
+            await file_save.install()
+            db_image = file_save.image
+            already_uploaded = db_image.image_uploaded
+            image_update = base_objects.ImageUpdate(image_uploaded=True, imagehash=imagehash)
+            await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+
+            response_code = AppCode.IMAGE_REUPLOADED if already_uploaded else AppCode.IMAGE_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_201_CREATED,
-                code=AppCode.IMAGE_UPLOADED,
-                detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_UPLOADED]["detail"]
-            ))
-        else:
-            return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_200_OK,
-                code=AppCode.IMAGE_REUPLOADED,
-                detail=PUT_IMAGE_RESPONSES[AppCode.IMAGE_REUPLOADED]["detail"]
+                status=PUT_IMAGE_RESPONSES[response_code]["status"],
+                code=response_code,
+                detail=PUT_IMAGE_RESPONSES[response_code]["detail"],
             ))
 
     elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
@@ -347,6 +349,7 @@ async def put_image(
 
 
 PUT_ALTO_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.ALTO_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "ALTO XML file uploaded successfully.",
@@ -404,44 +407,46 @@ async def put_alto(
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
     if code == AppCode.IMAGE_RETRIEVED:
-        data = await file.read()
-        if not is_well_formed_xml(data):
-            raise DocAPIClientErrorException(
-                status=status.HTTP_400_BAD_REQUEST,
-                code=AppCode.XML_PARSE_ERROR,
-                detail=PUT_ALTO_RESPONSES[AppCode.XML_PARSE_ERROR]["detail"],
-            )
-        alto_checks = validate_alto_basic(data)
-        for check_type, check_val in alto_checks.items():
-            if config.ALTO_VALIDATION[check_type] and not check_val:
-                raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    code=AppCode.ALTO_SCHEMA_INVALID,
-                    detail=PUT_ALTO_RESPONSES[AppCode.ALTO_SCHEMA_INVALID]["detail"],
-                )
-
         batch_path = os.path.join(config.JOBS_DIR, str(job_id))
         await aiofiles_os.makedirs(batch_path, exist_ok=True)
         alto_path = os.path.join(batch_path, f"{db_image.id}.alto.xml")
 
-        with open(alto_path, "wb") as f:
-            f.write(data)
+        async with file_save_transaction(
+            db=db, path=alto_path, entity=model.Job,
+            record_id=job_id, key=key, kind="inputs",
+            image_id=db_image.id,
+        ) as file_save:
+            data = await file.read()
+            if not is_well_formed_xml(data):
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_400_BAD_REQUEST,
+                    code=AppCode.XML_PARSE_ERROR,
+                    detail=PUT_ALTO_RESPONSES[AppCode.XML_PARSE_ERROR]["detail"],
+                )
+            alto_checks = validate_alto_basic(data)
+            for check_type, check_val in alto_checks.items():
+                if config.ALTO_VALIDATION[check_type] and not check_val:
+                    raise DocAPIClientErrorException(
+                        status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        code=AppCode.ALTO_SCHEMA_INVALID,
+                        detail=PUT_ALTO_RESPONSES[AppCode.ALTO_SCHEMA_INVALID]["detail"],
+                    )
 
-        if not db_image.alto_uploaded:
-            image_update = base_objects.ImageUpdate(alto_uploaded=True)
-            await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
-            # TODO this can potentially lead to inconsistent state if the job start fails after ALTO upload
-            job_started = await user_cruds.start_job(db=db, job_id=job_id)
+            with open(file_save.staged, "wb") as f:
+                f.write(data)
+
+            await file_save.install()
+            db_image = file_save.image
+            already_uploaded = db_image.alto_uploaded
+            if not already_uploaded:
+                image_update = base_objects.ImageUpdate(alto_uploaded=True)
+                await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+
+            response_code = AppCode.ALTO_REUPLOADED if already_uploaded else AppCode.ALTO_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_201_CREATED,
-                code=AppCode.ALTO_UPLOADED,
-                detail=PUT_ALTO_RESPONSES[AppCode.ALTO_UPLOADED]["detail"]
-            ))
-        else:
-            return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_200_OK,
-                code=AppCode.ALTO_REUPLOADED,
-                detail=PUT_ALTO_RESPONSES[AppCode.ALTO_REUPLOADED]["detail"]
+                status=PUT_ALTO_RESPONSES[response_code]["status"],
+                code=response_code,
+                detail=PUT_ALTO_RESPONSES[response_code]["detail"],
             ))
 
     elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
@@ -456,6 +461,7 @@ async def put_alto(
 
 # this should mirror the ALTO route above
 PUT_PAGE_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.PAGE_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "PAGE XML file uploaded successfully.",
@@ -513,44 +519,46 @@ async def put_page(
 
     db_image, code = await user_cruds.get_image_by_job_and_name(db=db, job_id=job_id, image_name=image_name)
     if code == AppCode.IMAGE_RETRIEVED:
-        data = await file.read()
-        if not is_well_formed_xml(data):
-            raise DocAPIClientErrorException(
-                status=status.HTTP_400_BAD_REQUEST,
-                code=AppCode.XML_PARSE_ERROR,
-                detail=PUT_PAGE_RESPONSES[AppCode.XML_PARSE_ERROR]["detail"],
-            )
-        page_checks = validate_page_basic(data)
-        for check_type, check_val in page_checks.items():
-            if config.PAGE_VALIDATION[check_type] and not check_val:
-                raise DocAPIClientErrorException(
-                    status=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    code=AppCode.PAGE_SCHEMA_INVALID,
-                    detail=PUT_PAGE_RESPONSES[AppCode.PAGE_SCHEMA_INVALID]["detail"],
-                )
-
         batch_path = os.path.join(config.JOBS_DIR, str(job_id))
         await aiofiles_os.makedirs(batch_path, exist_ok=True)
         page_path = os.path.join(batch_path, f"{db_image.id}.page.xml")
 
-        with open(page_path, "wb") as f:
-            f.write(data)
+        async with file_save_transaction(
+            db=db, path=page_path, entity=model.Job,
+            record_id=job_id, key=key, kind="inputs",
+            image_id=db_image.id,
+        ) as file_save:
+            data = await file.read()
+            if not is_well_formed_xml(data):
+                raise DocAPIClientErrorException(
+                    status=status.HTTP_400_BAD_REQUEST,
+                    code=AppCode.XML_PARSE_ERROR,
+                    detail=PUT_PAGE_RESPONSES[AppCode.XML_PARSE_ERROR]["detail"],
+                )
+            page_checks = validate_page_basic(data)
+            for check_type, check_val in page_checks.items():
+                if config.PAGE_VALIDATION[check_type] and not check_val:
+                    raise DocAPIClientErrorException(
+                        status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        code=AppCode.PAGE_SCHEMA_INVALID,
+                        detail=PUT_PAGE_RESPONSES[AppCode.PAGE_SCHEMA_INVALID]["detail"],
+                    )
 
-        if not db_image.page_uploaded:
-            image_update = base_objects.ImageUpdate(page_uploaded=True)
-            await general_cruds.update_image(db=db, image_id=db_image.id, image_update=image_update)
-            # TODO this can potentially lead to inconsistent state if the job start fails after PAGE upload
-            job_started = await user_cruds.start_job(db=db, job_id=job_id)
+            with open(file_save.staged, "wb") as f:
+                f.write(data)
+
+            await file_save.install()
+            db_image = file_save.image
+            already_uploaded = db_image.page_uploaded
+            if not already_uploaded:
+                image_update = base_objects.ImageUpdate(page_uploaded=True)
+                await general_cruds.update_image(db=file_save.db, image_id=db_image.id, image_update=image_update)
+
+            response_code = AppCode.PAGE_REUPLOADED if already_uploaded else AppCode.PAGE_UPLOADED
             return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_201_CREATED,
-                code=AppCode.PAGE_UPLOADED,
-                detail=PUT_PAGE_RESPONSES[AppCode.PAGE_UPLOADED]["detail"]
-            ))
-        else:
-            return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=status.HTTP_200_OK,
-                code=AppCode.PAGE_REUPLOADED,
-                detail=PUT_PAGE_RESPONSES[AppCode.PAGE_REUPLOADED]["detail"]
+                status=PUT_PAGE_RESPONSES[response_code]["status"],
+                code=response_code,
+                detail=PUT_PAGE_RESPONSES[response_code]["detail"],
             ))
 
     elif code == AppCode.IMAGE_NOT_FOUND_FOR_JOB:
@@ -566,6 +574,7 @@ async def put_page(
 JSONValue = Union[dict, list, str, int, float, bool, None]
 
 PUT_META_JSON_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: GENERAL_RESPONSES[AppCode.FILE_SAVE_IN_PROGRESS],
     AppCode.META_JSON_UPLOADED: {
         "status": fastapi.status.HTTP_201_CREATED,
         "description": "Meta JSON file uploaded successfully.",
@@ -616,25 +625,26 @@ async def put_meta_json(
     batch_path = os.path.join(config.JOBS_DIR, str(job_id))
     await aiofiles_os.makedirs(batch_path, exist_ok=True)
     meta_json_path = os.path.join(batch_path, "meta.json")
-    # the json should be checked/validated by FastAPI already, open and write it without extra validation
-    with open(meta_json_path, "w", encoding="utf-8") as f:
-        json.dump(meta_json, f, ensure_ascii=False, indent=4)
+    # FastAPI has already validated the JSON body; only serialization is needed.
+    async with file_save_transaction(
+        db=db, path=meta_json_path, entity=model.Job,
+        record_id=job_id, key=key, kind="inputs",
+    ) as file_save:
+        with open(file_save.staged, "w", encoding="utf-8") as f:
+            json.dump(meta_json, f, ensure_ascii=False, indent=4)
 
-    if not db_job.meta_json_uploaded:
-        update_job = base_objects.JobUpdate(meta_json_uploaded=True)
-        await general_cruds.update_job(db=db, job_id=job_id, job_update=update_job)
-        # TODO this can potentially lead to inconsistent state if the job start fails after Meta JSON file upload
-        job_started = await user_cruds.start_job(db=db, job_id=job_id)
+        await file_save.install()
+        db_job = file_save.record
+        already_uploaded = db_job.meta_json_uploaded
+        if not already_uploaded:
+            update_job = base_objects.JobUpdate(meta_json_uploaded=True)
+            await general_cruds.update_job(db=file_save.db, job_id=job_id, job_update=update_job)
+
+        response_code = AppCode.META_JSON_REUPLOADED if already_uploaded else AppCode.META_JSON_UPLOADED
         return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=status.HTTP_201_CREATED,
-            code=AppCode.META_JSON_UPLOADED,
-            detail=PUT_META_JSON_RESPONSES[AppCode.META_JSON_UPLOADED]["detail"]
-        ))
-    else:
-        return validate_ok_response(DocAPIResponseOK[NoneType](
-            status=status.HTTP_200_OK,
-            code=AppCode.META_JSON_REUPLOADED,
-            detail=PUT_META_JSON_RESPONSES[AppCode.META_JSON_REUPLOADED]["detail"]
+            status=PUT_META_JSON_RESPONSES[response_code]["status"],
+            code=response_code,
+            detail=PUT_META_JSON_RESPONSES[response_code]["detail"],
         ))
 
 

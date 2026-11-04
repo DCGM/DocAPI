@@ -1,4 +1,10 @@
+import asyncio
 import io
+import builtins
+import tempfile
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import subprocess
 import sys
 from itertools import combinations
@@ -12,13 +18,16 @@ from uuid import UUID, uuid4
 from doc_api.config import config
 from doc_api.db import model
 from doc_api.api import main
-from doc_api.api.routes import general_routes
+from doc_api.api.routes import general_routes, user_routes
+from doc_api.api.database import DBError
 
 import pytest
 
 from doc_api.api import cleanup
 from doc_api.tests.helpers import (assert_deletion_timestamps, _ename, _put_file,
-                                   OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES)
+                                   OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES,
+                                   interrupted_upload_body, interrupted_upload_headers,
+                                   assert_internal_transfer_error, assert_records_unchanged, interrupt_download)
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
@@ -550,7 +559,7 @@ async def test_get_job_500_database_failure(client, reader_headers, monkeypatch)
 
 
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
 
 @pytest.mark.parametrize("user_role", ["user", "admin"])
@@ -749,8 +758,349 @@ async def test_put_image_422_invalid_request(client, user_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_500_write_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("image")
+    with monkeypatch.context() as patch:
+        patch.setattr(user_routes.cv2, "imwrite", lambda *args: False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_500_database_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("image")
+    with monkeypatch.context() as patch:
+        method = 'update_image'
+        patch.setattr(user_routes.general_cruds, method, AsyncMock(side_effect=DBError("injected transfer failure")))
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    # The file and upload metadata roll back together.
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_400_interrupted_upload(client, user_headers, input_upload_case, db_sessions):
+    case = await input_upload_case("image")
+    metadata = False
+    response = await client.put(case.url, headers=interrupted_upload_headers(user_headers, metadata=metadata),
+                                content=interrupted_upload_body(metadata))
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert "injected transfer failure" not in response.text
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("failure", ["write", "replace"])
+@pytest.mark.asyncio
+async def test_put_image_500_reupload_preserves_file(client, user_headers, input_upload_case, db_sessions, monkeypatch, failure):
+    case = await input_upload_case("image")
+    case.path.parent.mkdir(exist_ok=True)
+    old = b"previous uploaded bytes"
+    case.path.write_bytes(old)
+    case.path.chmod(0o640)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = model.orm2dict(await db.get(case.entity, case.record_id))
+    with monkeypatch.context() as patch:
+        if failure == "replace":
+            real_replace = user_routes.os.replace
+            def broken_replace(source, destination):
+                if Path(destination) == case.path and ".docapi-tmp-upload-staging-" in str(source):
+                    raise OSError("injected transfer failure")
+                return real_replace(source, destination)
+            patch.setattr(user_routes.os, "replace", broken_replace)
+        else:
+            def partial_image(filename, image):
+                Path(filename).write_bytes(b"partial")
+                return False
+            patch.setattr(user_routes.cv2, "imwrite", partial_image)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert case.path.read_bytes() == old
+    assert set(case.path.parent.iterdir()) == {case.path, case.path.with_name(f".{case.path.name}.docapi-save.lock")}
+    async with db_sessions() as db:
+        assert model.orm2dict(await db.get(case.entity, case.record_id)) == before
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 200, retry.text
+    assert case.path.read_bytes() != old
+    assert case.path.stat().st_mode & 0o777 == 0o640
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_500_read_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("image")
+    with monkeypatch.context() as patch:
+        def broken_read(*args, **kwargs):
+            raise OSError("injected transfer failure")
+        patch.setattr(tempfile.SpooledTemporaryFile, "read", broken_read)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_image_500_commit_failure(client, user_headers, input_upload_case, db_sessions, reject_upload_commit, existing):
+    case = await input_upload_case("image")
+    old = b"original input bytes"
+    if existing:
+        case.path.parent.mkdir(exist_ok=True)
+        case.path.write_bytes(old)
+        async with db_sessions.begin() as db:
+            setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = [(case.entity, case.record_id, model.orm2dict(await db.get(case.entity, case.record_id))),
+                  (model.Job, case.job_id, model.orm2dict(await db.get(model.Job, case.job_id)))]
+    with reject_upload_commit(case.path, old=old if existing else None) as observed:
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert observed == [True]
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, before)
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == (200 if existing else 201), retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_201_concurrent_inputs_queue_job(client, user_headers, db_sessions, monkeypatch):
+    from doc_api.api import job_readiness
+    from doc_api.api import file_saving as file_helpers
+
+    response = await client.post("/v1/jobs", headers=user_headers,
+        json={"images": [{"name": "first.jpg", "order": 0}, {"name": "second.jpg", "order": 1}]})
+    assert response.status_code == 201, response.text
+    job_id = UUID(response.json()["data"]["id"])
+    both_staged = asyncio.Event()
+    release = asyncio.Event()
+    original = file_helpers.FileSaveTransaction.install
+    staged = []
+
+    async def install(save):
+        staged.append(Path(save.staged))
+        if len(staged) == 2:
+            both_staged.set()
+        await release.wait()
+        await original(save)
+
+    tasks = []
+    with monkeypatch.context() as patch:
+        patch.setattr(file_helpers.FileSaveTransaction, "install", install)
+        try:
+            for name in ("first.jpg", "second.jpg"):
+                tasks.append(asyncio.create_task(client.put(f"/v1/jobs/{job_id}/images/{name}/files/image",
+                    headers=user_headers, files={"file": (name, make_white_image_bytes()[0])})))
+            await asyncio.wait_for(both_staged.wait(), timeout=10)
+            assert all(path.stat().st_size > 0 for path in staged)
+            async with db_sessions() as db:
+                await job_readiness.queue_ready_jobs(db)
+            async with db_sessions() as db:
+                assert (await db.get(model.Job, job_id)).state == ProcessingState.NEW
+            release.set()
+            responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(response.status_code == 201 for response in responses)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.NEW
+    async with db_sessions() as db:
+        await job_readiness.queue_ready_jobs(db)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.QUEUED
+    assert not list((Path(config.JOBS_DIR) / str(job_id)).glob("*.docapi-tmp-*"))
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_image_201_parallel_input_formats(client, user_headers, db_sessions, monkeypatch):
+    from doc_api.api import job_readiness
+    from doc_api.api import file_saving as file_helpers
+    from doc_api.tests.dummy_data import VALID_ALTO_XML, VALID_PAGE_XML
+
+    response = await client.post("/v1/jobs", headers=user_headers, json={
+        "images": [{"name": "page.jpg", "order": 0}],
+        "alto_required": True, "page_required": True, "meta_json_required": True})
+    assert response.status_code == 201, response.text
+    job_id = UUID(response.json()["data"]["id"])
+    staged = []
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    original = file_helpers.FileSaveTransaction.install
+
+    async def install(save):
+        staged.append(Path(save.staged))
+        if len(staged) == 4:
+            ready.set()
+        await release.wait()
+        await original(save)
+
+    tasks = []
+    with monkeypatch.context() as patch:
+        patch.setattr(file_helpers.FileSaveTransaction, "install", install)
+        try:
+            for kind, data in [("image", make_white_image_bytes()[0]),
+                               ("alto", VALID_ALTO_XML), ("page", VALID_PAGE_XML)]:
+                tasks.append(asyncio.create_task(client.put(
+                    f"/v1/jobs/{job_id}/images/page.jpg/files/{kind}", headers=user_headers,
+                    files={"file": ("page", data)})))
+            tasks.append(asyncio.create_task(client.put(f"/v1/jobs/{job_id}/files/metadata",
+                headers=user_headers, json={"source": "parallel"})))
+            await asyncio.wait_for(ready.wait(), timeout=10)
+            assert len(set(staged)) == 4
+            assert all(path.stat().st_size > 0 for path in staged)
+            release.set()
+            responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    assert [response.status_code for response in responses] == [201] * 4, [r.text for r in responses]
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.NEW
+    async with db_sessions() as db:
+        await job_readiness.queue_ready_jobs(db)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.QUEUED
+    assert not list((Path(config.JOBS_DIR) / str(job_id)).glob("*.docapi-tmp-*"))
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("kind", ["image", "alto", "page", "metadata"])
+@pytest.mark.asyncio
+async def test_put_input_409_file_save_in_progress(client, user_headers, input_upload_case, monkeypatch, db_sessions, kind):
+    from doc_api.tests.helpers import assert_file_save_conflict
+    case = await input_upload_case(kind)
+    await assert_file_save_conflict(client, method="PUT", url=case.url, headers=user_headers,
+                                   kwargs=case.kwargs, path=case.path,
+                                   monkeypatch=monkeypatch, db_sessions=db_sessions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["queue", "cancel"])
+async def test_put_image_409_state_changed_during_staging(client, user_headers, input_upload_case, db_sessions, monkeypatch, change):
+    from doc_api.api import job_readiness
+    from doc_api.api import file_saving as file_helpers
+    case = await input_upload_case("image")
+    old = b"original image"
+    case.path.parent.mkdir(exist_ok=True)
+    case.path.write_bytes(old)
+    async with db_sessions.begin() as db:
+        (await db.get(case.entity, case.record_id)).image_uploaded = True
+    original = file_helpers.FileSaveTransaction.install
+
+    async def install(save):
+        if change == "queue":
+            async with db_sessions() as db:
+                await job_readiness.queue_ready_jobs(db)
+        else:
+            response = await client.patch(f"/v1/jobs/{case.job_id}", headers=user_headers,
+                                          json={"state": ProcessingState.CANCELLED.value})
+            assert response.status_code == 200, response.text
+        await original(save)
+
+    monkeypatch.setattr(file_helpers.FileSaveTransaction, "install", install)
+    response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == AppCode.JOB_NOT_IN_NEW.value
+    assert case.path.read_bytes() == old
+    assert not list(case.path.parent.glob("*.docapi-tmp-*"))
+
+@pytest.mark.asyncio
+async def test_put_image_500_restore_before_readiness_unlock(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from doc_api.api import job_readiness
+    case = await input_upload_case("image")
+    old = b"previous image"
+    case.path.parent.mkdir(exist_ok=True)
+    case.path.write_bytes(old)
+    async with db_sessions.begin() as db:
+        (await db.get(case.entity, case.record_id)).image_uploaded = True
+    original_rollback = AsyncSession.rollback
+    checked = False
+
+    async def rollback(db):
+        nonlocal checked
+        if db.info.get("file_save_transaction"):
+            assert case.path.read_bytes() == old
+            # The job remains locked until its file and metadata agree again.
+            async with db_sessions() as checker:
+                await asyncio.wait_for(job_readiness.queue_ready_jobs(checker), timeout=5)
+            async with db_sessions() as reader:
+                assert (await reader.get(model.Job, case.job_id)).state == ProcessingState.NEW
+            checked = True
+        await original_rollback(db)
+
+    monkeypatch.setattr(AsyncSession, "rollback", rollback)
+    monkeypatch.setattr(user_routes.general_cruds, "update_image",
+                        AsyncMock(side_effect=DBError("injected transfer failure")))
+    response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert checked
+    assert case.path.read_bytes() == old
+    async with db_sessions() as db:
+        await job_readiness.queue_ready_jobs(db)
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.QUEUED
+
+
+
+
+
+
+
+
+
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422, 500
 #
 
 @pytest.mark.parametrize("user_role", ["user", "admin"])
@@ -1018,8 +1368,173 @@ async def test_put_alto_201_root_validation_disabled(client, user_headers, job_w
     assert response.status_code == 201, response.text
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_500_write_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("alto")
+    with monkeypatch.context() as patch:
+        real_open = builtins.open
+        def broken_open(filename, *args, **kwargs):
+            if Path(filename).parent == case.path.parent:
+                raise OSError("injected transfer failure")
+            return real_open(filename, *args, **kwargs)
+        patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_500_database_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("alto")
+    with monkeypatch.context() as patch:
+        method = 'update_image'
+        patch.setattr(user_routes.general_cruds, method, AsyncMock(side_effect=DBError("injected transfer failure")))
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    # The file and upload metadata roll back together.
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_400_interrupted_upload(client, user_headers, input_upload_case, db_sessions):
+    case = await input_upload_case("alto")
+    metadata = False
+    response = await client.put(case.url, headers=interrupted_upload_headers(user_headers, metadata=metadata),
+                                content=interrupted_upload_body(metadata))
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert "injected transfer failure" not in response.text
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("failure", ["write", "replace"])
+@pytest.mark.asyncio
+async def test_put_alto_500_reupload_preserves_file(client, user_headers, input_upload_case, db_sessions, monkeypatch, failure):
+    case = await input_upload_case("alto")
+    case.path.parent.mkdir(exist_ok=True)
+    old = b"previous uploaded bytes"
+    case.path.write_bytes(old)
+    case.path.chmod(0o640)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = model.orm2dict(await db.get(case.entity, case.record_id))
+    with monkeypatch.context() as patch:
+        if failure == "replace":
+            real_replace = user_routes.os.replace
+            def broken_replace(source, destination):
+                if Path(destination) == case.path and ".docapi-tmp-upload-staging-" in str(source):
+                    raise OSError("injected transfer failure")
+                return real_replace(source, destination)
+            patch.setattr(user_routes.os, "replace", broken_replace)
+        else:
+            real_open = builtins.open
+            def broken_open(filename, *args, **kwargs):
+                opened = real_open(filename, *args, **kwargs)
+                if Path(filename).parent != case.path.parent:
+                    return opened
+                @contextmanager
+                def partial_writer():
+                    with opened as file:
+                        def write(data):
+                            file.write(data[:1])
+                            raise OSError("injected transfer failure")
+                        yield SimpleNamespace(write=write)
+                return partial_writer()
+            patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert case.path.read_bytes() == old
+    assert set(case.path.parent.iterdir()) == {case.path, case.path.with_name(f".{case.path.name}.docapi-save.lock")}
+    async with db_sessions() as db:
+        assert model.orm2dict(await db.get(case.entity, case.record_id)) == before
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 200, retry.text
+    assert case.path.read_bytes() != old
+    assert case.path.stat().st_mode & 0o777 == 0o640
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_alto_500_read_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("alto")
+    with monkeypatch.context() as patch:
+        def broken_read(*args, **kwargs):
+            raise OSError("injected transfer failure")
+        patch.setattr(tempfile.SpooledTemporaryFile, "read", broken_read)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_alto_500_commit_failure(client, user_headers, input_upload_case, db_sessions, reject_upload_commit, existing):
+    case = await input_upload_case("alto")
+    old = b"original input bytes"
+    if existing:
+        case.path.parent.mkdir(exist_ok=True)
+        case.path.write_bytes(old)
+        async with db_sessions.begin() as db:
+            setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = [(case.entity, case.record_id, model.orm2dict(await db.get(case.entity, case.record_id))),
+                  (model.Job, case.job_id, model.orm2dict(await db.get(model.Job, case.job_id)))]
+    with reject_upload_commit(case.path, old=old if existing else None) as observed:
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert observed == [True]
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, before)
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == (200 if existing else 201), retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+
+
+
 #
-# PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422
+# PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422, 500
 #
 
 @pytest.mark.parametrize("user_role", ["user", "admin"])
@@ -1286,8 +1801,173 @@ async def test_put_page_201_root_validation_disabled(client, user_headers, job_w
     assert response.status_code == 201, response.text
 
 
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_500_write_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("page")
+    with monkeypatch.context() as patch:
+        real_open = builtins.open
+        def broken_open(filename, *args, **kwargs):
+            if Path(filename).parent == case.path.parent:
+                raise OSError("injected transfer failure")
+            return real_open(filename, *args, **kwargs)
+        patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_500_database_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("page")
+    with monkeypatch.context() as patch:
+        method = 'update_image'
+        patch.setattr(user_routes.general_cruds, method, AsyncMock(side_effect=DBError("injected transfer failure")))
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    # The file and upload metadata roll back together.
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_400_interrupted_upload(client, user_headers, input_upload_case, db_sessions):
+    case = await input_upload_case("page")
+    metadata = False
+    response = await client.put(case.url, headers=interrupted_upload_headers(user_headers, metadata=metadata),
+                                content=interrupted_upload_body(metadata))
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert "injected transfer failure" not in response.text
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("failure", ["write", "replace"])
+@pytest.mark.asyncio
+async def test_put_page_500_reupload_preserves_file(client, user_headers, input_upload_case, db_sessions, monkeypatch, failure):
+    case = await input_upload_case("page")
+    case.path.parent.mkdir(exist_ok=True)
+    old = b"previous uploaded bytes"
+    case.path.write_bytes(old)
+    case.path.chmod(0o640)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = model.orm2dict(await db.get(case.entity, case.record_id))
+    with monkeypatch.context() as patch:
+        if failure == "replace":
+            real_replace = user_routes.os.replace
+            def broken_replace(source, destination):
+                if Path(destination) == case.path and ".docapi-tmp-upload-staging-" in str(source):
+                    raise OSError("injected transfer failure")
+                return real_replace(source, destination)
+            patch.setattr(user_routes.os, "replace", broken_replace)
+        else:
+            real_open = builtins.open
+            def broken_open(filename, *args, **kwargs):
+                opened = real_open(filename, *args, **kwargs)
+                if Path(filename).parent != case.path.parent:
+                    return opened
+                @contextmanager
+                def partial_writer():
+                    with opened as file:
+                        def write(data):
+                            file.write(data[:1])
+                            raise OSError("injected transfer failure")
+                        yield SimpleNamespace(write=write)
+                return partial_writer()
+            patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert case.path.read_bytes() == old
+    assert set(case.path.parent.iterdir()) == {case.path, case.path.with_name(f".{case.path.name}.docapi-save.lock")}
+    async with db_sessions() as db:
+        assert model.orm2dict(await db.get(case.entity, case.record_id)) == before
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 200, retry.text
+    assert case.path.read_bytes() != old
+    assert case.path.stat().st_mode & 0o777 == 0o640
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_page_500_read_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("page")
+    with monkeypatch.context() as patch:
+        def broken_read(*args, **kwargs):
+            raise OSError("injected transfer failure")
+        patch.setattr(tempfile.SpooledTemporaryFile, "read", broken_read)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_page_500_commit_failure(client, user_headers, input_upload_case, db_sessions, reject_upload_commit, existing):
+    case = await input_upload_case("page")
+    old = b"original input bytes"
+    if existing:
+        case.path.parent.mkdir(exist_ok=True)
+        case.path.write_bytes(old)
+        async with db_sessions.begin() as db:
+            setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = [(case.entity, case.record_id, model.orm2dict(await db.get(case.entity, case.record_id))),
+                  (model.Job, case.job_id, model.orm2dict(await db.get(model.Job, case.job_id)))]
+    with reject_upload_commit(case.path, old=old if existing else None) as observed:
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert observed == [True]
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, before)
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == (200 if existing else 201), retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
+
+
+
 #
-# PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 403, 404, 409, 422
+# PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 403, 404, 409, 422, 400, 500
 #
 
 @pytest.mark.parametrize("user_role", ["user", "admin"])
@@ -1437,6 +2117,152 @@ async def test_put_metadata_422_invalid_request(client, user_headers):
     response = await client.request('PUT', '/v1/jobs/00000000-0000-0000-0000-000000000001/files/metadata', headers=user_headers)
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_500_write_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("metadata")
+    with monkeypatch.context() as patch:
+        real_open = builtins.open
+        def broken_open(filename, *args, **kwargs):
+            if Path(filename).parent == case.path.parent:
+                raise OSError("injected transfer failure")
+            return real_open(filename, *args, **kwargs)
+        patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_500_database_failure(client, user_headers, input_upload_case, db_sessions, monkeypatch):
+    case = await input_upload_case("metadata")
+    with monkeypatch.context() as patch:
+        method = 'update_job'
+        patch.setattr(user_routes.general_cruds, method, AsyncMock(side_effect=DBError("injected transfer failure")))
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    # The file and upload metadata roll back together.
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_put_metadata_400_interrupted_upload(client, user_headers, input_upload_case, db_sessions):
+    case = await input_upload_case("metadata")
+    metadata = True
+    response = await client.put(case.url, headers=interrupted_upload_headers(user_headers, metadata=metadata),
+                                content=interrupted_upload_body(metadata))
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == AppCode.HTTP_ERROR.value
+    assert "injected transfer failure" not in response.text
+    assert not case.path.exists()
+    async with db_sessions() as db:
+        assert not getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 201, retry.text
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("failure", ["write", "replace"])
+@pytest.mark.asyncio
+async def test_put_metadata_500_reupload_preserves_file(client, user_headers, input_upload_case, db_sessions, monkeypatch, failure):
+    case = await input_upload_case("metadata")
+    case.path.parent.mkdir(exist_ok=True)
+    old = b"previous uploaded bytes"
+    case.path.write_bytes(old)
+    case.path.chmod(0o640)
+    async with db_sessions.begin() as db:
+        setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = model.orm2dict(await db.get(case.entity, case.record_id))
+    with monkeypatch.context() as patch:
+        if failure == "replace":
+            real_replace = user_routes.os.replace
+            def broken_replace(source, destination):
+                if Path(destination) == case.path and ".docapi-tmp-upload-staging-" in str(source):
+                    raise OSError("injected transfer failure")
+                return real_replace(source, destination)
+            patch.setattr(user_routes.os, "replace", broken_replace)
+        else:
+            real_open = builtins.open
+            def broken_open(filename, *args, **kwargs):
+                opened = real_open(filename, *args, **kwargs)
+                if Path(filename).parent != case.path.parent:
+                    return opened
+                @contextmanager
+                def partial_writer():
+                    with opened as file:
+                        def write(data):
+                            file.write(data[:1])
+                            raise OSError("injected transfer failure")
+                        yield SimpleNamespace(write=write)
+                return partial_writer()
+            patch.setattr(user_routes, "open", broken_open, raising=False)
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert case.path.read_bytes() == old
+    assert set(case.path.parent.iterdir()) == {case.path, case.path.with_name(f".{case.path.name}.docapi-save.lock")}
+    async with db_sessions() as db:
+        assert model.orm2dict(await db.get(case.entity, case.record_id)) == before
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == 200, retry.text
+    assert case.path.read_bytes() != old
+    assert case.path.stat().st_mode & 0o777 == 0o640
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
+@pytest.mark.asyncio
+async def test_put_metadata_500_commit_failure(client, user_headers, input_upload_case, db_sessions, reject_upload_commit, existing):
+    case = await input_upload_case("metadata")
+    old = b"original input bytes"
+    if existing:
+        case.path.parent.mkdir(exist_ok=True)
+        case.path.write_bytes(old)
+        async with db_sessions.begin() as db:
+            setattr(await db.get(case.entity, case.record_id), case.flag, True)
+    async with db_sessions() as db:
+        before = [(case.entity, case.record_id, model.orm2dict(await db.get(case.entity, case.record_id))),
+                  (model.Job, case.job_id, model.orm2dict(await db.get(model.Job, case.job_id)))]
+    with reject_upload_commit(case.path, old=old if existing else None) as observed:
+        response = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert_internal_transfer_error(response)
+    assert observed == [True]
+    assert case.path.exists() == existing
+    if existing:
+        assert case.path.read_bytes() == old
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+    await assert_records_unchanged(db_sessions, before)
+    retry = await client.put(case.url, headers=user_headers, **case.kwargs)
+    assert retry.status_code == (200 if existing else 201), retry.text
+    async with db_sessions() as db:
+        assert getattr(await db.get(case.entity, case.record_id), case.flag)
+        assert (await db.get(model.Job, case.job_id)).state == ProcessingState.NEW
+    assert not list(case.path.parent.glob(case.path.name + ".docapi-tmp-*"))
+
+
 
 
 #
@@ -1797,6 +2623,19 @@ async def test_get_job_result_422_invalid_request(client, reader_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/result', headers=reader_headers)
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
+@pytest.mark.asyncio
+async def test_get_job_result_200_stream_failure(client, reader_headers, download_case, db_sessions, monkeypatch, failure):
+    case = await download_case("result")
+    await interrupt_download(main.app, case.url, reader_headers, case.path, monkeypatch, failure)
+    assert case.path.read_bytes() == case.content
+    await assert_records_unchanged(db_sessions, case.records)
+    retry = await client.get(case.url, headers=reader_headers)
+    assert retry.status_code == 200, retry.text
+    assert retry.content == case.content
 
 
 

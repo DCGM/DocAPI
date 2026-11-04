@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.routes import debug_router
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key, require_admin_key
-from doc_api.api.cruds import user_cruds, general_cruds
+from doc_api.api import job_readiness
+from doc_api.api.cruds import general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
@@ -67,7 +68,7 @@ async def start_job(
         )
 
     if db_job.state == base_objects.ProcessingState.NEW:
-        job_started = await user_cruds.start_job(db=db, job_id=job_id)
+        job_started = await job_readiness.start_job(db=db, job_id=job_id)
         if job_started:
             return DocAPIResponseOK[NoneType](
                 status=status.HTTP_200_OK,

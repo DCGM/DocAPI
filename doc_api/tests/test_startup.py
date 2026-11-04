@@ -221,7 +221,7 @@ async def test_startup_key_conflict_rolls_back(startup_sessions, monkeypatch, ph
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("inputs,outputs", [(False, False), (True, False), (False, True), (True, True)])
-async def test_cleanup_task_lifecycle(monkeypatch, inputs, outputs):
+async def test_cleanup_task_lifecycle(monkeypatch, test_settings, inputs, outputs):
     enabled = inputs or outputs
     monkeypatch.setattr(config, "ADMIN_KEY", None)
     monkeypatch.setattr(config, "PRODUCTION", True)
@@ -245,3 +245,46 @@ async def test_cleanup_task_lifecycle(monkeypatch, inputs, outputs):
             await asyncio.sleep(0)
             assert not started.is_set()
     assert stopped.is_set() is enabled
+
+
+@pytest.mark.asyncio
+async def test_readiness_task_lifecycle(monkeypatch, startup_sessions):
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def readiness_task():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(main, "run_job_readiness_checks", readiness_task)
+    async with main.lifespan(main.app):
+        await asyncio.wait_for(started.wait(), timeout=5)
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_readiness_recovers_jobs_at_startup(monkeypatch, startup_sessions):
+    from doc_api.api import job_readiness
+    from doc_api.api.schemas.base_objects import ProcessingState
+
+    async with main.lifespan(main.app):
+        async with startup_sessions.begin() as db:
+            owner = await db.scalar(select(model.Key).where(model.Key.label == config.TEST_USER_KEY_LABEL))
+            job = model.Job(owner_key_id=owner.id, definition={"images": []}, state=ProcessingState.NEW)
+            db.add(job)
+            await db.flush()
+            job_id = job.id
+
+    monkeypatch.setattr(main, "run_job_readiness_checks", job_readiness.run_job_readiness_checks)
+    monkeypatch.setattr(config, "JOB_READINESS_CHECK_INTERVAL_SECONDS", 3600)
+    async def wait_for_queue():
+        while True:
+            async with startup_sessions() as db:
+                if (await db.get(model.Job, job_id)).state == ProcessingState.QUEUED:
+                    return
+            await asyncio.sleep(0.01)
+    async with main.lifespan(main.app):
+        await asyncio.wait_for(wait_for_queue(), timeout=5)

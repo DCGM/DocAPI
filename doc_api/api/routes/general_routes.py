@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.guards.general_guards import challenge_job_exists
 from doc_api.api.routes import root_router
-from doc_api.api.routes.helper import RouteInvariantError
+from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds, worker_cruds

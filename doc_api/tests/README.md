@@ -182,7 +182,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_get_job_422_invalid_request`](test_user.py).
 - [x] **500** — database failure; `INTERNAL_ERROR`. [`test_user.py::test_get_job_500_database_failure`](test_user.py).
 
-#### PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422
+#### PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422, 400, 500
 
 - [x] **201** — default case; `IMAGE_UPLOADED`. [`test_user.py::test_put_image_201`](test_user.py).
 - [x] **201** — preserves deletion timestamps. [`test_user.py::test_put_image_201_preserves_deletion_timestamps`](test_user.py).
@@ -194,8 +194,15 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_user.py::test_put_image_403_job_access_forbidden`](test_user.py).
 - [x] **409** — job not new; `JOB_NOT_IN_NEW`. [`test_user.py::test_put_image_409_job_not_new`](test_user.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_put_image_422_invalid_request`](test_user.py).
+- [x] **500** — write failure. [`test_user.py::test_put_image_500_write_failure`](test_user.py).
+- [x] **500** — database failure. [`test_user.py::test_put_image_500_database_failure`](test_user.py).
+- [x] **400** — interrupted upload. [`test_user.py::test_put_image_400_interrupted_upload`](test_user.py).
+- [x] **500** — failed input replacement preserves prior bytes and upload flags, removes staging files, and permits retry. [`test_user.py::test_put_image_500_reupload_preserves_file`](test_user.py).
+- [x] **500** — stored upload read fails before destination writes; retry succeeds. [`test_user.py::test_put_image_500_read_failure`](test_user.py).
+- [x] put image 500 commit failure. [`test_user.py::test_put_image_500_commit_failure`](test_user.py).
+- [x] put image 201 concurrent inputs queue job. [`test_user.py::test_put_image_201_concurrent_inputs_queue_job`](test_user.py).
 
-#### PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422
+#### PUT /v1/jobs/{job_id}/images/{image_id}/files/alto - 201, 200, 400, 403, 404, 409, 422, 500
 
 - [x] **201** — default case; `ALTO_UPLOADED`. [`test_user.py::test_put_alto_201`](test_user.py).
 - [x] **201** — preserves deletion timestamps. [`test_user.py::test_put_alto_201_preserves_deletion_timestamps`](test_user.py).
@@ -211,8 +218,14 @@ are listed once below instead of repeated under each endpoint.
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_put_alto_422_invalid_request`](test_user.py).
 - [x] **422** — optional validation; `ALTO_SCHEMA_INVALID`. [`test_user.py::test_put_alto_422_optional_validation`](test_user.py).
 - [x] **201** — root validation disabled. [`test_user.py::test_put_alto_201_root_validation_disabled`](test_user.py).
+- [x] **500** — write failure. [`test_user.py::test_put_alto_500_write_failure`](test_user.py).
+- [x] **500** — database failure. [`test_user.py::test_put_alto_500_database_failure`](test_user.py).
+- [x] **400** — interrupted upload. [`test_user.py::test_put_alto_400_interrupted_upload`](test_user.py).
+- [x] **500** — failed input replacement preserves prior bytes and upload flags, removes staging files, and permits retry. [`test_user.py::test_put_alto_500_reupload_preserves_file`](test_user.py).
+- [x] **500** — stored upload read fails before destination writes; retry succeeds. [`test_user.py::test_put_alto_500_read_failure`](test_user.py).
+- [x] put alto 500 commit failure. [`test_user.py::test_put_alto_500_commit_failure`](test_user.py).
 
-#### PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422
+#### PUT /v1/jobs/{job_id}/images/{image_id}/files/page - 201, 200, 400, 403, 404, 409, 422, 500
 
 - [x] **201** — default case; `PAGE_UPLOADED`. [`test_user.py::test_put_page_201`](test_user.py).
 - [x] **201** — preserves deletion timestamps. [`test_user.py::test_put_page_201_preserves_deletion_timestamps`](test_user.py).
@@ -228,8 +241,14 @@ are listed once below instead of repeated under each endpoint.
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_put_page_422_invalid_request`](test_user.py).
 - [x] **422** — optional validation; `PAGE_SCHEMA_INVALID`. [`test_user.py::test_put_page_422_optional_validation`](test_user.py).
 - [x] **201** — root validation disabled. [`test_user.py::test_put_page_201_root_validation_disabled`](test_user.py).
+- [x] **500** — write failure. [`test_user.py::test_put_page_500_write_failure`](test_user.py).
+- [x] **500** — database failure. [`test_user.py::test_put_page_500_database_failure`](test_user.py).
+- [x] **400** — interrupted upload. [`test_user.py::test_put_page_400_interrupted_upload`](test_user.py).
+- [x] **500** — failed input replacement preserves prior bytes and upload flags, removes staging files, and permits retry. [`test_user.py::test_put_page_500_reupload_preserves_file`](test_user.py).
+- [x] **500** — stored upload read fails before destination writes; retry succeeds. [`test_user.py::test_put_page_500_read_failure`](test_user.py).
+- [x] put page 500 commit failure. [`test_user.py::test_put_page_500_commit_failure`](test_user.py).
 
-#### PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 403, 404, 409, 422
+#### PUT /v1/jobs/{job_id}/files/metadata - 201, 200, 403, 404, 409, 422, 400, 500
 
 - [x] **201** — default case; `META_JSON_UPLOADED`. [`test_user.py::test_put_metadata_201`](test_user.py).
 - [x] **201** — preserves deletion timestamps. [`test_user.py::test_put_metadata_201_preserves_deletion_timestamps`](test_user.py).
@@ -241,6 +260,11 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_user.py::test_put_metadata_403_job_access_forbidden`](test_user.py).
 - [x] **409** — job not new; `JOB_NOT_IN_NEW`. [`test_user.py::test_put_metadata_409_job_not_new`](test_user.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_put_metadata_422_invalid_request`](test_user.py).
+- [x] **500** — write failure. [`test_user.py::test_put_metadata_500_write_failure`](test_user.py).
+- [x] **500** — database failure. [`test_user.py::test_put_metadata_500_database_failure`](test_user.py).
+- [x] **400** — interrupted upload. [`test_user.py::test_put_metadata_400_interrupted_upload`](test_user.py).
+- [x] **500** — failed input replacement preserves prior bytes and upload flags, removes staging files, and permits retry. [`test_user.py::test_put_metadata_500_reupload_preserves_file`](test_user.py).
+- [x] put metadata 500 commit failure. [`test_user.py::test_put_metadata_500_commit_failure`](test_user.py).
 
 #### PATCH /v1/jobs/{job_id} - 200, 403, 404, 409, 422
 
@@ -270,6 +294,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **404** — job not found; `JOB_NOT_FOUND`. [`test_user.py::test_get_job_result_404_job_not_found`](test_user.py).
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_user.py::test_get_job_result_403_job_access_forbidden`](test_user.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_get_job_result_422_invalid_request`](test_user.py).
+- [x] **200** — stream failure. [`test_user.py::test_get_job_result_200_stream_failure`](test_user.py).
 
 #### GET / - 307
 
@@ -335,6 +360,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_get_image_403_job_access_forbidden`](test_worker.py).
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_image_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_image_422_invalid_request`](test_worker.py).
+- [x] **200** — stream failure. [`test_worker.py::test_get_image_200_stream_failure`](test_worker.py).
 
 #### GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 
@@ -346,6 +372,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_get_alto_403_job_access_forbidden`](test_worker.py).
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_alto_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_alto_422_invalid_request`](test_worker.py).
+- [x] **200** — stream failure. [`test_worker.py::test_get_alto_200_stream_failure`](test_worker.py).
 
 #### GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 403, 404, 409, 410, 422
 
@@ -357,6 +384,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_get_page_403_job_access_forbidden`](test_worker.py).
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_page_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_page_422_invalid_request`](test_worker.py).
+- [x] **200** — stream failure. [`test_worker.py::test_get_page_200_stream_failure`](test_worker.py).
 
 #### GET /v1/jobs/{job_id}/files/metadata - 200, 403, 404, 409, 410, 422
 
@@ -367,6 +395,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_get_metadata_403_job_access_forbidden`](test_worker.py).
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_metadata_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_metadata_422_invalid_request`](test_worker.py).
+- [x] **200** — stream failure. [`test_worker.py::test_get_metadata_200_stream_failure`](test_worker.py).
 
 #### GET /v1/engines/{engine_id}/files - 200, 404, 410, 422
 
@@ -375,8 +404,9 @@ are listed once below instead of repeated under each endpoint.
 - [x] **410** — default case; `JOB_RETRIEVED`, `ENGINE_FILES_GONE`. [`test_worker.py::test_get_engine_files_410`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_engine_files_422_invalid_request`](test_worker.py).
 - [x] **404** — engine not found; `ENGINE_NOT_FOUND`. [`test_worker.py::test_get_engine_files_404_engine_not_found`](test_worker.py).
+- [x] **200** — stream failure. [`test_worker.py::test_get_engine_files_200_stream_failure`](test_worker.py).
 
-#### POST /v1/jobs/{job_id}/result - 201, 200, 403, 404, 409, 415, 422
+#### POST /v1/jobs/{job_id}/result - 201, 200, 403, 404, 409, 415, 422, 400, 500
 
 - [x] **201** — default case. [`test_worker.py::test_post_job_result_201`](test_worker.py).
 - [x] **201** — preserves deletion timestamps. [`test_worker.py::test_post_job_result_201_preserves_deletion_timestamps`](test_worker.py).
@@ -387,8 +417,16 @@ are listed once below instead of repeated under each endpoint.
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_post_job_result_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_post_job_result_422_invalid_request`](test_worker.py).
 - [x] **201** — validation disabled; `JOB_RESULT_UPLOADED`. [`test_worker.py::test_post_job_result_201_validation_disabled`](test_worker.py).
+- [x] **500** — upload failure. [`test_worker.py::test_post_job_result_500_upload_failure`](test_worker.py).
+- [x] **415** — preserves existing file. [`test_worker.py::test_post_job_result_415_preserves_existing_file`](test_worker.py).
+- [x] **400** — interrupted upload. [`test_worker.py::test_post_job_result_400_interrupted_upload`](test_worker.py).
+- [x] cancellation after partial staging preserves prior data, removes the staging file, and permits retry. [`test_worker.py::test_post_job_result_cancelled_upload`](test_worker.py).
+- [x] post job result 409 conflicting saves; staging holds no DB connection. [`test_worker.py::test_post_job_result_409_file_save_in_progress`](test_worker.py).
+- [x] post job result 200 progress during staging. [`test_worker.py::test_post_job_result_200_progress_during_staging`](test_worker.py).
+- [x] post job result 200 responsive during preparation. [`test_worker.py::test_post_job_result_200_responsive_during_preparation`](test_worker.py).
+- [x] post job result cancelled during preparation. [`test_worker.py::test_post_job_result_cancelled_during_preparation`](test_worker.py).
 
-#### POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422
+#### POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422, 400, 500
 
 - [x] **201** — default case. [`test_worker.py::test_post_job_artifacts_201`](test_worker.py).
 - [x] **201** — preserves deletion timestamps. [`test_worker.py::test_post_job_artifacts_201_preserves_deletion_timestamps`](test_worker.py).
@@ -399,6 +437,12 @@ are listed once below instead of repeated under each endpoint.
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_post_job_artifacts_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_post_job_artifacts_422_invalid_request`](test_worker.py).
 - [x] **201** — validation disabled; `JOB_ARTIFACTS_UPLOADED`. [`test_worker.py::test_post_job_artifacts_201_validation_disabled`](test_worker.py).
+- [x] **500** — upload failure. [`test_worker.py::test_post_job_artifacts_500_upload_failure`](test_worker.py).
+- [x] **415** — preserves existing file. [`test_worker.py::test_post_job_artifacts_415_preserves_existing_file`](test_worker.py).
+- [x] **400** — interrupted upload. [`test_worker.py::test_post_job_artifacts_400_interrupted_upload`](test_worker.py).
+- [x] cancellation after partial staging preserves prior data, removes the staging file, and permits retry. [`test_worker.py::test_post_job_artifacts_cancelled_upload`](test_worker.py).
+- [x] post job artifacts 409 conflicting saves; staging holds no DB connection. [`test_worker.py::test_post_job_artifacts_409_file_save_in_progress`](test_worker.py).
+- [x] post job artifacts 200 progress during staging. [`test_worker.py::test_post_job_artifacts_200_progress_during_staging`](test_worker.py).
 
 #### PATCH /v1/jobs/{job_id} - 200, 400, 403, 404, 409
 
@@ -471,7 +515,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **409** — default case; `ENGINE_CREATED`, `ENGINE_ALREADY_EXISTS`. [`test_admin.py::test_patch_engine_409`](test_admin.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_admin.py::test_patch_engine_422_invalid_request`](test_admin.py).
 
-#### PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 404, 415, 422
+#### PUT /v1/admin/engines/{name}/{version}/files - 201, 200, 404, 415, 422, 400, 500
 
 - [x] **201** — default case; `ENGINE_FILES_UPLOADED`. [`test_admin.py::test_put_engine_files_201`](test_admin.py).
 - [x] **200** — default case; `ENGINE_FILES_UPLOADED`, `ENGINES_RETRIEVED`, `ENGINE_FILES_REUPLOADED`. [`test_admin.py::test_put_engine_files_200`](test_admin.py).
@@ -479,6 +523,19 @@ are listed once below instead of repeated under each endpoint.
 - [x] **404** — engine not found; `ENGINE_NOT_FOUND`. [`test_admin.py::test_put_engine_files_404_engine_not_found`](test_admin.py).
 - [x] **422** — missing file; `REQUEST_VALIDATION_ERROR`. [`test_admin.py::test_put_engine_files_422_missing_file`](test_admin.py).
 - [x] **201** — validation disabled; `ENGINE_FILES_UPLOADED`. [`test_admin.py::test_put_engine_files_201_validation_disabled`](test_admin.py).
+- [x] **500** — upload failure. [`test_admin.py::test_put_engine_files_500_upload_failure`](test_admin.py).
+- [x] **415** — preserves existing file. [`test_admin.py::test_put_engine_files_415_preserves_existing_file`](test_admin.py).
+- [x] **400** — interrupted upload. [`test_admin.py::test_put_engine_files_400_interrupted_upload`](test_admin.py).
+- [x] **500** — database failure. [`test_admin.py::test_put_engine_files_500_database_failure`](test_admin.py).
+- [x] cancellation after partial staging preserves prior data, removes the staging file, and permits retry. [`test_admin.py::test_put_engine_files_cancelled_upload`](test_admin.py).
+- [x] put engine files 500 commit failure. [`test_admin.py::test_put_engine_files_500_commit_failure`](test_admin.py).
+- [x] **409** — another process holds the file lock; process exit releases it. [`test_admin.py::test_put_engine_files_409_other_process_saving`](test_admin.py).
+- [x] put engine files 409 conflicting saves; staging holds no DB connection. [`test_admin.py::test_put_engine_files_409_file_save_in_progress`](test_admin.py).
+- [x] put engine files cancelled after install. [`test_admin.py::test_put_engine_files_cancelled_after_install`](test_admin.py).
+- [x] put engine files 500 unknown commit outcome. [`test_admin.py::test_put_engine_files_500_unknown_commit_outcome`](test_admin.py).
+- [x] put engine files 500 unresolved backup. [`test_admin.py::test_put_engine_files_500_unresolved_backup`](test_admin.py).
+- [x] put engine files 200 abandoned staging. [`test_admin.py::test_put_engine_files_200_abandoned_staging`](test_admin.py).
+- [x] put engine files 200 backup cleanup failure. [`test_admin.py::test_put_engine_files_200_backup_cleanup_failure`](test_admin.py).
 
 #### GET /v1/admin/jobs/{job_id}/artifacts - 200, 404, 422
 
@@ -486,6 +543,7 @@ are listed once below instead of repeated under each endpoint.
 - [x] **404** — default case; `JOB_ARTIFACTS_NOT_FOUND`. [`test_admin.py::test_get_artifacts_404`](test_admin.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_admin.py::test_get_artifacts_422_invalid_request`](test_admin.py).
 - [x] **404** — job not found; `JOB_NOT_FOUND`. [`test_admin.py::test_get_artifacts_404_job_not_found`](test_admin.py).
+- [x] **200** — stream failure. [`test_admin.py::test_get_artifacts_200_stream_failure`](test_admin.py).
 
 #### GET /v1/jobs as ADMIN - 200
 
@@ -567,6 +625,108 @@ are listed once below instead of repeated under each endpoint.
 
 - [x] adapter failure state. [`test_adapter.py::test_adapter_failure_state`](test_adapter.py).
 
+### File-transfer failure behavior
+
+Temporary siblings use a single naming convention beside their official file:
+`<official-filename>.docapi-tmp-<purpose>-<random-id><extension>`. The purposes are
+`upload-staging` for new data being written/validated and `rollback-backup` for
+an original retained until a DB update commits. The final extension is repeated
+because image writers determine the format from the filename. For example:
+
+- `meta.json.docapi-tmp-upload-staging-<random-id>.json`
+- `<job-id>.zip.docapi-tmp-upload-staging-<random-id>.zip`
+- `meta.json.docapi-tmp-rollback-backup-<random-id>.json`
+
+All seven file-saving endpoints (image, ALTO, PAGE XML, metadata, result ZIP,
+artifact ZIP, and engine ZIP) use `api/file_saving.py`. Its context manager makes
+the lifecycle explicit: prepare staging, let the route write/validate and install
+the file and update metadata, commit or recover, then clean up. A return inside
+the route's `async with` still commits before returning the response. ZIP writing
+and validation share `write_zip_to_staging`; format-specific input validation
+stays in the user routes. Routes use `file_save.db` explicitly for their metadata
+updates, keeping the save transaction distinct from preliminary request lookups.
+
+Staging names are unique for each upload, including ZIPs. A replacement renames
+the old official file into a rollback backup, then renames staging into the
+official path. The backup remains until the metadata transaction commits. On a
+known failure the DB rolls back and the original is renamed back; a failed first
+upload removes the new official file. Success removes the backup. Handled errors
+and cancellation remove staging files. At most two data file paths for a
+destination coexist during this flow, excluding the empty lock file; renaming
+does not copy the ZIP. FastAPI may also spool the incoming multipart request in
+system temporary storage, outside this destination-directory limit.
+
+Nonblocking filesystem locks coordinate saves across API processes sharing the
+same data directories. A second save to the same destination immediately returns
+409 `FILE_SAVE_IN_PROGRESS`; the caller can retry after the first finishes.
+Different images, ALTO, PAGE XML, metadata, and ZIP destinations can stage
+concurrently. Each lock uses an empty hidden sibling named
+`.<official-filename>.docapi-save.lock`. The file remains after release so all
+processes lock the same inode; its presence does not mean a save is active. The
+OS releases the lock when its descriptor closes or the process exits. Do not
+manually remove lock files while saves may be running.
+
+Staging preparation, writing, and validation hold no DB connection. Directory
+scans and staging preparation run in a worker thread; cancellation waits for that
+worker before cleanup and unlocking. The save session borrows a pooled connection
+only at final installation to check/lock the job or engine, rename files, update
+metadata, and commit or roll back. The row lock prevents queuing/cancellation or
+cleanup from changing the record during that final step. Backup cleanup happens
+after commit has returned the connection to the pool.
+
+An abandoned staging file can be discarded under the upload lock if there is no
+rollback backup. A retained backup requires recovery before further replacement:
+its contents must not be discarded or promoted purely by the filename. If commit
+acknowledgement is lost, the server preserves the backup instead of blindly
+restoring old bytes over potentially committed metadata. If deleting a backup
+fails after a known successful commit, the upload stays successful and logs the
+retained backup. These cases need operator recovery. There is no durable recovery
+journal or guarantee of atomicity across a process/system crash. Cancellation
+before commit rolls back; once commit starts it is shielded and resolved before
+unlocking, retaining the new data if that commit succeeds.
+
+Interrupted request bodies fail before route storage writes. Upload read/write,
+validation, replacement, metadata update, and real DB commit failures
+preserve the prior official data and DB records, remove staging, and permit a
+retry. Input upload flags and image hashes share the file-save transaction;
+engine ZIP replacement shares the transaction recording
+`files_updated`. CRUD operations join this transaction instead of committing
+individual steps. Result/artifact ZIP uploads still have no uploaded flag in the
+DB, but use the same replacement/backup flow. Tests inspect the backup while
+commit is pending, verify that overlapping saves return 409 and allow retry,
+assert that staging holds no pooled connections, and verify progress requests
+continue while a ZIP is still being staged.
+
+Input routes leave jobs in NEW after saving their inputs. A separate lifespan
+background task checks at startup and every `JOB_READINESS_CHECK_INTERVAL_SECONDS`
+(default 5 seconds), then queues NEW jobs with every required upload flag set.
+The task uses batches and skips locked job rows; multiple API processes can run
+it safely. Final file installation briefly locks the job row and rechecks access,
+so queuing or cancellation during staging prevents a user from installing that
+file afterward. Admin state overrides retain their existing behavior.
+Route tests advance readiness explicitly; task tests cover startup recovery,
+interval configuration, retry, cancellation, incomplete inputs, and locked jobs.
+
+Download tests inspect raw ASGI messages for file-open/read errors and client
+disconnects. Once a `200` header has been sent, a stream failure cannot turn it
+into a JSON `500`: the body is incomplete and the stream aborts. Tests verify
+that no complete body or second response is sent, that stored data is unchanged,
+and that a subsequent complete download succeeds. Buffered HTTPX responses
+alone would hide these failures and could misleadingly appear successful.
+
+### Cleanup concurrency and API responsiveness
+
+- [x] input/result/artifact deletion is held while API reads, file downloads, and
+  updates to active jobs complete. A real thread watchdog detects event-loop
+  blocking. Updates to another completed job in the selected cleanup batch wait
+  for deletion and commit, then succeed. [`test_cleanup_concurrency.py::test_api_remains_responsive_during_cleanup`](test_cleanup_concurrency.py).
+
+Cleanup runs as an asyncio task; filesystem removal runs in a thread. It holds
+row locks on up to 100 selected jobs through file removal and commit, so writes
+to those jobs may wait for slow deletion of another job in the same batch. Reads
+and writes outside that batch remain responsive in these tests. This is a
+concurrency regression check, not a disk-load or API throughput benchmark.
+
 ### Application startup and launcher
 
 - [x] partial development credentials create only missing keys. [`test_startup.py::test_startup_creates_only_missing_test_credentials`](test_startup.py).
@@ -581,6 +741,23 @@ are listed once below instead of repeated under each endpoint.
 - [x] production configuration. [`test_run.py::test_production_configuration`](test_run.py).
 - [x] runner reload and database setup. [`test_run.py::test_runner_reload_and_database_setup`](test_run.py).
 - [x] runner database failure prevents serving. [`test_run.py::test_runner_database_failure_prevents_serving`](test_run.py).
+
+
+### Job readiness and concurrent input saves
+
+- [x] Failed replacement restores the original before releasing the job row lock. [`test_user.py::test_put_image_500_restore_before_readiness_unlock`](test_user.py).
+
+- [x] queue ready jobs batches. [`test_job_readiness.py::test_queue_ready_jobs_batches`](test_job_readiness.py).
+- [x] queue ready jobs only new. [`test_job_readiness.py::test_queue_ready_jobs_only_new`](test_job_readiness.py).
+- [x] queue ready jobs required inputs. [`test_job_readiness.py::test_queue_ready_jobs_required_inputs`](test_job_readiness.py).
+- [x] queue ready jobs skips locked. [`test_job_readiness.py::test_queue_ready_jobs_skips_locked`](test_job_readiness.py).
+- [x] readiness interval configuration. [`test_job_readiness.py::test_readiness_interval_configuration`](test_job_readiness.py).
+- [x] readiness loop interval and retry. [`test_job_readiness.py::test_readiness_loop_interval_and_retry`](test_job_readiness.py).
+- [x] readiness recovers jobs at startup. [`test_startup.py::test_readiness_recovers_jobs_at_startup`](test_startup.py).
+- [x] readiness task lifecycle. [`test_startup.py::test_readiness_task_lifecycle`](test_startup.py).
+- [x] put inputs 409 conflicting saves; staging holds no DB connection. [`test_user.py::test_put_input_409_file_save_in_progress`](test_user.py).
+- [x] put image 201 parallel input formats. [`test_user.py::test_put_image_201_parallel_input_formats`](test_user.py).
+- [x] put image 409 state changed during staging. [`test_user.py::test_put_image_409_state_changed_during_staging`](test_user.py).
 
 ### Remaining depth and edge cases
 
@@ -602,11 +779,15 @@ actual tests. The remaining work concerns deeper combinations and fault paths:
   creation and rotation, preserved/disabled existing keys, malformed credentials,
   DB read/commit failures, cleanup-task cancellation, and launcher reload/DB setup.
   These cases live in `test_startup.py` and `test_run.py`.
-- [ ] Exercise older Alembic transitions and migration failures with legacy data,
-  beyond the current pre-cleanup-to-head upgrade, count backfill, downgrade, and
-  re-upgrade. New API databases already apply the complete upgrade chain.
-- [ ] Add filesystem/DB fault injection for upload replacement and file-transfer
-  interruption, plus request races with cleanup. Existing cleanup tests cover
+- [x] Migration coverage is scoped to the last two migrations: cleanup timestamps
+  and image-count backfill, including existing data, downgrade, and re-upgrade.
+  This coverage is sufficient for the current scope; older transitions and
+  additional migration-failure scenarios are not planned here.
+- [x] Add upload parsing/read/write/replacement and DB failure tests, preserved
+  ZIP replacements, retry recovery, and download open/read/client-disconnect
+  failures. These cases stay in the corresponding user/worker/admin route files.
+- [ ] Add races with cleanup actually removing files during requests. Current
+  concurrency tests hold deletion while requests run; cleanup tests also cover
   failed deletion, failed commits, recovery, and locked/requeued jobs.
 - [ ] Add deeper validator combinations and large or unusual multipart/XML/ZIP
   payloads. Current tests cover each configured XML check, ZIP-validation bypass,

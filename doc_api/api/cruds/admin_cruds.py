@@ -6,7 +6,7 @@ from sqlalchemy import select, exc, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.authentication import salted_hmac_sha256_hex, issue_key_components, make_api_key
-from doc_api.api.database import DBError
+from doc_api.api.database import DBError, transaction
 from doc_api.api.schemas.responses import AppCode
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
@@ -334,7 +334,7 @@ async def update_engine(*, db: AsyncSession, engine_name: str, engine_version: s
 
 async def update_engine_files_updated(*, db: AsyncSession, engine_id: UUID) -> AppCode:
     try:
-        async with db.begin():
+        async with transaction(db):
             result = await db.execute(
                 select(model.Engine).where(model.Engine.id == engine_id).with_for_update()
             )

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from doc_api.api import job_readiness
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.tests.helpers import _put_file, _ename
@@ -117,7 +118,7 @@ async def test_download_job_files(client, worker_headers, lease_job, payload):
 
 
 @pytest.mark.asyncio
-async def test_user_to_readonly_job_access(client, admin_headers, worker_headers):
+async def test_user_to_readonly_job_access(client, admin_headers, worker_headers, db_sessions):
     # create random API key with USER role as ADMIN
     custom_key_label = f"test_user_to_readonly_job_access-{uuid4().hex}"
     r = await client.post(
@@ -194,6 +195,13 @@ async def test_user_to_readonly_job_access(client, admin_headers, worker_headers
             json={"meta": "dummy"},
         )
         assert r.status_code == 201, r.text
+
+    # Uploads persist inputs; only the separate readiness check queues the job.
+    r = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
+    async with db_sessions() as db:
+        await job_readiness.queue_ready_jobs(db)
 
     # Lease job as WORKER
     r = await client.post(

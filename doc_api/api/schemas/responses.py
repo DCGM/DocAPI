@@ -141,6 +141,7 @@ class AppCode(str, enum.Enum):
     API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION = 'API_KEY_FORBIDDEN_FOR_ENGINE_DEFINITION'
 
     REQUEST_VALIDATION_ERROR = 'REQUEST_VALIDATION_ERROR'
+    FILE_SAVE_IN_PROGRESS = 'FILE_SAVE_IN_PROGRESS'
     INTERNAL_ERROR = 'INTERNAL_ERROR'
     HTTP_ERROR = 'HTTP_ERROR'
 
@@ -260,6 +261,12 @@ def validate_server_error_response(payload: DocAPIResponseServerError) -> JSONRe
     )
 
 GENERAL_RESPONSES = {
+    AppCode.FILE_SAVE_IN_PROGRESS: {
+        "status": fastapi.status.HTTP_409_CONFLICT,
+        "description": "Another request is saving this file.",
+        "model": DocAPIResponseClientError,
+        "detail": "Another request is saving this file. Retry after it finishes.",
+    },
     AppCode.JOB_NOT_FOUND: {
         "status": fastapi.status.HTTP_404_NOT_FOUND,
         "description": "The specified job does not exist.",
