@@ -34,15 +34,19 @@ class AdapterResponse(Generic[T]):
         self.status = status
         self.no_data_response = no_data_response
         
-        # Extract API code from response if not provided and response is available
+        self.code = code
         if code is None and response is not None:
-            try:
-                response_json = response.json()
-                self.code = response_json.get("code")
-            except:
-                self.code = None  # Binary or malformed response
-        else:
-            self.code = code
+            # Download bodies may be huge or already consumed by streaming.
+            # Only JSON responses can contain a DocAPI response envelope.
+            media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if media_type == "application/json" or (media_type.startswith("application/") and media_type.endswith("+json")):
+                try:
+                    response_json = response.json()
+                except ValueError:
+                    pass  # Malformed JSON has no API code.
+                else:
+                    if isinstance(response_json, dict):
+                        self.code = response_json.get("code")
         
         # Automatically decide whether to keep the response object
         # Only keep it for debugging if the operation failed
@@ -231,24 +235,32 @@ class Adapter:
 
         return adapter_response
 
+    def _download_file_stream(self, url, output_path) -> AdapterResponse[None]:
+        """Save a successful download in chunks and release the HTTP connection."""
+        response = self.connector.get(url, stream=True)
+        try:
+            if response.status_code != HTTPStatus.OK:
+                result = AdapterResponse[None](status=response.status_code, response=response)
+                logger.error("Downloading %s failed. Response: %s %s", url, response.status_code, response.text)
+                return result
+
+            with open(output_path, "wb") as target:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        target.write(chunk)
+            return AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
+        finally:
+            response.close()
+
     def get_engine_files_stream(self, engine_id, output_path, route="/v1/engines/{engine_id}/files") -> AdapterResponse[None]:
         url = self.compose_url(route.format(engine_id=engine_id))
-        response = self.connector.get(url, stream=True)
+        return self._download_file_stream(url, output_path)
 
-        logger.debug("Downloading using stream")
-
-        with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-        adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
-        if adapter_response.is_success:
-            logger.debug(f"Engine files '{engine_id}' stream successfully obtained.")
-        else:
-            logger.error(f"Obtaining engine files '{engine_id}' stream failed. Response: {response.status_code} {response.text}")
-
-        return adapter_response
+    def get_result_stream(self, output_path, job_id=None, route="/v1/jobs/{job_id}/result") -> AdapterResponse[None]:
+        """Download a result ZIP to disk without buffering the complete body."""
+        job_id = self.get_job_id(job_id)
+        url = self.compose_url(route.format(job_id=job_id))
+        return self._download_file_stream(url, output_path)
 
     def get_engines(self, route="/v1/engines") -> AdapterResponse[list[Engine]]:
         url = self.compose_url(route)

@@ -800,6 +800,20 @@ current coverage scope.
 
 - [x] adapter uploaded input uses docapi. [`test_adapter.py::test_adapter_uploaded_input_uses_docapi`](test_adapter.py).
 
+File downloads skip API-code parsing unless the response has a JSON content type.
+Workers always stream engine downloads; result downloads offer `get_result_stream`
+for saving directly to disk. Streaming checks HTTP status before opening the target,
+writes chunks, and closes the response on success, read failure, or write failure.
+Existing bytes-returning download methods remain available.
+
+- [x] non-JSON responses are not parsed. [`test_adapter.py::test_adapter_response_skips_non_json`](test_adapter.py).
+- [x] JSON content types preserve API codes. [`test_adapter.py::test_adapter_response_extracts_json_code`](test_adapter.py).
+- [x] non-envelope JSON has no API code. [`test_adapter.py::test_adapter_response_json_without_code`](test_adapter.py).
+- [x] malformed JSON is tolerated; unexpected errors propagate. [`test_adapter.py::test_adapter_response_json_errors`](test_adapter.py).
+- [x] explicit codes skip parsing. [`test_adapter.py::test_adapter_response_explicit_code_skips_json`](test_adapter.py).
+- [x] buffered file downloads avoid JSON parsing. [`test_adapter.py::test_adapter_download_does_not_parse_body`](test_adapter.py).
+- [x] engine/result streaming handles HTTP, read and write failures without buffering the body. [`test_adapter.py::test_adapter_stream_download`](test_adapter.py).
+
 ### Worker input source preferences
 
 Worker client tests live in `doc_worker/tests`, separate from the worker API
