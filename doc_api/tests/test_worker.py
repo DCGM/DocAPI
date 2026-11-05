@@ -1,3 +1,6 @@
+from doc_api.api.checkers.job_mail import check_job_notifications
+from doc_api.tests.helpers import run_lease_check
+from doc_api.api.checkers import job_leases
 from unittest.mock import AsyncMock
 from doc_api.tests.helpers import assert_route_invariant, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
 from doc_api.api import file_saving as upload_helpers
@@ -133,11 +136,13 @@ async def test_post_job_lease_200_timeout_boundaries(client, worker_headers, job
         def now(cls, tz=None):
             return now
     monkeypatch.setattr(worker_cruds, "datetime", FixedDatetime)
+    monkeypatch.setattr(job_leases, "datetime", FixedDatetime)
     job_id = await job_factory(ProcessingState.PROCESSING)
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.last_change = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS + config.JOB_TIMEOUT_GRACE_SECONDS) + timedelta(seconds=offset)
         job.previous_attempts = config.JOB_MAX_ATTEMPTS - 1 if exhausted else 0
+    await run_lease_check(db_sessions)
     response = await client.post("/v1/jobs/lease", headers=worker_headers)
     assert response.status_code == 200, response.text
     leased = offset < 0 and not exhausted
@@ -185,6 +190,7 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
             job.last_change = old
             if job.state != ProcessingState.QUEUED:
                 job.started_date = old
+    await run_lease_check(db_sessions)
     gate = asyncio.Event()
 
     async def lease(worker):
@@ -194,7 +200,7 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
         return worker, response.json()
 
     # More requests than available connections/jobs exercise pool queuing and
-    # competing retry scans without assuming a particular scheduling order.
+    # concurrent claims after recovery without assuming a particular scheduling order.
     tasks = [asyncio.create_task(lease(worker)) for _ in range(12) for worker in worker_pool]
     try:
         gate.set()
@@ -203,8 +209,8 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-    # SKIP LOCKED can report an empty queue while another transaction holds
-    # retryable jobs. Poll after each concurrent wave has finished as workers do.
+    # SKIP LOCKED can report an empty queue while another claim holds queued
+    # rows. Poll after each concurrent wave has finished as workers do.
     for _ in range(8):
         if sum(body["code"] == AppCode.JOB_LEASED.value for _, body in results) == 32:
             break
@@ -366,6 +372,30 @@ async def test_post_job_lease_500_unexpected_crud_result(client, worker_headers,
     monkeypatch.setattr(worker_cruds, "lease_job_to_worker", AsyncMock(return_value=(None, None, None, code)))
     response = await client.request("POST", f"/v1/jobs/lease", headers=worker_headers)
     assert_route_invariant(response, invariant_errors, code)
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_lease_200_non_expiring(client, worker_headers, job_factory, db_sessions, monkeypatch):
+    from doc_api.api.schemas.base_objects import JobLease
+    monkeypatch.setattr(config, "JOB_TIMEOUT_SECONDS", 0)
+    job_id = await job_factory(ProcessingState.QUEUED)
+    requests = [
+        ("POST", "/v1/jobs/lease", {}, AppCode.JOB_LEASED),
+        ("PATCH", f"/v1/jobs/{job_id}/lease", {}, AppCode.JOB_LEASE_EXTENDED),
+        ("PATCH", f"/v1/jobs/{job_id}", {"json": {"progress": 0.5, "log": "still working"}}, AppCode.JOB_UPDATED),
+    ]
+    for method, url, kwargs, code in requests:
+        response = await client.request(method, url, headers=worker_headers, **kwargs)
+        assert response.status_code == 200, response.text
+        assert response.json()["code"] == code.value
+        lease = JobLease.model_validate(response.json()["data"])
+        assert lease.id == job_id and lease.lease_expire_at is None
+        assert lease.server_time.tzinfo is not None
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.progress == 0.5
+        assert job.log[job.previous_attempts].endswith("still working")
 
 
 #
@@ -855,7 +885,7 @@ async def test_get_image_500_unexpected_crud_result(client, worker_headers, down
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
 @pytest.mark.asyncio
 async def test_get_image_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     response = await client.post("/v1/jobs", headers=user_headers,
                                   json={"images": [{"name": "page.jpg", "order": 0,
                                                       **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
@@ -1060,7 +1090,7 @@ async def test_get_alto_500_unexpected_crud_result(client, worker_headers, downl
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
 @pytest.mark.asyncio
 async def test_get_alto_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     response = await client.post("/v1/jobs", headers=user_headers,
                                   json={"images": [{"name": "page.jpg", "order": 0,
                                                       **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
@@ -1265,7 +1295,7 @@ async def test_get_page_500_unexpected_crud_result(client, worker_headers, downl
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
 @pytest.mark.asyncio
 async def test_get_page_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     response = await client.post("/v1/jobs", headers=user_headers,
                                   json={"images": [{"name": "page.jpg", "order": 0,
                                                       **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
@@ -2380,6 +2410,7 @@ async def test_patch_job_200_error_remains_retryable(client, worker_headers, db_
     response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json={"state": "error"})
     assert response.status_code == 200, response.text
     assert response.json()["code"] == AppCode.JOB_MARKED_ERROR.value
+    await run_lease_check(db_sessions)
     async with db_sessions() as db:
         job, _, _, code = await worker_cruds.lease_job_to_worker(db=db, worker_key_id=worker_key.id)
         assert code == AppCode.JOB_LEASED
@@ -2582,6 +2613,7 @@ async def test_patch_job_200_error_during_lease_poll(client, worker_headers, oth
         release.set()
         report.cancel()
         await asyncio.gather(report, return_exceptions=True)
+    await run_lease_check(db_sessions)
     after = await client.post("/v1/jobs/lease", headers=other_worker_headers)
     assert after.status_code == 200, after.text
     assert after.json()["code"] == (AppCode.JOB_QUEUE_EMPTY if exhausted else AppCode.JOB_LEASED).value
@@ -2679,6 +2711,7 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
     job_id = await job_factory(ProcessingState.QUEUED)
     async with db_sessions.begin() as db:
         (await db.get(model.Job, job_id)).previous_attempts = None
+    await run_lease_check(db_sessions)
     lease = await client.post("/v1/jobs/lease", headers=worker_headers)
     assert lease.json()["code"] == AppCode.JOB_LEASED.value
     async with db_sessions() as db:
@@ -2690,6 +2723,7 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
         assert response.status_code == 200, response.text
     response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json={"state": "error"})
     assert response.status_code == 200, response.text
+    await run_lease_check(db_sessions)
     lease = await client.post("/v1/jobs/lease", headers=worker_headers)
     assert lease.json()["code"] == AppCode.JOB_LEASED.value
     async with db_sessions() as db:
@@ -2734,6 +2768,8 @@ async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, jo
         job.previous_attempts = attempt
         job.log = ["previous technical"] * attempt + ["discard technical"]
         job.log_user = ["previous public"] * attempt + ["discard public"]
+        job.final_log = ["previous final technical"] * attempt + ["discard final technical"]
+        job.final_log_user = ["previous final public"] * attempt + ["discard final public"]
     response = await client.delete(f"/v1/jobs/{job_id}/lease", headers=worker_headers)
     assert response.status_code == 204, response.text
     response = await client.post("/v1/jobs/lease", headers=worker_headers)
@@ -2741,6 +2777,8 @@ async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, jo
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.previous_attempts == attempt
+        assert job.final_log == (["previous final technical", None] if attempt else None)
+        assert job.final_log_user == (["previous final public", None] if attempt else None)
         if attempt == 0:
             assert job.log is None and job.log_user is None
         else:
@@ -2763,3 +2801,210 @@ async def test_patch_job_200_quiet_first_attempt_logs(client, worker_headers, jo
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.log is None and job.log_user is None
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.parametrize('state', ['done', 'error', 'failed'])
+@pytest.mark.asyncio
+async def test_patch_job_200_final_reports(client, worker_headers, job_factory, db_sessions, job_mail_outbox, state):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        owner = await db.get(model.Key, job.owner_key_id)
+        owner.email = 'owner@example.com'
+        owner.email_notifications = True
+    Path(config.RESULTS_DIR, f'{job_id}.zip').write_bytes(b'results')
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': state, 'final_log': 'technical final report', 'final_log_user': 'user final report'})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log == ['Technical log']
+        assert job.log_user == ['User log']
+        assert job.final_log == ['technical final report']
+        assert job.final_log_user == ['user final report']
+    await check_job_notifications()
+    if state == 'error':
+        assert job_mail_outbox == []
+    else:
+        assert len(job_mail_outbox) == 2
+        assert {tuple(receivers): message.get_content().strip() for _, receivers, message in job_mail_outbox} == {
+            ('owner@example.com',): 'user final report', ('admin@example.com',): 'technical final report'}
+        # Repeating a finalization must not send duplicate notifications.
+        response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers, json={'state': state})
+        assert response.status_code == 200, response.text
+        assert len(job_mail_outbox) == 2
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.parametrize('email,enabled,report,sends', [
+    (None, True, 'report', False), ('owner@example.com', False, 'report', False),
+    ('owner@example.com', True, '', False), ('owner@example.com', True, '  ', False),
+    ('owner@example.com', True, None, False), ('owner@example.com', True, 'report', True)])
+@pytest.mark.asyncio
+async def test_patch_job_200_owner_mail_conditions(client, worker_headers, job_factory, db_sessions,
+                                                   job_mail_outbox, email, enabled, report, sends):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        owner = await db.get(model.Key, job.owner_key_id)
+        owner.email, owner.email_notifications = email, enabled
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': 'failed', 'final_log_user': report})
+    assert response.status_code == 200, response.text
+    await check_job_notifications()
+    assert len(job_mail_outbox) == int(sends)
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_422_final_report_without_final_state(client, worker_headers, job_factory):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers, json={'final_log_user': 'report'})
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.parametrize('state', [ProcessingState.ERROR, ProcessingState.PROCESSING])
+@pytest.mark.asyncio
+async def test_post_job_lease_200_exhausted_attempt_mail(client, worker_headers, job_factory, db_sessions,
+                                                       job_mail_outbox, state):
+    job_id = await job_factory(state)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = config.JOB_MAX_ATTEMPTS - 1
+        job.last_change = datetime.now(timezone.utc) - timedelta(days=1)
+        job.final_log = [None] * (config.JOB_MAX_ATTEMPTS - 1) + ['last report']
+    await run_lease_check(db_sessions)
+    await check_job_notifications()
+    response = await client.post('/v1/jobs/lease', headers=worker_headers)
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).state == ProcessingState.FAILED
+    assert len(job_mail_outbox) == 1
+    response = await client.post('/v1/jobs/lease', headers=worker_headers)
+    assert response.status_code == 200, response.text
+    assert len(job_mail_outbox) == 1
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_200_smtp_failure(client, worker_headers, job_factory, db_sessions, job_mail_outbox, monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr('doc_api.tools.mail.mail_sender.smtplib.SMTP', Mock(side_effect=OSError('SMTP unavailable')))
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': 'failed', 'final_log': 'report'})
+    assert response.status_code == 200, response.text
+    await check_job_notifications()
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.FAILED
+        assert job.final_log == ['report']
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_500_no_mail_on_failed_commit(client, worker_headers, job_factory, db_sessions, job_mail_outbox):
+    from sqlalchemy import event, exc
+    from sqlalchemy.orm import Session
+    job_id = await job_factory(ProcessingState.PROCESSING)
+
+    def fail_commit(session):
+        if any(isinstance(row, model.Job) and row.id == job_id and row.state == ProcessingState.FAILED
+               for row in session.identity_map.values()):
+            raise exc.SQLAlchemyError('commit rejected')
+
+    event.listen(Session, 'before_commit', fail_commit)
+    try:
+        response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+            json={'state': 'failed', 'final_log': 'report'})
+    finally:
+        event.remove(Session, 'before_commit', fail_commit)
+    assert response.status_code == 500, response.text
+    await check_job_notifications()
+    assert job_mail_outbox == []
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.PROCESSING
+        assert job.final_log is None
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_200_api_responsive_during_mail(client, worker_headers, admin_headers, job_factory,
+                                                       job_mail_outbox, monkeypatch, isolated_database):
+    from threading import Event
+    from doc_api.tools.mail.mail_sender import MailSender
+    started, release = Event(), Event()
+
+    def blocked_send(*args, **kwargs):
+        started.set()
+        assert release.wait(10), 'SMTP test did not release the sender'
+        return True
+
+    monkeypatch.setattr(MailSender, 'send', blocked_send)
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': 'failed', 'final_log': 'report'})
+    assert response.status_code == 200, response.text
+    request = asyncio.create_task(check_job_notifications())
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert isolated_database.engine.pool.checkedout() == 0
+        response = await asyncio.wait_for(client.get(f'/v1/jobs/{job_id}', headers=admin_headers), timeout=2)
+        assert response.status_code == 200, response.text
+        assert response.json()['data']['state'] == 'failed'
+    finally:
+        release.set()
+        await request
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_200_logs_pad_missing_attempts(client, worker_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 2
+        job.log = job.log_user = job.final_log = job.final_log_user = None
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'log': 'technical progress', 'log_user': 'user progress'})
+    assert response.status_code == 200, response.text
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': 'failed', 'final_log': 'technical final', 'final_log_user': 'user final'})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log == [None, None, 'technical progress']
+        assert job.log_user == [None, None, 'user progress']
+        assert job.final_log == [None, None, 'technical final']
+        assert job.final_log_user == [None, None, 'user final']
+
+
+@pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.asyncio
+async def test_patch_job_200_mail_preparation_failure(client, worker_headers, job_factory, db_sessions,
+                                                      job_mail_outbox, monkeypatch, caplog):
+    from sqlalchemy import exc
+    from sqlalchemy.ext.asyncio import AsyncSession
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    original = AsyncSession.get
+
+    async def fail_recipient_read(session, entity, *args, **kwargs):
+        if entity is model.Key:
+            raise exc.SQLAlchemyError('recipient lookup failed')
+        return await original(session, entity, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, 'get', fail_recipient_read)
+    response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
+        json={'state': 'failed', 'final_log': 'final report'})
+    assert response.status_code == 200, response.text
+    await check_job_notifications()
+    assert job_mail_outbox == []
+    assert 'Failed preparing final reports for job' in caplog.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.FAILED
+        assert job.final_log == ['final report']

@@ -658,7 +658,7 @@ requests omit DocAPI credentials and do not parse source data as an API envelope
 
 ### Per-attempt job logs
 
-Both database log fields contain JSON arrays indexed from the first attempt.
+Process logs and separate final reports contain JSON arrays indexed from the first attempt.
 Worker updates append to the current entry; admin replacement affects only that
 entry. Leasing clears a reused entry, adds a technical-only retry header, and
 leaves a quiet first attempt's logs null. Job detail/list responses keep string
@@ -671,10 +671,112 @@ history. A quiet current attempt does not expose an earlier public message.
 - [x] admin append/replace current entry. [`test_admin.py::test_patch_job_200_current_attempt_logs`](test_admin.py).
 - [x] role-specific detail/list text. [`test_user.py::test_get_job_200_attempt_logs`](test_user.py).
 
+### Final reports and email notifications
+
+Workers send process logs through progress updates and final reports through
+`WorkerResponse.ok/error/fail(final_log=..., final_log_user=...)`. Final reports are stored
+separately in `final_log` and `final_log_user`, with no
+fallback between fields. Exception/API diagnostics are added only to the technical
+report. Final reports replace the current attempt’s report and are cleared when an attempt
+index is reused. Legacy process logs are not copied into final reports.
+Final technical reports are restricted to worker/admin readers.
+
+Keys have an optional validated email address and an `email_notifications` flag,
+disabled by default. On a transition to DONE or FAILED, non-empty final user
+reports go to opted-in owners through EXTERNAL_MAIL settings; final technical
+reports go to INTERNAL_MAIL_RECEIVER_MAILS through INTERNAL_MAIL settings.
+Subjects use USER_JOB_MAIL_SUBJECT_TEMPLATE and ADMIN_JOB_MAIL_SUBJECT_TEMPLATE with optional public/admin server names, lowercase/uppercase state, full/short
+job ID, image count, attempt, engine name/version, and owner-key label placeholders.
+The user default is `[{server_name}] {state_upper} job {job_id_short}`;
+the admin default is `[{admin_server_name}] {state_upper} job {job_id_short} ({owner_label})`.
+Server-error emails use `INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE`, defaulting to
+`[{admin_server_name}] INTERNAL SERVER ERROR`, with `{server_name}` and
+`{admin_server_name}` placeholders available.
+Both templates support the same placeholders. Unknown or malformed placeholders are rejected at configuration startup.
+Admins receive final-report history; owners receive the latest user report.
+Retryable ERROR states are handled by the independent lease checker, which
+requeues jobs or marks exhausted attempts FAILED without needing a lease request.
+
+A separate mail checker persists one notification per job/channel/recipient.
+It snapshots verified final reports, commits a delivery claim, releases the DB
+connection, and performs SMTP in a thread. Failed sends retry up to
+JOB_MAIL_MAX_ATTEMPTS with exponential backoff from JOB_MAIL_RETRY_DELAY_SECONDS
+(capped at one day). Sent/failed records prevent ordinary duplicate delivery across
+checker runs and server restarts. A five-minute claim timeout recovers interrupted
+processes. SMTP has no transactional acknowledgement with PostgreSQL: a hard crash
+after SMTP acceptance but before recording success can still cause a duplicate.
+Graceful cancellation waits for an in-flight SMTP attempt and records its result.
+Flood limits count SMTP attempts per channel/recipient/subject/hour within each
+server process; suppressed deliveries wait until the next hour without consuming
+an SMTP attempt. All tests mock SMTP.
+
+- [x] post keys 201 email settings. [`test_admin.py::test_post_keys_201_email_settings`](test_admin.py).
+- [x] patch key 200 email settings. [`test_admin.py::test_patch_key_200_email_settings`](test_admin.py).
+- [x] key 422 invalid email. [`test_admin.py::test_key_422_invalid_email`](test_admin.py).
+- [x] patch job 200 final report. [`test_admin.py::test_patch_job_200_final_report`](test_admin.py).
+- [x] patch job 200 final reports. [`test_worker.py::test_patch_job_200_final_reports`](test_worker.py).
+- [x] patch job 200 owner mail conditions. [`test_worker.py::test_patch_job_200_owner_mail_conditions`](test_worker.py).
+- [x] patch job 422 final report without final state. [`test_worker.py::test_patch_job_422_final_report_without_final_state`](test_worker.py).
+- [x] post job lease 200 exhausted attempt mail. [`test_worker.py::test_post_job_lease_200_exhausted_attempt_mail`](test_worker.py).
+- [x] patch job 200 smtp failure. [`test_worker.py::test_patch_job_200_smtp_failure`](test_worker.py).
+- [x] patch job 500 no mail on failed commit. [`test_worker.py::test_patch_job_500_no_mail_on_failed_commit`](test_worker.py).
+- [x] patch job 200 api responsive during mail. [`test_worker.py::test_patch_job_200_api_responsive_during_mail`](test_worker.py).
+- [x] get job 200 final reports. [`test_user.py::test_get_job_200_final_reports`](test_user.py).
+- [x] adapter final reports. [`test_adapter.py::test_adapter_final_reports`](test_adapter.py).
+- [x] upgrade email and final reports. [`test_migrations.py::test_upgrade_email_and_final_reports`](test_migrations.py).
+- [x] recipient flood limits. [`test_job_mail.py::test_recipient_flood_limits`](test_job_mail.py).
+- [x] invalid mail configuration is logged. [`test_job_mail.py::test_invalid_mail_configuration_is_logged`](test_job_mail.py).
+
+- [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_pad_missing_attempts`](test_worker.py).
+- [x] admin append/replace writes pad missing attempt positions. [`test_admin.py::test_patch_job_200_logs_pad_missing_attempts`](test_admin.py).
+
+- [x] configurable internal-error subjects. [`test_job_mail.py::test_internal_error_subject_template`](test_job_mail.py).
+- [x] admin subjects use the admin server name by default. [`test_job_mail.py::test_admin_subject_default_uses_admin_server_name`](test_job_mail.py).
+- [x] configurable subject placeholders and subsets. [`test_job_mail.py::test_subject_template`](test_job_mail.py).
+- [x] absent optional subject values. [`test_job_mail.py::test_subject_template_missing_optional_values`](test_job_mail.py).
+- [x] invalid subject configuration. [`test_job_mail.py::test_subject_template_invalid_configuration`](test_job_mail.py).
+
+- [x] mailing defaults and settings match the environment example. [`test_job_mail.py::test_mail_configuration_matches_env_example`](test_job_mail.py).
+
+- [x] concurrent admin finalization does not duplicate mail. [`test_admin.py::test_patch_job_200_concurrent_final_state_no_duplicate_mail`](test_admin.py).
+- [x] notification preparation failure preserves a successful job update. [`test_worker.py::test_patch_job_200_mail_preparation_failure`](test_worker.py).
+
+### Periodic lease and mail checkers
+
+Both tasks run once at startup and then at JOB_LEASE_CHECK_INTERVAL_SECONDS and
+JOB_MAIL_CHECK_INTERVAL_SECONDS (five seconds by default). Route tests advance
+them explicitly; dedicated loop and lifespan tests exercise automatic scheduling
+and cancellation. Lease requests only claim QUEUED jobs and never recover leases.
+`JOB_TIMEOUT_SECONDS=0` is the default and disables PROCESSING lease expiration;
+lease responses contain `lease_expire_at: null`. Explicit ERROR jobs still retry
+or fail at the attempt limit. Positive timeouts include the configured grace period.
+Worker progress/log updates still reach the API; empty heartbeats are skipped for non-expiring leases.
+
+- [x] non-expiring lease API responses and progress updates. [`test_worker.py::test_post_job_lease_200_non_expiring`](test_worker.py).
+- [x] lease timeout defaults and validation. [`test_job_leases.py::test_lease_timeout_configuration`](test_job_leases.py).
+- [x] disabled expiration preserves PROCESSING jobs and recovers ERROR jobs. [`test_job_leases.py::test_non_expiring_leases_recover_only_errors`](test_job_leases.py).
+- [x] lease recovery without requests. [`test_job_leases.py::test_lease_recovery_without_requests`](test_job_leases.py).
+- [x] lease recovery skips locked jobs. [`test_job_leases.py::test_lease_recovery_skips_locked_jobs`](test_job_leases.py).
+- [x] lease checker runs periodically. [`test_job_leases.py::test_lease_checker_runs_periodically`](test_job_leases.py).
+- [x] lease checker recovers after failure. [`test_job_leases.py::test_lease_checker_recovers_after_failure`](test_job_leases.py).
+- [x] notification preparation and restart are idempotent. [`test_job_mail.py::test_notification_preparation_and_restart_are_idempotent`](test_job_mail.py).
+- [x] concurrent mail checkers claim once. [`test_job_mail.py::test_concurrent_mail_checkers_claim_once`](test_job_mail.py).
+- [x] mail retry limit and backoff. [`test_job_mail.py::test_mail_retry_limit_and_backoff`](test_job_mail.py).
+- [x] mail flood deferral does not consume attempt. [`test_job_mail.py::test_mail_flood_deferral_does_not_consume_attempt`](test_job_mail.py).
+- [x] mail recovers expired claim and rejects stale result. [`test_job_mail.py::test_mail_recovers_expired_claim_and_rejects_stale_result`](test_job_mail.py).
+- [x] mail shutdown finishes inflight delivery. [`test_job_mail.py::test_mail_shutdown_finishes_inflight_delivery`](test_job_mail.py).
+- [x] mail checker runs without requests. [`test_job_mail.py::test_mail_checker_runs_without_requests`](test_job_mail.py).
+
+- [x] mail waits while smtp is disabled. [`test_job_mail.py::test_mail_waits_while_smtp_is_disabled`](test_job_mail.py).
+- [x] expired mail claims respect attempt limit. [`test_job_mail.py::test_expired_mail_claims_respect_attempt_limit`](test_job_mail.py).
+- [x] mail checker recovers after failure. [`test_job_mail.py::test_mail_checker_recovers_after_failure`](test_job_mail.py).
+- [x] upgrade job notifications. [`test_migrations.py::test_upgrade_job_notifications`](test_migrations.py).
+
 ### Alembic migrations
 
 Migration coverage includes cleanup timestamps, image-count backfill, and the
-image/ALTO/PAGE URL-presence booleans, and per-attempt JSON logs. Log migration
+image/ALTO/PAGE URL-presence booleans, per-attempt JSON logs and final reports,
+key email settings, and the persistent notification table. Log migration
 cases include null/empty logs, timestamps in retry headers, missing attempt entries,
 reused indexes, and text that mentions ATTEMPT without being a separator.
 Tests use existing data and exercise upgrade, downgrade, and re-upgrade. Older
@@ -907,8 +1009,8 @@ lost response. The tests release the known original lease and verify it can be
 leased again without consuming an extra attempt. These are application-level
 request tests, rather than TCP reconnect tests.
 
-An uncommitted ERROR cannot be leased. After it commits, polling either retries
-it or permanently fails it at the attempt limit. Concurrent ERROR and FAILED
+An uncommitted ERROR cannot be leased. After it commits, the lease checker either requeues
+it or permanently fails it at the attempt limit; lease requests only claim QUEUED jobs. Concurrent ERROR and FAILED
 reports must leave the job permanently failed; an ERROR arriving after failure
 is rejected without appending its log.
 
@@ -1027,7 +1129,7 @@ These cases live in `test_startup.py` and `test_run.py`.
 - [x] readiness interval configuration. [`test_job_readiness.py::test_readiness_interval_configuration`](test_job_readiness.py).
 - [x] readiness loop interval and retry. [`test_job_readiness.py::test_readiness_loop_interval_and_retry`](test_job_readiness.py).
 - [x] readiness recovers jobs at startup. [`test_startup.py::test_readiness_recovers_jobs_at_startup`](test_startup.py).
-- [x] readiness task lifecycle. [`test_startup.py::test_readiness_task_lifecycle`](test_startup.py).
+- [x] readiness task lifecycle. [`test_startup.py::test_background_checker_lifecycle`](test_startup.py).
 - [x] put inputs 409 conflicting saves; staging holds no DB connection. [`test_user.py::test_put_input_409_file_save_in_progress`](test_user.py).
 - [x] put image 201 parallel input formats. [`test_user.py::test_put_image_201_parallel_input_formats`](test_user.py).
 - [x] put image 409 state changed during staging. [`test_user.py::test_put_image_409_state_changed_during_staging`](test_user.py).

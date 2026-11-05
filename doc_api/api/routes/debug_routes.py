@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api.routes import debug_router
 from doc_api.api.guards.general_guards import require_job_record
 from doc_api.api.authentication import require_api_key, require_admin_key
-from doc_api.api import job_readiness
+from doc_api.api.checkers import job_readiness
 from doc_api.api.cruds import general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects

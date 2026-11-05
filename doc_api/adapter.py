@@ -348,7 +348,7 @@ class Adapter:
 
         return adapter_response
 
-    def patch_job_finish(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+    def patch_job_finish(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs", *, final_log: str = None, final_log_user: str = None) -> AdapterResponse[None]:
         job_id = self.get_job_id(job_id)
 
         url = self.compose_url(route, job_id)
@@ -358,6 +358,11 @@ class Adapter:
             data["log"] = log
         if log_user is not None:
             data["log_user"] = log_user
+
+        if final_log is not None:
+            data["final_log"] = final_log
+        if final_log_user is not None:
+            data["final_log_user"] = final_log_user
 
         response = self.connector.patch(url, json=data)
 
@@ -385,7 +390,7 @@ class Adapter:
 
         return adapter_response
 
-    def patch_job_fail(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+    def patch_job_fail(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs", *, final_log: str = None, final_log_user: str = None) -> AdapterResponse[None]:
         """Mark the job as permanently failed, without further retries."""
         job_id = self.get_job_id(job_id)
 
@@ -397,6 +402,11 @@ class Adapter:
         if log_user is not None:
             data["log_user"] = log_user
             
+        if final_log is not None:
+            data["final_log"] = final_log
+        if final_log_user is not None:
+            data["final_log_user"] = final_log_user
+
         response = self.connector.patch(url, json=data)
 
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)
@@ -408,7 +418,7 @@ class Adapter:
 
         return adapter_response
 
-    def patch_job_error(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs") -> AdapterResponse[None]:
+    def patch_job_error(self, log: str = None, log_user: str = None, job_id=None, route="/v1/jobs", *, final_log: str = None, final_log_user: str = None) -> AdapterResponse[None]:
         """Mark the job as error, allowing retries up to the server's attempt limit."""
         job_id = self.get_job_id(job_id)
         url = self.compose_url(route, job_id)
@@ -418,6 +428,11 @@ class Adapter:
             data["log"] = log
         if log_user is not None:
             data["log_user"] = log_user
+
+        if final_log is not None:
+            data["final_log"] = final_log
+        if final_log_user is not None:
+            data["final_log_user"] = final_log_user
 
         response = self.connector.patch(url, json=data)
         adapter_response = AdapterResponse[None](status=response.status_code, response=response, no_data_response=True)

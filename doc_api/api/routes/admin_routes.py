@@ -199,7 +199,7 @@ async def patch_key(
 
     if key_update.label is None and \
          key_update.role is None and \
-            key_update.active is None:
+            key_update.active is None and key_update.email_notifications is None and "email" not in key_update.model_fields_set:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_400_BAD_REQUEST,
             code=AppCode.KEY_UPDATE_NO_FIELDS,
@@ -526,7 +526,8 @@ async def patch_job(
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_RETRIEVED:
-        code = await admin_cruds.update_job(db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
+        code = await admin_cruds.update_job(
+            db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
         if code == AppCode.JOB_UPDATED:
             return validate_ok_response(DocAPIResponseOK[NoneType](
                 status=fastapi.status.HTTP_200_OK,

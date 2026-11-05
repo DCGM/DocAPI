@@ -7,7 +7,8 @@ import threading
 import pytest
 from sqlalchemy import select, text
 
-from doc_api.api import cleanup, file_saving, main
+from doc_api.api import file_saving, main
+from doc_api.api.checkers import cleanup
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import config

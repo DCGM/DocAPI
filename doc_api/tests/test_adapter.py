@@ -27,3 +27,15 @@ def test_adapter_uploaded_input_uses_docapi(kind):
     result = getattr(Adapter("https://api.invalid", connector), f"get_{kind}")("image-id", job_id="job-id")
     assert result.is_success
     connector.get.assert_called_once_with(f"https://api.invalid/v1/jobs/job-id/images/image-id/files/{kind}")
+
+
+@pytest.mark.parametrize('method,state', [('patch_job_finish', 'done'), ('patch_job_error', 'error'), ('patch_job_fail', 'failed')])
+def test_adapter_final_reports(method, state):
+    connector = Mock()
+    connector.patch.return_value.status_code = 200
+    connector.patch.return_value.json.return_value = {'code': 'OK'}
+    response = getattr(Adapter('http://test', connector), method)(job_id='job',
+        final_log='technical final', final_log_user='user final')
+    assert response.is_success
+    connector.patch.assert_called_once_with('http://test/v1/jobs/job',
+        json={'state': state, 'final_log': 'technical final', 'final_log_user': 'user final'})

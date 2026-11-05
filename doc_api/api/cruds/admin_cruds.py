@@ -37,6 +37,8 @@ async def new_key(*, db: AsyncSession, key_new: base_objects.KeyNew) -> Tuple[Op
             db.add(model.Key(
                 label=key_new.label,
                 role=key_new.role,
+                email=key_new.email,
+                email_notifications=key_new.email_notifications,
                 kid=kid,
                 key_hash=digest,
                 salt=salt
@@ -122,6 +124,10 @@ async def update_key(*, db: AsyncSession, label: str, key_update: base_objects.K
                 key.role = key_update.role
             if key_update.active is not None:
                 key.active = key_update.active
+            if key_update.email_notifications is not None:
+                key.email_notifications = key_update.email_notifications
+            if "email" in key_update.model_fields_set:
+                key.email = key_update.email
 
             return AppCode.KEY_UPDATED
 
@@ -144,7 +150,8 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
     try:
         async with db.begin():
             result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
+                select(model.Job).where(model.Job.id == job_id)
+                .execution_options(populate_existing=True).with_for_update()
             )
             db_job = result.scalar_one_or_none()
 
@@ -188,6 +195,11 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
                 message = getattr(job_update, field)
                 if message is not None:
                     db_job.update_log(field, message, append=append_logs)
+
+            for field in ("final_log", "final_log_user"):
+                message = getattr(job_update, field)
+                if message is not None:
+                    db_job.update_log(field, message, append=False)
 
             return AppCode.JOB_UPDATED
 

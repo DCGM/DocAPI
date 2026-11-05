@@ -244,6 +244,7 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
     # drop everything that is only for admins
     if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
         job.pop("log", None)
+        job.pop("final_log", None)
         for img in images:
             img.pop("id", None)
 
@@ -396,39 +397,39 @@ async def patch_job(
                 },
                 "worker_done": {
                     "summary": "Worker finalizes job as done",
-                    "description": "Worker marks job as done, `progress: 1.0` is automatically set. If given, logs are appended to existing logs."
+                    "description": "Worker marks job as done, `progress: 1.0` is automatically set. Final reports are stored separately from process logs."
                                    f"\n\n`state: {base_objects.ProcessingState.DONE}` must be provided, other fields are optional."
                                    "\n\nJob must be in one of the following "
                                    f"`state: {base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.DONE}`.",
                     "value": {
                         "state": base_objects.ProcessingState.DONE.value,
-                        "log": "Processed 1000/1000. Job complete.",
-                        "log_user": "Proceessed 1000 pages. Job complete.",
+                        "final_log": "Processed 1000/1000. Job complete.",
+                        "final_log_user": "Processed 1000 pages. Job complete.",
                     },
                 },
                 "worker_error": {
                     "summary": "Worker reports a retryable error",
                     "description": "Worker marks job as error. The job may be retried until the attempt limit is reached. "
-                                   "If given, logs are appended to existing logs."
+                                   "Final reports are stored separately from process logs."
                                    f"\n\n`state: {base_objects.ProcessingState.ERROR}` must be provided, other fields are optional."
                                    f"\n\nJob must be in one of the following "
                                    f"`state: {base_objects.ProcessingState.PROCESSING}|{base_objects.ProcessingState.ERROR}`.",
                     "value": {
                         "state": base_objects.ProcessingState.ERROR.value,
                         "progress": 0.7,
-                        "log": "Processed 700/1000. Encountered an error.",
-                        "log_user": "Processing page 700 of 1000. Encountered an error.",
+                        "final_log": "Processed 700/1000. Encountered an error.",
+                        "final_log_user": "Processing page 700 of 1000. Encountered an error.",
                     },
                 },
                 "worker_failed": {
                     "summary": "Worker permanently fails job",
                     "description": "Worker marks job as failed without further retries. "
-                                   "Progress is set to 1.0 and provided logs are appended. "
+                                   "Progress is set to 1.0 and final reports are stored separately from process logs. "
                                    "Job must be processing, error, or already failed.",
                     "value": {
                         "state": base_objects.ProcessingState.FAILED.value,
-                        "log": "Unsupported input. Retrying will not resolve the problem.",
-                        "log_user": "Processing failed because the input is unsupported.",
+                        "final_log": "Unsupported input. Retrying will not resolve the problem.",
+                        "final_log_user": "Processing failed because the input is unsupported.",
                     },
                 },
                 "worker_progress": {
@@ -556,7 +557,7 @@ async def patch_job(
             db=db,
             job_id=job_id,
             worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
-            job_progress_update=job_progress_update
+            job_progress_update=job_progress_update,
         )
         if code_update_job in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB,
                                AppCode.JOB_NOT_IN_PROCESSING, AppCode.JOB_UNFINISHABLE}:

@@ -23,8 +23,10 @@ from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSE
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
-from doc_api.api.cleanup import run_cleanup
-from doc_api.api.job_readiness import run_job_readiness_checks
+from doc_api.api.checkers.cleanup import run_cleanup
+from doc_api.api.checkers.job_readiness import run_job_readiness_checks
+from doc_api.api.checkers.job_leases import run_job_lease_checks
+from doc_api.api.checkers.job_mail import run_job_mail_checks
 from doc_api.api.routes import admin_router, debug_router, root_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
@@ -196,20 +198,21 @@ async def lifespan(app: FastAPI):
             await db.commit()
 
 
-    readiness_task = asyncio.create_task(run_job_readiness_checks())
-    cleanup_task = None
+    tasks = [
+        asyncio.create_task(run_job_readiness_checks()),
+        asyncio.create_task(run_job_lease_checks()),
+        asyncio.create_task(run_job_mail_checks()),
+    ]
     if config.DELETE_JOB_INPUTS_ON_COMPLETION or config.DELETE_JOB_OUTPUTS:
-        cleanup_task = asyncio.create_task(run_cleanup())
+        tasks.append(asyncio.create_task(run_cleanup()))
     try:
         yield
     finally:
-        readiness_task.cancel()
-        if cleanup_task is not None:
-            cleanup_task.cancel()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
             with suppress(asyncio.CancelledError):
-                await cleanup_task
-        with suppress(asyncio.CancelledError):
-            await readiness_task
+                await task
         logger.info("Application shutdown complete.")
 
 
@@ -280,12 +283,14 @@ async def validation_handler(_: Request, exc: RequestValidationError):
 async def unhandled(request: Request, exc: Exception):
     # last resort: 500 with generic app code, exact info logged (optionally emailed to admins)
     if config.INTERNAL_MAIL_SERVER is not None:
+        subject = config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
+            server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME)
         internal_mail_logger.critical(f'URL: {request.url}\n'
                                       f'METHOD: {request.method}\n'
                                       f'CLIENT: {request.client}\n\n'
                                       f'ERROR: {exc}\n\n'
                                       f'{traceback.format_exc()}',
-                                      extra={'subject': f'{config.ADMIN_SERVER_NAME} - INTERNAL SERVER ERROR'})
+                                      extra={'subject': " ".join(subject.splitlines())})
     exception_logger.error(f'URL: {request.url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)

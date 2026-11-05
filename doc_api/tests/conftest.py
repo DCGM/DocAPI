@@ -17,12 +17,13 @@ import os.path
 import pytest
 import pytest_asyncio
 
-from doc_api.api import cleanup, job_readiness, main
+from doc_api.api import main
+from doc_api.api.checkers import cleanup, job_readiness
 from doc_api.api import database as db_module
 from doc_api.api.main import app
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.db import model
-from doc_api.tests.helpers import migrate, _put_file, _ename
+from doc_api.tests.helpers import migrate, _put_file, _ename, run_lease_check
 from doc_api.api.schemas import base_objects
 from doc_api.tests.dummy_data import make_white_image_bytes, VALID_ALTO_XML, VALID_PAGE_XML, VALID_ZIP
 
@@ -64,14 +65,18 @@ async def isolated_database():
 
 @pytest.fixture
 def test_settings(monkeypatch, tmp_path):
-    # Route tests advance readiness explicitly; lifecycle/loop tests exercise
+    # Route tests advance background checkers explicitly; lifecycle/loop tests exercise
     # the real background task without timing-dependent state changes.
     async def idle_readiness():
         import asyncio
         await asyncio.Event().wait()
     monkeypatch.setattr(main, "run_job_readiness_checks", idle_readiness)
+    monkeypatch.setattr(main, "run_job_lease_checks", idle_readiness)
+    monkeypatch.setattr(main, "run_job_mail_checks", idle_readiness)
     # Disregard deployment settings: startup must only create test credentials,
     # and uploads/cleanup must never reach the application's data directories.
+    # Existing timeout workflows exercise explicitly enabled lease expiration.
+    monkeypatch.setattr(config, "JOB_TIMEOUT_SECONDS", 300)
     monkeypatch.setattr(config, "PRODUCTION", False)
     monkeypatch.setattr(config, "ADMIN_KEY", None)
     monkeypatch.setattr(config, "INTERNAL_MAIL_SERVER", None)
@@ -418,7 +423,7 @@ async def _lease_job(client, worker_headers, job_with_required_uploads_by_payloa
 
 
 @pytest_asyncio.fixture
-async def failed_job(client, worker_headers, job_with_required_uploads_by_payload_name):
+async def failed_job(client, worker_headers, job_with_required_uploads_by_payload_name, db_sessions):
     job = job_with_required_uploads_by_payload_name["created_job"]
     job_id = job["id"]
 
@@ -447,6 +452,7 @@ async def failed_job(client, worker_headers, job_with_required_uploads_by_payloa
         body = r.json()
         assert body["status"] == 200
         assert body["code"] == AppCode.JOB_MARKED_ERROR.value
+        await run_lease_check(db_sessions)
 
     r = await client.post(
         "/v1/jobs/lease",
@@ -877,3 +883,27 @@ def blocked_upload_preparation(monkeypatch):
     finally:
         release.set()
         watchdog.cancel()
+
+
+@pytest.fixture
+def job_mail_outbox(monkeypatch):
+    """Capture SMTP messages without sending email outside the test process."""
+    from email import policy
+    from email.parser import Parser
+    from unittest.mock import MagicMock
+    from doc_api.api.checkers import job_mail
+
+    for channel in ("INTERNAL", "EXTERNAL"):
+        monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", "smtp.example.com")
+        monkeypatch.setattr(config, f"{channel}_MAIL_SENDER_MAIL", f"{channel.lower()}@example.com")
+        monkeypatch.setattr(config, f"{channel}_MAIL_PASSWORD", None)
+        monkeypatch.setattr(config, f"{channel}_MAIL_FLOOD_LEVEL", 0)
+    monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
+    monkeypatch.setattr(job_mail, "_flood_counts", {})
+    messages = []
+    smtp = MagicMock()
+    smtp.return_value.sendmail.side_effect = (
+        lambda sender, recipients, text: messages.append(
+            (sender, recipients, Parser(policy=policy.default).parsestr(text))))
+    monkeypatch.setattr("doc_api.tools.mail.mail_sender.smtplib.SMTP", smtp)
+    return messages

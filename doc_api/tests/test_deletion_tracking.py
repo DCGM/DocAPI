@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import event
 
-from doc_api.api import cleanup
+from doc_api.api.checkers import cleanup
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import config
 from doc_api.db import model

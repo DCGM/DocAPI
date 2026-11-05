@@ -50,10 +50,12 @@ def test_send_defaults_to_the_senders_receivers(smtp_class):
 @mock.patch('smtplib.SMTP')
 def test_a_sent_email_is_logged_with_its_sender_and_receivers(smtp_class, caplog):
     with caplog.at_level(logging.INFO, logger='doc_api.tools.mail.mail_sender'):
-        _sender(sender_name='Worker').send('Job done', 'body', ['a@mail.server.cz', 'b@mail.server.cz'])
+        _sender(sender_name='Worker').send('Job done', 'First line\nPříliš žluťoučký kůň', ['a@mail.server.cz', 'b@mail.server.cz'])
 
     assert ("Sent email 'Job done' from Worker <worker@mail.server.cz> "
             "to a@mail.server.cz, b@mail.server.cz") in caplog.text
+    assert 'First line' not in caplog.text
+    assert 'Příliš žluťoučký kůň' not in caplog.text
 
 
 @mock.patch('smtplib.SMTP')
@@ -95,9 +97,11 @@ def test_a_failed_send_returns_false_and_is_logged(smtp_class, caplog):
     smtp_class.return_value.sendmail.side_effect = OSError('connection refused')
 
     with caplog.at_level(logging.ERROR):
-        assert not _sender().send('Job done', 'body', ['user@mail.server.cz'])
+        assert not _sender().send('Job done', 'First line\nPříliš žluťoučký kůň', ['user@mail.server.cz'])
     assert ("Failed to send email 'Job done' from worker@mail.server.cz "
             "to user@mail.server.cz") in caplog.text
+    assert 'First line' not in caplog.text
+    assert 'Příliš žluťoučký kůň' not in caplog.text
 
 
 @mock.patch('smtplib.SMTP')

@@ -3,6 +3,7 @@ import os
 import logging
 import time
 import socket
+from string import Formatter
 
 class DocAPIFormatter(logging.Formatter):
     converter = time.gmtime
@@ -11,79 +12,114 @@ class DocAPIFormatter(logging.Formatter):
         record.hostname = socket.gethostname()
         return super().format(record)
 
-
 TRUE_VALUES = {"true", "1"}
 
+MAIL_SERVER_SUBJECT_EXAMPLES = {"server_name": "DocAPI", "admin_server_name": "DocAPI admin"}
+
+JOB_MAIL_SUBJECT_EXAMPLES = {
+    **MAIL_SERVER_SUBJECT_EXAMPLES, "state": "done", "state_upper": "DONE", "job_id": "00000000-0000-0000-0000-000000000001",
+    "job_id_short": "00000000", "image_count": 10, "attempt": 1,
+    "engine_name": "ocr", "engine_version": "1.0", "owner_label": "user",
+}
+
+def validate_mail_subject(template: str, setting: str, examples: dict):
+    """Reject unsupported placeholders and invalid subjects at startup."""
+    try:
+        for _, name, _, _ in Formatter().parse(template):
+            if name is not None and name not in examples:
+                raise ValueError(f"Unknown placeholder {name!r}")
+        subject = template.format(**examples)
+        if not subject.strip() or "\r" in subject or "\n" in subject:
+            raise ValueError("Subject must be a non-empty single line")
+    except (KeyError, ValueError, IndexError, TypeError) as error:
+        raise ValueError(f"Invalid {setting}: {error}") from error
 
 class Config:
     def __init__(self):
-        self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
-        self.APP_PORT = int(os.getenv("APP_PORT", "9999"))
-        self.PRODUCTION = self._env_bool("PRODUCTION", False)
+        # =============================================================================
+        # Database
+        # =============================================================================
 
-        # if the app is hosted ${APP_BASE_URL}/subpath, set this to "/subpath"
-        self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
-        # where the app is hosted
-        self.APP_BASE_URL = os.getenv("APP_BASE_URL", os.path.join(f"http://{self.APP_HOST}:{self.APP_PORT}", self.APP_URL_ROOT))
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
+        # Allow automatic schema migrations; FORCE skips database initialization.
+        self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
+        self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
 
+        # =============================================================================
+        # Application
+        # =============================================================================
 
-        # sender name for emails sent by the app t admins
-        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
-
-        # prefix for API keys, the format of the keys is {KEY_PREFIX}.{KEY_ID}.secret
-        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "doc-api")
-
-        # THIS MUST BE CHANGED IN PRODUCTION
-        self.ADMIN_KEY = os.getenv("ADMIN_KEY", f"{self.KEY_PREFIX}.adminkeykid.changemeadminkeysecret12345")
-        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "changemehmacsecret12345")
-
-
-
-        # displayed in the web interface footer
-        # return in detail on unsuccessful authentication
-        # used for 401 -> headers={"WWW-Authenticate": f'ApiKey realm="{config.SERVER_NAME}"'}
-        self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
-
-        # displayed in the web interface footer
-        self.APP_VERSION = os.getenv("APP_VERSION", "custom")
-
-        # return in detail on unsuccessful authentication
-        self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
-
+        # Data directories default to subdirectories of BASE_DIR.
         self.BASE_DIR = os.getenv("BASE_DIR", "./doc_api_data")
         self.JOBS_DIR = os.getenv("JOBS_DIR", os.path.join(self.BASE_DIR, "jobs"))
         self.RESULTS_DIR = os.getenv("RESULTS_DIR", os.path.join(self.BASE_DIR, "results"))
         self.ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", os.path.join(self.BASE_DIR, "artifacts"))
         self.ENGINES_DIR = os.getenv("ENGINES_DIR", os.path.join(self.BASE_DIR, "engines"))
 
-        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
-        # if True, allow alembic to upgrade existing DB
-        self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
-        # if True, skip creating DB and alembic upgrade, simply assume the DB is ready
-        self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
+        self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+        self.APP_PORT = int(os.getenv("APP_PORT", "9999"))
+        self.PRODUCTION = self._env_bool("PRODUCTION", False)
+        # URL prefix, e.g. /subpath; empty for the root URL.
+        self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
+        self.APP_BASE_URL = os.getenv("APP_BASE_URL", os.path.join(f"http://{self.APP_HOST}:{self.APP_PORT}", self.APP_URL_ROOT))
 
-        # job processing configuration
-        ################################################################################################################
-        # if db_job.last_change for JOB in PROCESSING state is not updated for JOB_TIMEOUT_SECONDS
-        #     if db_job.previous_attempts < JOB_MAX_ATTEMPTS - 1
-        #         - the job is marked as QUEUED
-        #     else
-        #         - the job is marked as ERROR
+        # Admin email identity.
+        self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")
+
+        # Authentication --------------------------------------------------------------
+
+        # API key format: {KEY_PREFIX}.{KEY_ID}.secret
+        self.KEY_PREFIX = os.getenv("KEY_PREFIX", "doc-api")
+        # Replace both secrets in production.
+        self.ADMIN_KEY = os.getenv("ADMIN_KEY", f"{self.KEY_PREFIX}.adminkeykid.changemeadminkeysecret12345")
+        self.HMAC_SECRET = os.getenv("HMAC_SECRET", "changemehmacsecret12345")
+
+        # Public identity in the UI, authentication responses and emails.
+        self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
+        self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
+        self.APP_VERSION = os.getenv("APP_VERSION", "custom")
+
+        # =============================================================================
+        # Job processing
+        # =============================================================================
+
+        # Checker intervals in seconds (positive integers).
         self.JOB_READINESS_CHECK_INTERVAL_SECONDS = int(os.getenv("JOB_READINESS_CHECK_INTERVAL_SECONDS", "5"))
         if self.JOB_READINESS_CHECK_INTERVAL_SECONDS <= 0:
             raise ValueError("JOB_READINESS_CHECK_INTERVAL_SECONDS must be a positive integer")
-        self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
+        self.JOB_LEASE_CHECK_INTERVAL_SECONDS = int(os.getenv("JOB_LEASE_CHECK_INTERVAL_SECONDS", "5"))
+        if self.JOB_LEASE_CHECK_INTERVAL_SECONDS <= 0:
+            raise ValueError("JOB_LEASE_CHECK_INTERVAL_SECONDS must be a positive integer")
+        # Zero disables lease expiration; ERROR jobs still retry.
+        # Positive timeouts expire after timeout + grace without worker updates.
+        self.JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "0"))
+        if self.JOB_TIMEOUT_SECONDS < 0:
+            raise ValueError("JOB_TIMEOUT_SECONDS must be a nonnegative integer")
         self.JOB_TIMEOUT_GRACE_SECONDS = int(os.getenv("JOB_TIMEOUT_GRACE_SECONDS", "10"))
+        # Total processing attempts; exhausted jobs become FAILED.
         self.JOB_MAX_ATTEMPTS = max(int(os.getenv("JOB_MAX_ATTEMPTS", "3")), 1)
+
+        # Input cleanup ---------------------------------------------------------------
+
+        # DONE/FAILED jobs only; job records are retained.
         self.DELETE_JOB_INPUTS_ON_COMPLETION = self._env_bool("DELETE_JOB_INPUTS_ON_COMPLETION", False)
+        # Seconds from finished_date; 0 = immediate. Positive retention requires a date.
         self.INPUT_RETENTION_SECONDS = int(os.getenv("INPUT_RETENTION_SECONDS", "0"))
         if self.INPUT_RETENTION_SECONDS < 0:
             raise ValueError("INPUT_RETENTION_SECONDS must be a nonnegative integer")
+        # Also remove image rows; definitions and image_count remain.
+        # Hashes, image UUIDs and upload flags are lost.
         self.DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS = self._env_bool("DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", False)
+
+        # Output cleanup --------------------------------------------------------------
+
         self.DELETE_JOB_OUTPUTS = self._env_bool("DELETE_JOB_OUTPUTS", False)
+        # Seconds from finished_date; 604800 = 7 days, 0 = immediate.
+        # Positive retention keeps jobs without finished_date.
         self.OUTPUT_RETENTION_SECONDS = int(os.getenv("OUTPUT_RETENTION_SECONDS", "604800"))
         if self.OUTPUT_RETENTION_SECONDS < 0:
             raise ValueError("OUTPUT_RETENTION_SECONDS must be a nonnegative integer")
+        # results, artifacts, or both.
         self.OUTPUT_CLEANUP_TARGETS = {
             target.strip().lower()
             for target in os.getenv("OUTPUT_CLEANUP_TARGETS", "results,artifacts").split(",")
@@ -91,11 +127,21 @@ class Config:
         }
         if not self.OUTPUT_CLEANUP_TARGETS or not self.OUTPUT_CLEANUP_TARGETS <= {"results", "artifacts"}:
             raise ValueError("OUTPUT_CLEANUP_TARGETS must contain results, artifacts, or both")
+
+        # Cleanup schedule ------------------------------------------------------------
+
+        # Run at startup, then every N seconds (positive integer).
         self.CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "60"))
         if self.CLEANUP_INTERVAL_SECONDS <= 0:
             raise ValueError("CLEANUP_INTERVAL_SECONDS must be a positive integer")
 
-        # Image names in job definitions: an allowlist takes precedence over requiring any extension.
+        # =============================================================================
+        # Input and file validation
+        # =============================================================================
+
+        # Filename extensions ---------------------------------------------------------
+
+        # A nonempty allowlist overrides the general extension requirement.
         self.REQUIRE_IMAGE_EXTENSION = self._env_bool("REQUIRE_IMAGE_EXTENSION", False)
         self.ALLOWED_IMAGE_EXTENSIONS = {
             "." + extension.strip().lstrip(".").lower()
@@ -103,10 +149,9 @@ class Config:
             if extension.strip()
         }
 
-        # validate uploaded files configuration (valid XML and IMAGE decodable by OpenCV is always checked)
-        ################################################################################################################
-        # Per-check toggles for ALTO & PAGE XML validation (all default to False)
-        # Enable by setting env vars to one of TRUE_VALUES: {"true", "1"} (case-insensitive).
+        # Uploaded files --------------------------------------------------------------
+
+        # XML must always parse and images must always decode with OpenCV.
         self.RESULT_ZIP_VALIDATION = self._env_bool("RESULT_ZIP_VALIDATION", True)
         self.ARTIFACTS_ZIP_VALIDATION = self._env_bool("ARTIFACTS_ZIP_VALIDATION", True)
         self.ENGINE_FILES_ZIP_VALIDATION = self._env_bool("ENGINE_FILES_ZIP_VALIDATION", True)
@@ -125,34 +170,68 @@ class Config:
             "has_text": self._env_bool("PAGE_VALIDATE_HAS_TEXT", False),
         }
 
-        # EMAILS and NOTIFICATIONS configuration
-        ################################################################################################################
+        # =============================================================================
+        # Mailing
+        # =============================================================================
 
-        # internal mailing setting for doc_api.internal_mail_logger
+        # Shared subject placeholders -------------------------------------------------
+
+        # Job subjects: server_name, admin_server_name, state, state_upper, job_id,
+        # job_id_short, image_count, attempt, engine_name, engine_version, owner_label.
+        # Use {field} or Python format specs; omit unused fields.
+        # Server-error subjects accept only server_name and admin_server_name.
+
+        # Internal: server errors and admin job reports -------------------------------
+
+        # Server and sender address are required; recipients are comma-separated.
         self.INTERNAL_MAIL_SERVER = os.getenv("INTERNAL_MAIL_SERVER", None)
-        self.INTERNAL_MAIL_PORT = os.getenv("INTERNAL_MAIL_PORT", 25)
+        self.INTERNAL_MAIL_PORT = int(os.getenv("INTERNAL_MAIL_PORT", 25))
         self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
         self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
         self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
-        if os.getenv("INTERNAL_MAIL_RECEIVER_MAILS") is not None:
-            self.INTERNAL_MAIL_RECEIVER_MAILS = [e.strip() for e in
-                                                 os.getenv("INTERNAL_MAIL_RECEIVER_MAILS").split(',')]
-        else:
-            self.INTERNAL_MAIL_RECEIVER_MAILS = ['user@mail.server.cz']
+        self.INTERNAL_MAIL_RECEIVER_MAILS = [
+            address.strip() for address in os.getenv("INTERNAL_MAIL_RECEIVER_MAILS", "").split(",")
+            if address.strip()
+        ]
         self.INTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("INTERNAL_MAIL_FLOOD_LEVEL", 10))
+        self.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE = os.getenv(
+            "INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE", "[{admin_server_name}] INTERNAL SERVER ERROR")
+        validate_mail_subject(self.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE, "INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE",
+                              MAIL_SERVER_SUBJECT_EXAMPLES)
+        self.ADMIN_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
+            "ADMIN_JOB_MAIL_SUBJECT_TEMPLATE", "[{admin_server_name}] {state_upper} job {job_id_short} ({owner_label})")
+        validate_mail_subject(self.ADMIN_JOB_MAIL_SUBJECT_TEMPLATE, "ADMIN_JOB_MAIL_SUBJECT_TEMPLATE", JOB_MAIL_SUBJECT_EXAMPLES)
 
-        # external mailing setting for doc_api.external_mail_logger
+        # External: user job reports ---------------------------------------------------
+
+        # Owners must have email/email_notifications configured on their API key.
         self.EXTERNAL_MAIL_SERVER = os.getenv("EXTERNAL_MAIL_SERVER", None)
-        self.EXTERNAL_MAIL_PORT = os.getenv("EXTERNAL_MAIL_PORT", 25)
+        self.EXTERNAL_MAIL_PORT = int(os.getenv("EXTERNAL_MAIL_PORT", 25))
         self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)
         self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
         self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
         self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
+        self.USER_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
+            "USER_JOB_MAIL_SUBJECT_TEMPLATE", "[{server_name}] {state_upper} job {job_id_short}")
+        validate_mail_subject(self.USER_JOB_MAIL_SUBJECT_TEMPLATE, "USER_JOB_MAIL_SUBJECT_TEMPLATE", JOB_MAIL_SUBJECT_EXAMPLES)
 
-        # LOGGING configuration
-        ################################################################################################################
-        self.LOGGING_CONSOLE_LEVEL = os.getenv("LOGGING_CONSOLE_LEVEL", logging.INFO)
+        # Job notification policy (user and admin reports) -----------------------------
+
+        # Persist delivery status; retry failed sends with exponential backoff.
+        # Server-error emails do not use this policy.
+        self.JOB_MAIL_CHECK_INTERVAL_SECONDS = int(os.getenv("JOB_MAIL_CHECK_INTERVAL_SECONDS", "5"))
+        self.JOB_MAIL_MAX_ATTEMPTS = int(os.getenv("JOB_MAIL_MAX_ATTEMPTS", "3"))
+        self.JOB_MAIL_RETRY_DELAY_SECONDS = int(os.getenv("JOB_MAIL_RETRY_DELAY_SECONDS", "60"))
+        for setting in ("JOB_MAIL_CHECK_INTERVAL_SECONDS", "JOB_MAIL_MAX_ATTEMPTS", "JOB_MAIL_RETRY_DELAY_SECONDS"):
+            if getattr(self, setting) <= 0:
+                raise ValueError(f"{setting} must be a positive integer")
+
+        # =============================================================================
+        # Logging
+        # =============================================================================
+
         self.LOGGING_FILE_LEVEL = os.getenv("LOGGING_FILE_LEVEL", logging.INFO)
+        self.LOGGING_CONSOLE_LEVEL = os.getenv("LOGGING_CONSOLE_LEVEL", logging.INFO)
         self.LOGGING_DIR = os.getenv("LOGGING_DIR", os.path.join(self.BASE_DIR, "logs"))
         self.LOGGING_CONFIG = {
             'version': 1,
@@ -199,8 +278,11 @@ class Config:
             }
         }
 
-        # API documentation configuration
-        ################################################################################################################
+        # =============================================================================
+        # Swagger documentation
+        # =============================================================================
+
+        # Visibility only; endpoint access is unchanged.
         self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, Admin").split(',')])
 
         self.SHOW_GET_ENGINES = self._env_bool("SHOW_GET_ENGINES", True)
@@ -209,8 +291,7 @@ class Config:
         self.SHOW_PUT_PAGE = self._env_bool("SHOW_PUT_PAGE", True)
         self.SHOW_PUT_METADATA = self._env_bool("SHOW_PUT_METADATA", True)
 
-
-        # Job definition examples for documentation (validation is strictly for JobDefinition schema)
+        # Job definition examples -----------------------------------------------------
         self.JOB_DEFINITION_SUMMARY = os.getenv("JOB_DEFINITION_SUMMARY", "Create Job")
         self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION",
                                                     "Create a new job with the specified images and options.\n\n"
@@ -262,7 +343,7 @@ class Config:
                 },
             })
 
-        # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
+        # Metadata upload examples ----------------------------------------------------
         self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")
         self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION",
                                                "Upload the Meta JSON file for a job.")
@@ -275,17 +356,18 @@ class Config:
                                                            "primitive": {"summary": "Primitive value", "value": True},
                                                        })))
 
-        # Result download examples for documentation
+        # Result download examples ----------------------------------------------------
         self.RESULT_SUMMARY = os.getenv("RESULT_SUMMARY", "Download Result")
         self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION",
                                             "Download the result ZIP file for a completed job.")
         self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE",
                                         "(binary ZIP file content)")
 
+        # =============================================================================
+        # Testing
+        # =============================================================================
 
-        # Testing setup - these keys will be automatically created in the DB for testing purposes if PRODUCTION is False
-        # for tests in doc_api/tests/
-        ################################################################################################################
+        # Automatically created credentials when PRODUCTION is false.
         self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", f"{self.KEY_PREFIX}.testadminkid.testadminkey")
         self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", f"{self.KEY_PREFIX}.testreadonlykid.testreadonlykey")
         self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", f"{self.KEY_PREFIX}.testuserkid.testuserkey")
@@ -295,7 +377,6 @@ class Config:
         self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
         self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
         self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
-
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)
@@ -309,7 +390,6 @@ class Config:
         os.makedirs(self.ARTIFACTS_DIR, exist_ok=True)
         os.makedirs(self.ENGINES_DIR, exist_ok=True)
         os.makedirs(self.LOGGING_DIR, exist_ok=True)
-
 
 config = Config()
 

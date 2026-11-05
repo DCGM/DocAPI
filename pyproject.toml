@@ -20,7 +20,7 @@ dependencies = [
     "fastapi",
     "numpy",
     "opencv_python",
-    "pydantic",
+    "pydantic[email]",
     "Requests"
 ]
 

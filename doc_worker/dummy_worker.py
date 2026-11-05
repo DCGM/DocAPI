@@ -96,7 +96,7 @@ class DummyWorker(DocWorkerWrapper):
             
         except Exception as e:
             logger.exception("Dummy processing failed")
-            return WorkerResponse.error("Dummy processing failed", exception=e)
+            return WorkerResponse.error(final_log="Dummy processing failed", final_log_user="Dummy processing failed", exception=e)
 
 
 def main():
