@@ -244,7 +244,8 @@ async def get_jobs(
     for db_job, db_engine in db_jobs_with_engines:
         if result_available is not None and availability[db_job.id] != result_available:
             continue
-        job = base_objects.JobProper.model_validate(db_job).model_dump()
+        job = base_objects.JobProper.model_validate(
+            db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
         job["result_available"] = availability[db_job.id]
         if key.role != base_objects.KeyRole.ADMIN:
             job.pop("artifacts_deleted_at", None)

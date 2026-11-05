@@ -1,4 +1,4 @@
-"""Queue jobs after their required input files and metadata have been saved."""
+"""Queue jobs when each required input is uploaded or supplied by URL."""
 
 import asyncio
 import logging
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
-    """Queue a NEW job only when all required inputs have been saved."""
+    """Queue a NEW job when required inputs have uploads/URLs and metadata is saved."""
     try:
         async with transaction(db):
             img_missing = exists(
@@ -27,6 +27,7 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                 .where(
                     model.Image.job_id == job_id,
                     model.Image.image_uploaded.is_(False),
+                    model.Image.image_url_provided.is_(False),
                 )
             )
             alto_missing = exists(
@@ -35,6 +36,7 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                 .where(
                     model.Image.job_id == job_id,
                     model.Image.alto_uploaded.is_(False),
+                    model.Image.alto_url_provided.is_(False),
                 )
             )
             page_missing = exists(
@@ -43,6 +45,7 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
                 .where(
                     model.Image.job_id == job_id,
                     model.Image.page_uploaded.is_(False),
+                    model.Image.page_url_provided.is_(False),
                 )
             )
 

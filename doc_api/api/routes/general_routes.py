@@ -224,11 +224,22 @@ async def result_availability(jobs):
 
 
 async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
-    job = base_objects.JobProper.model_validate(db_job).model_dump()
+    job = base_objects.JobProper.model_validate(
+        db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
     job["result_available"] = (await result_availability([db_job]))[db_job.id]
     if key.role != base_objects.KeyRole.ADMIN:
         job.pop("artifacts_deleted_at", None)
     images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
+    url_fields = [f"{kind}_url" for kind in ("image", "alto", "page")
+                  if any(getattr(img, f"{kind}_url_provided") for img in db_images)]
+    if url_fields:
+        # Names are unique and stable within a job. Only inspect the definition
+        # when at least one stored presence flag requires URL enrichment.
+        definitions = {image["name"]: image for image in db_job.definition["images"]}
+        for image in images:
+            source = definitions[image["name"]]
+            for field in url_fields:
+                image[field] = source.get(field)
 
     # drop everything that is only for admins
     if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:

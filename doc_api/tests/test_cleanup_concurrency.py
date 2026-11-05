@@ -257,7 +257,7 @@ async def test_api_remains_responsive_during_cleanup(client, user_headers, worke
         async with db_sessions() as db:
             for job_id in completed:
                 assert getattr(await db.get(model.Job, job_id), f"{target}_deleted_at") is not None
-            assert (await db.get(model.Job, completed[1])).log.endswith("Updated after cleanup")
+            assert (await db.get(model.Job, completed[1])).log[-1].endswith("Updated after cleanup")
     finally:
         released.set()
         watchdog.cancel()

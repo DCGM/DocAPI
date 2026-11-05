@@ -511,7 +511,9 @@ PATCH_JOB_RESPONSES = {
     response_model=DocAPIResponseOK[NoneType],
     tags=["Admin"],
     openapi_extra={"x-order": 308},
-    description="Force update fields of an existing job. Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
+    description="Force update fields of an existing job. Log messages affect only the current attempt; "
+                "append_logs=false replaces that attempt’s text and preserves earlier attempts. "
+                "Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
     responses=make_responses(PATCH_JOB_RESPONSES))
 async def patch_job(
         request: Request,

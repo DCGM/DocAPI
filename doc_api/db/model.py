@@ -49,8 +49,34 @@ class Job(Base):
     results_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     artifacts_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    log: Mapped[str] = mapped_column(nullable=True)
-    log_user: Mapped[str] = mapped_column(nullable=True)
+    log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+
+    def update_log(self, field: str, message: str, *, append: bool = True):
+        """Write to the current attempt, assigning a new list so ORM tracks it."""
+        index = self.previous_attempts or 0
+        entries = list(getattr(self, field) or [])
+        entries.extend([None] * (index + 1 - len(entries)))
+        previous = entries[index]
+        if append and previous:
+            separator = "" if previous.endswith("\n") else "\n"
+            entries[index] = previous + separator + message
+        else:
+            entries[index] = message
+        setattr(self, field, entries)
+
+    def reset_attempt_logs(self, started_at: datetime):
+        """A released lease reuses its index; discard its old messages on leasing."""
+        index = self.previous_attempts or 0
+        for field in ("log", "log_user"):
+            entries = list(getattr(self, field) or [])[:index]
+            entries.extend([None] * (index + 1 - len(entries)))
+            entries[index] = (
+                f"ATTEMPT {index + 1} STARTED AT {started_at} AFTER TIMEOUT/ERROR.\n\n"
+                if field == "log" and index > 0 else None
+            )
+            # A quiet first attempt must retain SQL NULL, not an empty JSON array.
+            setattr(self, field, entries if any(entry is not None for entry in entries) else None)
 
     images: Mapped[list['Image']] = relationship(back_populates="job", foreign_keys='Image.job_id')
 
@@ -66,6 +92,10 @@ class Image(Base):
     image_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     alto_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
     page_uploaded: Mapped[bool] = mapped_column(index=True, default=False, nullable=False)
+
+    image_url_provided: Mapped[bool] = mapped_column(default=False, nullable=False)
+    alto_url_provided: Mapped[bool] = mapped_column(default=False, nullable=False)
+    page_url_provided: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('jobs.id'), index=True, nullable=False)
     job: Mapped['Job'] = relationship(back_populates="images", foreign_keys='Image.job_id')

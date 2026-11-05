@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 class ImageForJobDefinition(BaseModel):
     name: str = Field(description="Image filename. The server may require an extension or restrict allowed extensions.")
     order: int
+    image_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
+    alto_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
+    page_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -114,7 +117,10 @@ async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefin
                 db_image = model.Image(
                     job=db_job,
                     name=img.name,
-                    order=img.order
+                    order=img.order,
+                    image_url_provided=img.image_url is not None,
+                    alto_url_provided=img.alto_url is not None,
+                    page_url_provided=img.page_url is not None,
                 )
                 db.add(db_image)
 

@@ -5,7 +5,7 @@ Install the service and test dependencies in your Python environment:
 ```sh
 python -m pip install -e '.[server,dev]'
 export TEST_DATABASE_URL='postgresql+asyncpg://test_user:password@localhost:5432/postgres'
-python -m pytest doc_api/tests
+python -m pytest doc_api/tests doc_worker/tests
 ```
 
 `TEST_DATABASE_URL` points to an existing PostgreSQL maintenance database. Its user
@@ -29,7 +29,8 @@ database behind. Pytest retains some temporary file directories for debugging
 according to its normal `tmp_path` retention policy.
 
 In PyCharm, select the project interpreter with the dependencies above, use a
-pytest run configuration targeting `doc_api/tests`, set the working directory to
+pytest run configuration targeting `doc_api/tests` (or both `doc_api/tests` and
+`doc_worker/tests` for the complete suite), set the working directory to
 the repository root, and add `TEST_DATABASE_URL` to its environment variables.
 No API URL or API key arguments are needed.
 
@@ -164,6 +165,11 @@ own-job listing and access to known jobs belonging to other owners.
 - [x] **403** — explicit engine version; `API_KEY_FORBIDDEN_FOR_ENGINE_VERSION`. [`test_user.py::test_post_job_403_explicit_engine_version`](test_user.py).
 - [x] **422** — extension policy; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_post_job_422_extension_policy`](test_user.py).
 
+- [x] post job 201 mixed input links. [`test_user.py::test_post_job_201_mixed_input_links`](test_user.py).
+- [x] post job 422 invalid input link. [`test_user.py::test_post_job_422_invalid_input_link`](test_user.py).
+- [x] post job 201 input links metadata requirement. [`test_user.py::test_post_job_201_input_links_metadata_requirement`](test_user.py).
+- [x] post job 201 preserves input link. [`test_user.py::test_post_job_201_preserves_input_link`](test_user.py).
+
 #### GET /v1/jobs - 200, 422
 
 Date-filter tests cover inclusive boundaries for all four date fields, UTC and
@@ -191,6 +197,8 @@ creation-date ordering.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_user.py::test_get_job_403_job_access_forbidden`](test_user.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_user.py::test_get_job_422_invalid_request`](test_user.py).
 - [x] **500** — database failure; `INTERNAL_ERROR`. [`test_user.py::test_get_job_500_database_failure`](test_user.py).
+
+- [x] **200** — URL fields are enriched symmetrically for all images and roles. [`test_user.py::test_get_job_200_symmetric_input_links`](test_user.py).
 
 #### PUT /v1/jobs/{job_id}/images/{image_id}/files/image - 201, 200, 403, 404, 409, 415, 422, 400, 500
 
@@ -376,6 +384,8 @@ authentication are checked independently of documentation visibility.
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_image_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_image_422_invalid_request`](test_worker.py).
 - [x] **200** — stream failure. [`test_worker.py::test_get_image_200_stream_failure`](test_worker.py).
+- [x] get image 410 link is not upload. [`test_worker.py::test_get_image_410_link_is_not_upload`](test_worker.py).
+
 
 #### GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 
@@ -388,6 +398,8 @@ authentication are checked independently of documentation visibility.
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_alto_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_alto_422_invalid_request`](test_worker.py).
 - [x] **200** — stream failure. [`test_worker.py::test_get_alto_200_stream_failure`](test_worker.py).
+- [x] get alto 410 link is not upload. [`test_worker.py::test_get_alto_410_link_is_not_upload`](test_worker.py).
+
 
 #### GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 403, 404, 409, 410, 422
 
@@ -400,6 +412,8 @@ authentication are checked independently of documentation visibility.
 - [x] **409** — job not processing; `JOB_NOT_IN_PROCESSING`. [`test_worker.py::test_get_page_409_job_not_processing`](test_worker.py).
 - [x] **422** — invalid request; `REQUEST_VALIDATION_ERROR`. [`test_worker.py::test_get_page_422_invalid_request`](test_worker.py).
 - [x] **200** — stream failure. [`test_worker.py::test_get_page_200_stream_failure`](test_worker.py).
+- [x] get page 410 link is not upload. [`test_worker.py::test_get_page_410_link_is_not_upload`](test_worker.py).
+
 
 #### GET /v1/jobs/{job_id}/files/metadata - 200, 403, 404, 409, 410, 422
 
@@ -479,6 +493,7 @@ authentication are checked independently of documentation visibility.
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_patch_job_403_job_access_forbidden`](test_worker.py).
 - [x] **403** — unsupported worker state; `API_KEY_WORKER_FORBIDDEN`. [`test_worker.py::test_patch_job_403_unsupported_worker_state`](test_worker.py).
 - [x] **200** — progress clamped; `JOB_UPDATED`. [`test_worker.py::test_patch_job_200_progress_clamped`](test_worker.py).
+
 
 ### Admin and debug routes
 
@@ -586,6 +601,18 @@ authentication are checked independently of documentation visibility.
 
 - [x] **200** — admin filters. [`test_admin.py::test_get_engines_200_admin_filters`](test_admin.py).
 
+### Input download links
+
+Job creation tests cover all 27 combinations of linked, uploaded, and missing
+image/ALTO/PAGE inputs across two images, under user and admin credentials.
+They verify that links stay in the job definition, image records hold only
+presence booleans, links do not set upload flags, and missing uploads keep jobs NEW,
+and workers receive the URLs after leasing. Other cases cover HTTP(S) URL
+validation, long signed URLs, metadata requirements, migration downgrade/re-upgrade,
+and input cleanup with or without deleting image records. Upload-only file
+endpoints still return GONE for inputs that have only a URL. External worker
+requests omit DocAPI credentials and do not parse source data as an API envelope.
+
 ### Image-name validation
 
 - [x] job image extension options. [`test_image_name_validation.py::test_job_image_extension_options`](test_image_name_validation.py).
@@ -610,6 +637,8 @@ authentication are checked independently of documentation visibility.
 - [x] invalid cleanup interval. [`test_input_cleanup.py::test_invalid_cleanup_interval`](test_input_cleanup.py).
 - [x] cleanup skips locked and requeued jobs. [`test_input_cleanup.py::test_cleanup_skips_locked_and_requeued_jobs`](test_input_cleanup.py).
 
+- [x] cleanup linked inputs. [`test_input_cleanup.py::test_cleanup_linked_inputs`](test_input_cleanup.py).
+
 ### Output cleanup
 
 - [x] output retention. [`test_output_cleanup.py::test_output_retention`](test_output_cleanup.py).
@@ -627,14 +656,36 @@ authentication are checked independently of documentation visibility.
 
 - [x] recovers after files removed but commit fails. [`test_deletion_tracking.py::test_recovers_after_files_removed_but_commit_fails`](test_deletion_tracking.py).
 
+### Per-attempt job logs
+
+Both database log fields contain JSON arrays indexed from the first attempt.
+Worker updates append to the current entry; admin replacement affects only that
+entry. Leasing clears a reused entry, adds a technical-only retry header, and
+leaves a quiet first attempt's logs null. Job detail/list responses keep string
+fields: user/readonly/worker responses show the latest attempt; admins see joined
+history. A quiet current attempt does not expose an earlier public message.
+
+- [x] worker progress/finalization logs. [`test_worker.py::test_patch_job_200_attempt_logs`](test_worker.py).
+- [x] reused attempt entries. [`test_worker.py::test_post_job_lease_200_reused_attempt_logs`](test_worker.py).
+- [x] quiet first attempt. [`test_worker.py::test_patch_job_200_quiet_first_attempt_logs`](test_worker.py).
+- [x] admin append/replace current entry. [`test_admin.py::test_patch_job_200_current_attempt_logs`](test_admin.py).
+- [x] role-specific detail/list text. [`test_user.py::test_get_job_200_attempt_logs`](test_user.py).
+
 ### Alembic migrations
 
-The last two migrations are covered: cleanup timestamps and image-count backfill.
+Migration coverage includes cleanup timestamps, image-count backfill, and the
+image/ALTO/PAGE URL-presence booleans, and per-attempt JSON logs. Log migration
+cases include null/empty logs, timestamps in retry headers, missing attempt entries,
+reused indexes, and text that mentions ATTEMPT without being a separator.
 Tests use existing data and exercise upgrade, downgrade, and re-upgrade. Older
 migration transitions and additional migration-failure scenarios are outside the
 current coverage scope.
 
 - [x] upgrade existing jobs. [`test_migrations.py::test_upgrade_existing_jobs`](test_migrations.py).
+
+- [x] upgrade image input urls. [`test_migrations.py::test_upgrade_image_input_url_flags`](test_migrations.py).
+
+- [x] upgrade job attempt logs. [`test_migrations.py::test_upgrade_job_attempt_logs`](test_migrations.py).
 
 ### Test isolation and documentation consistency
 
@@ -644,6 +695,29 @@ current coverage scope.
 ### Worker adapter
 
 - [x] adapter failure state. [`test_adapter.py::test_adapter_failure_state`](test_adapter.py).
+
+- [x] adapter uploaded input uses docapi. [`test_adapter.py::test_adapter_uploaded_input_uses_docapi`](test_adapter.py).
+
+### Worker input source preferences
+
+Worker client tests live in `doc_worker/tests`, separate from the worker API
+endpoint tests in `doc_api/tests/test_worker.py`. Run them without a database:
+
+```sh
+python -m pytest doc_worker/tests
+```
+
+The wrapper prepares linked and uploaded inputs using independent
+`prefer_image_url`, `prefer_alto_url`, and `prefer_page_url` flags, all false by
+default. Tests cover every flag combination, single-source inputs, mixed
+downloads, and failed source requests.
+
+- [x] worker input source policy. [`test_worker_input_source_policy`](../../doc_worker/tests/test_doc_worker_wrapper.py).
+- [x] worker mixed source downloads. [`test_worker_mixed_source_downloads`](../../doc_worker/tests/test_doc_worker_wrapper.py).
+
+- [x] worker external input download. [`test_worker_external_input_download`](../../doc_worker/tests/test_doc_worker_wrapper.py).
+- [x] worker external request has no docapi credentials. [`test_worker_external_request_has_no_docapi_credentials`](../../doc_worker/tests/test_doc_worker_wrapper.py).
+- [x] worker external input failure. [`test_worker_external_input_failure`](../../doc_worker/tests/test_doc_worker_wrapper.py).
 
 ### File-transfer failure behavior
 
