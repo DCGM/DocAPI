@@ -4,6 +4,8 @@ from pathlib import Path
 from itertools import combinations
 
 
+from sqlalchemy import select
+
 from alembic import command
 from alembic.config import Config
 
@@ -132,6 +134,7 @@ async def assert_worker_update_race(client, worker_headers, other_worker_headers
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         if concurrent_change == "reassignment":
+            await run_lease_check(db_sessions)
             takeover = await client.post("/v1/jobs/lease", headers=other_worker_headers)
             assert takeover.status_code == 200, takeover.text
             assert takeover.json()["data"]["id"] == str(job_id)
@@ -493,3 +496,15 @@ async def assert_file_save_conflict(client, *, method, url, headers, kwargs, pat
     retry = await client.request(method, url, headers=headers, **kwargs)
     assert retry.status_code == 200, retry.text
     assert not list(path.parent.glob(path.name + ".docapi-tmp-*"))
+
+
+async def run_lease_check(db_sessions):
+    from doc_api.api.checkers.job_leases import check_job_leases
+    async with db_sessions() as db:
+        await check_job_leases(db)
+
+
+async def notification_rows(db_sessions, job_id):
+    async with db_sessions() as db:
+        return list(await db.scalars(select(model.JobNotification).where(
+            model.JobNotification.job_id == job_id).order_by(model.JobNotification.channel, model.JobNotification.id)))

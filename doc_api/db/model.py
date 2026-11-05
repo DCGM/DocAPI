@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
-from sqlalchemy import ForeignKey, DateTime, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, DateTime, Text, UniqueConstraint, Index
 from sqlalchemy.types import String
 
 from datetime import datetime, timezone
@@ -51,6 +51,8 @@ class Job(Base):
 
     log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    final_log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    final_log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
     def update_log(self, field: str, message: str, *, append: bool = True):
         """Write to the current attempt, assigning a new list so ORM tracks it."""
@@ -68,7 +70,7 @@ class Job(Base):
     def reset_attempt_logs(self, started_at: datetime):
         """A released lease reuses its index; discard its old messages on leasing."""
         index = self.previous_attempts or 0
-        for field in ("log", "log_user"):
+        for field in ("log", "log_user", "final_log", "final_log_user"):
             entries = list(getattr(self, field) or [])[:index]
             entries.extend([None] * (index + 1 - len(entries)))
             entries[index] = (
@@ -117,6 +119,9 @@ class Key(Base):
     created_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     last_used: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    email_notifications: Mapped[bool] = mapped_column(default=False, nullable=False)
+
 
 class Engine(Base):
     __tablename__ = "engines"
@@ -139,3 +144,26 @@ class Engine(Base):
     __table_args__ = (
         UniqueConstraint("name", "version", name="unique_engine_name_version"),
     )
+
+
+class JobNotification(Base):
+    __tablename__ = "job_notifications"
+    __table_args__ = (
+        UniqueConstraint('job_id', 'channel', 'recipient', name='uq_job_notification_recipient'),
+        Index('ix_job_notification_delivery', 'state', 'next_attempt_at'),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('jobs.id', ondelete='CASCADE'), nullable=False)
+    channel: Mapped[str] = mapped_column(String(8), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default='pending', nullable=False)
+    delivery_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

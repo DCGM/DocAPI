@@ -8,7 +8,7 @@ import glob
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 
@@ -42,30 +42,37 @@ class WorkerResponse:
     
     Attributes:
         status: Successful completion, retryable error, or permanent failure
-        error_message: Human-readable error message (empty string if success)
         error_adapter_response: Optional AdapterResponse containing API error details
         exception: Optional Exception that caused the failure
+        final_log: Final technical report
+        final_log_user: Final user-facing report
     """
     status: WorkerResponseStatus
-    error_message: str = ""
     error_adapter_response: Optional[AdapterResponse] = None
     exception: Optional[Exception] = None
+    final_log: Optional[str] = None
+    final_log_user: Optional[str] = None
     
     @classmethod
-    def ok(cls) -> 'WorkerResponse':
+    def ok(cls, final_log: Optional[str] = None, final_log_user: Optional[str] = None) -> 'WorkerResponse':
         """Create a successful response."""
-        return cls(status=WorkerResponseStatus.OK)
+        return cls(status=WorkerResponseStatus.OK, final_log=final_log, final_log_user=final_log_user)
     
     @classmethod
-    def error(cls, error_message: str, error_adapter_response: Optional[AdapterResponse] = None, exception: Optional[Exception] = None) -> 'WorkerResponse':
-        """Create an error response that the wrapper reports as a retryable job error."""
-        return cls(status=WorkerResponseStatus.ERROR, error_message=error_message, error_adapter_response=error_adapter_response, exception=exception)
+    def error(cls, final_log: Optional[str] = None, final_log_user: Optional[str] = None, *,
+              exception: Optional[Exception] = None,
+              error_adapter_response: Optional[AdapterResponse] = None) -> 'WorkerResponse':
+        """Create a retryable error with explicit technical and user final reports."""
+        return cls(status=WorkerResponseStatus.ERROR, final_log=final_log, final_log_user=final_log_user,
+                   exception=exception, error_adapter_response=error_adapter_response)
 
     @classmethod
-    def fail(cls, error_message: str, error_adapter_response: Optional[AdapterResponse] = None, exception: Optional[Exception] = None) -> 'WorkerResponse':
-        """Create a permanent failure response that the wrapper reports as FAILED."""
-        return cls(status=WorkerResponseStatus.FAIL, error_message=error_message, error_adapter_response=error_adapter_response,
-                   exception=exception)
+    def fail(cls, final_log: Optional[str] = None, final_log_user: Optional[str] = None, *,
+             exception: Optional[Exception] = None,
+             error_adapter_response: Optional[AdapterResponse] = None) -> 'WorkerResponse':
+        """Create a permanent failure with explicit technical and user final reports."""
+        return cls(status=WorkerResponseStatus.FAIL, final_log=final_log, final_log_user=final_log_user,
+                   exception=exception, error_adapter_response=error_adapter_response)
 
 
 class DocWorkerWrapper(ABC):
@@ -194,30 +201,26 @@ class DocWorkerWrapper(ABC):
         # what on_job_finished is told the job failed with
         self._job_failure = response
 
-        user_msg = response.error_message
-        summary_log, summary_log_user = self._job_api_logs(response) if job_id else (None, None)
-        
-        if response.error_adapter_response:
-            # Build technical log from AdapterResponse, starting with user message
-            tech_log = f"{user_msg} for job {job_id}. Status: {response.error_adapter_response.status}, Code: {response.error_adapter_response.code}"
-            if response.error_adapter_response.response:
-                tech_log += f", Response: {response.error_adapter_response.response.text}"
-        else:
-            # Tech log is same as user message when there's no adapter response
-            tech_log = f"{user_msg} for job {job_id}"
-        
-        # Add exception details if present
-        if response.exception:
-            tech_log += f". Exception: {type(response.exception).__name__}: {str(response.exception)}"
-            logger.exception(tech_log)
-        else:
-            logger.error(tech_log)
-        
-        # Only an explicit permanent failure prevents another attempt.
+        tech_log = response.final_log
+        if response.error_adapter_response is not None:
+            adapter_response = response.error_adapter_response
+            details = f"Status: {adapter_response.status}, Code: {adapter_response.code}"
+            if adapter_response.response is not None:
+                details += f", Response: {adapter_response.response.text}"
+            tech_log = _join(tech_log, details)
+        if response.exception is not None:
+            tech_log = _join(tech_log, f"Exception: {type(response.exception).__name__}: {response.exception}")
+
+        logger.error("%s for job %s", tech_log or response.final_log_user or response.status.value, job_id,
+                     exc_info=(type(response.exception), response.exception, response.exception.__traceback__)
+                     if response.exception is not None else None)
+
         if job_id:
             report = self.adapter.patch_job_fail if response.status == WorkerResponseStatus.FAIL else self.adapter.patch_job_error
-            report(log=_join(tech_log, summary_log), log_user=_join(user_msg, summary_log_user), job_id=job_id)
-    
+            # Diagnostic details belong only to the technical final report.
+            # The explicit user report is never inferred from another field.
+            report(final_log=tech_log, final_log_user=response.final_log_user, job_id=job_id)
+
     def request_job(self) -> Optional[WorkerResponse]:
         """
         Request a job lease from the API.
@@ -231,7 +234,7 @@ class DocWorkerWrapper(ABC):
         if not lease_response.is_success or not lease_response.data:
             if not lease_response.is_success:
                 logger.warning(f"Job lease request failed. Status: {lease_response.status}, Code: {lease_response.code}")
-                return WorkerResponse.error("Failed to request job lease", lease_response)
+                return WorkerResponse.error(final_log="Failed to request job lease", final_log_user="Failed to request job lease", error_adapter_response=lease_response)
             else:
                 logger.debug("No jobs available in queue")
                 return None
@@ -242,7 +245,7 @@ class DocWorkerWrapper(ABC):
         # Get full job details
         job_response = self.adapter.get_job(lease_response.data.id, set_job_if_successful=True)
         if not job_response.is_success:
-            return WorkerResponse.error("Failed to get job details", job_response)
+            return WorkerResponse.error(final_log="Failed to get job details", final_log_user="Failed to get job details", error_adapter_response=job_response)
             
         self.current_job = job_response.data
         logger.debug(f"Job {job_response.data.id} details:\n{job_response}")
@@ -257,7 +260,7 @@ class DocWorkerWrapper(ABC):
             WorkerResponse indicating success or failure
         """
         if not self.current_job:
-            return WorkerResponse.error("No current job set")
+            return WorkerResponse.error(final_log="No current job set", final_log_user="No current job set")
             
         if not self.current_job.engine_id or not self.current_job.engine_files_updated:
             logger.debug("No engine files required for this job")
@@ -288,13 +291,13 @@ class DocWorkerWrapper(ABC):
             engine_response = self.adapter.get_engine_files_stream(engine_id=engine_id, output_path=zip_path)
 
             if not engine_response.is_success:
-                return WorkerResponse.error("Failed to download engine files", engine_response)
+                return WorkerResponse.error(final_log="Failed to download engine files", final_log_user="Failed to download engine files", error_adapter_response=engine_response)
 
         else:
             # Download engine files
             engine_response = self.adapter.get_engine_files(engine_id)
             if not engine_response.is_success:
-                return WorkerResponse.error("Failed to download engine files", engine_response)
+                return WorkerResponse.error(final_log="Failed to download engine files", final_log_user="Failed to download engine files", error_adapter_response=engine_response)
 
             # Save and extract ZIP file
             with open(zip_path, 'wb') as f:
@@ -358,11 +361,11 @@ class DocWorkerWrapper(ABC):
             try:
                 data = self._download_external_input(source_url, kind)
             except (requests.RequestException, ValueError, cv2.error) as exc:
-                return WorkerResponse.error(failure_message, exception=exc)
+                return WorkerResponse.error(final_log=failure_message, final_log_user=failure_message, exception=exc)
         else:
             response = getattr(self.adapter, f"get_{kind}")(str(image.id), self.current_job.id)
             if not response.is_success:
-                return WorkerResponse.error(failure_message, response)
+                return WorkerResponse.error(final_log=failure_message, final_log_user=failure_message, error_adapter_response=response)
             data = response.data
 
         if kind == "image":
@@ -381,7 +384,7 @@ class DocWorkerWrapper(ABC):
             WorkerResponse indicating success or failure
         """
         if not self.current_job:
-            return WorkerResponse.error("No current job set")
+            return WorkerResponse.error(final_log="No current job set", final_log_user="No current job set")
             
         job_dir = self.get_job_data_path()
         os.makedirs(job_dir, exist_ok=True)
@@ -416,7 +419,7 @@ class DocWorkerWrapper(ABC):
             logger.debug("Downloading meta JSON...")
             meta_response = self.adapter.get_meta_json(self.current_job.id)
             if not meta_response.is_success:
-                return WorkerResponse.error("Failed to download meta JSON", meta_response)
+                return WorkerResponse.error(final_log="Failed to download meta JSON", final_log_user="Failed to download meta JSON", error_adapter_response=meta_response)
                 
             meta_path = os.path.join(job_dir, "meta.json")
             with open(meta_path, 'w', encoding='utf-8') as f:
@@ -439,7 +442,7 @@ class DocWorkerWrapper(ABC):
         """
         job_dir = self.get_job_data_path()
         if not job_dir:
-            return WorkerResponse.error("Failed to get job data path")
+            return WorkerResponse.error(final_log="Failed to get job data path", final_log_user="Failed to get job data path")
             
         zip_path = os.path.join(job_dir, "result.zip")
         
@@ -463,11 +466,11 @@ class DocWorkerWrapper(ABC):
             WorkerResponse indicating success or failure
         """
         if not self.current_job:
-            return WorkerResponse.error("No current job to upload results for")
+            return WorkerResponse.error(final_log="No current job to upload results for", final_log_user="No current job to upload results for")
             
         job_dir = self.get_job_data_path()
         if not job_dir:
-            return WorkerResponse.error("Failed to get job data path")
+            return WorkerResponse.error(final_log="Failed to get job data path", final_log_user="Failed to get job data path")
             
         zip_path = os.path.join(job_dir, "result.zip")
             
@@ -476,7 +479,7 @@ class DocWorkerWrapper(ABC):
             logger.debug(f"Results uploaded successfully for job {self.current_job.id}")
             return WorkerResponse.ok()
         else:
-            return WorkerResponse.error("Failed to upload results", upload_response)
+            return WorkerResponse.error(final_log="Failed to upload results", final_log_user="Failed to upload results", error_adapter_response=upload_response)
 
 
     def run_job_pipeline(self) -> Optional[Job]:
@@ -498,7 +501,7 @@ class DocWorkerWrapper(ABC):
                 self._report_error(job_response)
                 return None
         except Exception as e:
-            response = WorkerResponse.error("Failed to request job", exception=e)
+            response = WorkerResponse.error(final_log="Failed to request job", final_log_user="Failed to request job", exception=e)
             self._report_error(response)
             return None
             
@@ -557,7 +560,7 @@ class DocWorkerWrapper(ABC):
                     self._report_error(engine_response)
                     return None
             except Exception as e:
-                response = WorkerResponse.error("Failed to download or prepare engine files", exception=e)
+                response = WorkerResponse.error(final_log="Failed to download or prepare engine files", final_log_user="Failed to download or prepare engine files", exception=e)
                 self._report_error(response)
                 return None
             
@@ -569,7 +572,7 @@ class DocWorkerWrapper(ABC):
                     self._report_error(download_response)
                     return None
             except Exception as e:
-                response = WorkerResponse.error("Failed to download job data from server", exception=e)
+                response = WorkerResponse.error(final_log="Failed to download job data from server", final_log_user="Failed to download job data from server", exception=e)
                 self._report_error(response)
                 return None
             
@@ -577,14 +580,14 @@ class DocWorkerWrapper(ABC):
             try:
                 job_dir = self.get_job_data_path()
                 if not job_dir:
-                    response = WorkerResponse.error("Unable to create job workspace directory")
+                    response = WorkerResponse.error(final_log="Unable to create job workspace directory", final_log_user="Unable to create job workspace directory")
                     self._report_error(response)
                     return None
                     
                 result_dir = os.path.join(job_dir, "result")
                 os.makedirs(result_dir, exist_ok=True)
             except Exception as e:
-                response = WorkerResponse.error("Unable to create job workspace directory", exception=e)
+                response = WorkerResponse.error(final_log="Unable to create job workspace directory", final_log_user="Unable to create job workspace directory", exception=e)
                 self._report_error(response)
                 return None
             
@@ -614,7 +617,7 @@ class DocWorkerWrapper(ABC):
                     return None
 
             except Exception as e:
-                response = WorkerResponse.error("Processing failed due to an internal error", exception=e)
+                response = WorkerResponse.error(final_log="Processing failed due to an internal error", final_log_user="Processing failed due to an internal error", exception=e)
                 self._report_error(response)
                 return None
             
@@ -626,7 +629,7 @@ class DocWorkerWrapper(ABC):
                     self._report_error(zip_response)
                     return None
             except Exception as e:
-                response = WorkerResponse.error("Failed to package processing results", exception=e)
+                response = WorkerResponse.error(final_log="Failed to package processing results", final_log_user="Failed to package processing results", exception=e)
                 self._report_error(response)
                 return None
             
@@ -638,21 +641,21 @@ class DocWorkerWrapper(ABC):
                     self._report_error(upload_response)
                     return None
             except Exception as e:
-                response = WorkerResponse.error("Failed to upload results to server", exception=e)
+                response = WorkerResponse.error(final_log="Failed to upload results to server", final_log_user="Failed to upload results to server", exception=e)
                 self._report_error(response)
                 return None
             
             # Finish the job
             try:
                 logger.debug(f"Finishing job {self.current_job.id}...")
-                log, log_user = self._job_api_logs(WorkerResponse.ok())
-                finish_response = self.adapter.patch_job_finish(log=log, log_user=log_user)
+                finish_response = self.adapter.patch_job_finish(
+                    final_log=process_response.final_log, final_log_user=process_response.final_log_user)
                 if not finish_response.is_success:
-                    response = WorkerResponse.error("Failed to mark job as finished", finish_response)
+                    response = WorkerResponse.error(final_log="Failed to mark job as finished", final_log_user="Failed to mark job as finished", error_adapter_response=finish_response)
                     self._report_error(response)
                     return None
             except Exception as e:
-                response = WorkerResponse.error("Failed to mark job as finished", exception=e)
+                response = WorkerResponse.error(final_log="Failed to mark job as finished", final_log_user="Failed to mark job as finished", exception=e)
                 self._report_error(response)
                 return None
             
@@ -673,13 +676,13 @@ class DocWorkerWrapper(ABC):
             self.release_lease()
             raise
         except Exception as e:
-            response = WorkerResponse.error("An unexpected error occurred during processing", exception=e)
+            response = WorkerResponse.error(final_log="An unexpected error occurred during processing", final_log_user="An unexpected error occurred during processing", exception=e)
             self._report_error(response)
             return None
         finally:
             if not interrupted:
-                response = WorkerResponse.ok() if succeeded else (
-                    self._job_failure or WorkerResponse.error("Job failed for an unknown reason"))
+                response = process_response if succeeded else (
+                    self._job_failure or WorkerResponse.error(final_log="Job failed for an unknown reason", final_log_user="Job failed for an unknown reason"))
                 self._job_finished(job, response, job_dir, time.monotonic() - job_started, job_log_file_handler)
             # The job directory outlives on_job_finished, which may read the results.
             if succeeded and self.cleanup_job_dir:
@@ -714,39 +717,6 @@ class DocWorkerWrapper(ABC):
             duration_s: Seconds from leasing the job until now
             job_log_file_handler: File handler of the job-specific log, None if it was not created
         """
-
-    def job_api_logs(self,
-                     job: Job,
-                     response: WorkerResponse,
-                     job_dir: Optional[str],
-                     duration_s: float) -> Tuple[Optional[str], Optional[str]]:
-        """
-        The technical and the user log the API gets with the job when it is finished or failed.
-
-        Returns (None, None) by default; override it e.g. to send a summary of the job. A failed job's
-        logs are appended to the error the wrapper reports.
-
-        Args:
-            job: The job
-            response: WorkerResponse.ok() when the job is about to be marked finished, otherwise the
-                failure it is about to be reported with
-            job_dir: The job's data directory with its results, None if it was not created
-            duration_s: Seconds from leasing the job until now
-
-        Returns:
-            (log, log_user), either of which may be None
-        """
-        return None, None
-
-    def _job_api_logs(self, response: WorkerResponse) -> Tuple[Optional[str], Optional[str]]:
-        if self.current_job is None or self._job_started is None:
-            return None, None
-        try:
-            return self.job_api_logs(self.current_job, response, self._job_dir,
-                                     time.monotonic() - self._job_started)
-        except Exception:
-            logger.exception("job_api_logs failed")
-            return None, None
 
     def _job_finished(self, *args) -> None:
         try:
@@ -831,7 +801,7 @@ class DocWorkerWrapper(ABC):
             log_user: Optional user-friendly log message
             
         Returns:
-            True if lease extended successfully
+            True if the update succeeded or the lease does not require renewal
         """
         if not self.current_job:
             logger.error("No current job to extend lease for")
@@ -854,6 +824,9 @@ class DocWorkerWrapper(ABC):
                 logger.error(f"Failed to update progress and extend lease. Status: {response.status}, Code: {response.code}")
                 return False
         else:
+            if self.current_lease is not None and self.current_lease.lease_expire_at is None:
+                # Progress/log updates still reach the API, but an infinite lease needs no heartbeat.
+                return True
             lease_response = self.adapter.patch_job_lease(self.current_job.id)
             if lease_response.is_success:
                 self.current_lease = lease_response.data

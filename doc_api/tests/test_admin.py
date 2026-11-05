@@ -1,3 +1,4 @@
+from doc_api.api.checkers.job_mail import check_job_notifications
 from doc_api.tests.helpers import assert_route_invariant, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
 from sqlalchemy.ext.asyncio import AsyncSession
 from doc_api.api import file_saving as upload_helpers
@@ -1540,7 +1541,7 @@ async def test_put_job_start_500_unexpected_crud_result(client, admin_headers, m
 
 @pytest.mark.asyncio
 async def test_put_job_start_404_disappeared_before_update(client, admin_headers, job_factory, db_sessions, monkeypatch):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     job_id = await job_factory(ProcessingState.NEW)
     delete_job_before_crud(monkeypatch, db_sessions, job_id, job_readiness, "start_job")
     response = await client.put(f"/debug/jobs/{job_id}/start", headers=admin_headers)
@@ -1550,7 +1551,7 @@ async def test_put_job_start_404_disappeared_before_update(client, admin_headers
 
 @pytest.mark.asyncio
 async def test_put_job_start_409_queued_during_request(client, admin_headers, job_factory, db_sessions, monkeypatch):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     job_id = await job_factory(ProcessingState.NEW)
     original = job_readiness.start_job
     async def queued(**kwargs):
@@ -1601,3 +1602,112 @@ async def test_patch_job_200_current_attempt_logs(client, admin_headers, job_fac
         job = await db.get(model.Job, job_id)
         assert job.log == ["first technical", ("second technical\n" if append_logs else "") + "new technical"]
         assert job.log_user == ["first public", ("second public\n" if append_logs else "") + "new public"]
+
+
+@pytest.mark.asyncio
+async def test_post_keys_201_email_settings(client, admin_headers):
+    response = await client.post('/v1/admin/keys', headers=admin_headers,
+        json={'label': 'email-owner', 'role': 'user', 'email': 'owner@example.com', 'email_notifications': True})
+    assert response.status_code == 201, response.text
+    response = await client.get('/v1/admin/keys', headers=admin_headers)
+    key = next(key for key in response.json()['data'] if key['label'] == 'email-owner')
+    assert key['email'] == 'owner@example.com'
+    assert key['email_notifications'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key_role", ["user"], indirect=True)
+async def test_patch_key_200_email_settings(client, admin_headers, new_key):
+    url = f"/v1/admin/keys/{new_key['label']}"
+    for fields in [{'email': 'owner@example.com', 'email_notifications': True},
+                   {'email_notifications': False}, {'email': None}]:
+        response = await client.patch(url, headers=admin_headers, json=fields)
+        assert response.status_code == 200, response.text
+    response = await client.get('/v1/me', headers={'X-API-Key': new_key['secret']})
+    assert response.json()['data'].get('email') is None
+    assert response.json()['data']['email_notifications'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method,url', [('post', '/v1/admin/keys'), ('patch', '/v1/admin/keys/unknown')])
+async def test_key_422_invalid_email(client, admin_headers, method, url):
+    payload = {'email': 'not-an-email'}
+    if method == 'post':
+        payload.update(label='invalid-email', role='user')
+    response = await getattr(client, method)(url, headers=admin_headers, json=payload)
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_patch_job_200_final_report(client, admin_headers, job_factory, db_sessions, job_mail_outbox):
+    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
+    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
+        json={'state': 'done', 'final_log': 'admin final report'})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.final_log == ['admin final report']
+        assert job.log == ['Technical log']
+    await check_job_notifications()
+    assert len(job_mail_outbox) == 1
+    assert job_mail_outbox[0][2].get_content().strip() == 'admin final report'
+    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
+        json={'final_log': 'corrected report'})
+    assert response.status_code == 200, response.text
+    await check_job_notifications()
+    assert len(job_mail_outbox) == 1
+
+
+@pytest.mark.parametrize('append_logs', [False, True])
+@pytest.mark.asyncio
+async def test_patch_job_200_logs_pad_missing_attempts(client, admin_headers, job_factory, db_sessions, append_logs):
+    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 2
+        job.log = job.log_user = job.final_log = job.final_log_user = None
+    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
+        params={'append_logs': str(append_logs).lower()},
+        json={'log': 'technical progress', 'log_user': 'user progress',
+              'final_log': 'technical final', 'final_log_user': 'user final'})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log == [None, None, 'technical progress']
+        assert job.log_user == [None, None, 'user progress']
+        assert job.final_log == [None, None, 'technical final']
+        assert job.final_log_user == [None, None, 'user final']
+
+
+@pytest.mark.parametrize('state', ['done', 'failed'])
+@pytest.mark.asyncio
+async def test_patch_job_200_concurrent_final_state_no_duplicate_mail(client, admin_headers, job_factory,
+                                                                     db_sessions, job_mail_outbox, monkeypatch, state):
+    from doc_api.api.cruds import admin_cruds
+    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = admin_cruds.update_job
+
+    async def delayed(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(admin_cruds, 'update_job', delayed)
+    request = asyncio.create_task(client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
+        json={'state': state, 'final_log': 'corrected report'}))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            job.state = base_objects.ProcessingState(state)
+            job.final_log = ['already finalized']
+        await check_job_notifications()
+    finally:
+        release.set()
+        response = await request
+    assert response.status_code == 200, response.text
+    await check_job_notifications()
+    assert len(job_mail_outbox) == 1
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).final_log == ['corrected report']

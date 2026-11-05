@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, get_origin, Union, get_args, List, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
 
 
 class ProcessingState(str, enum.Enum):
@@ -182,21 +182,31 @@ class JobProper(BaseModel):
         description="UTC timestamp when the job was finished."
     )
 
-    log_user: Optional[str] = Field(
-        None,
-        examples=["USER log."],
-        description="User-facing log text for the latest attempt; admins receive all attempts joined as text."
-    )
-
     log: Optional[str] = Field(
         None,
-        examples=["ADMIN log."],
-        description=(
-            "Technical log text for the latest attempt; admins receive all attempts joined as text."
-        )
+        examples=["Technical process log."],
+        description="Technical process log for the latest attempt; admins receive all attempts joined as text."
     )
 
-    @field_validator("log", "log_user", mode="before")
+    log_user: Optional[str] = Field(
+        None,
+        examples=["User process log."],
+        description="User-facing process log for the latest attempt; admins receive all attempts joined as text."
+    )
+
+    final_log: Optional[str] = Field(
+        None,
+        examples=["Technical final report."],
+        description="Final technical report for the latest attempt; admins receive all attempts joined as text."
+    )
+
+    final_log_user: Optional[str] = Field(
+        None,
+        examples=["User final report."],
+        description="Final user-facing report for the latest attempt; admins receive all attempts joined as text."
+    )
+
+    @field_validator("log", "log_user", "final_log", "final_log_user", mode="before")
     @classmethod
     def format_attempt_logs(cls, value, info):
         if isinstance(value, list):
@@ -348,6 +358,18 @@ class JobUpdate(BaseModel):
         examples=["Processing page 12 of 58."]
     )
 
+    final_log: Optional[str] = Field(
+        None,
+        examples=["Technical final report."],
+        description="Final technical report for the current attempt; replaces its previous report."
+    )
+
+    final_log_user: Optional[str] = Field(
+        None,
+        examples=["User final report."],
+        description="Final user-facing report for the current attempt; replaces its previous report."
+    )
+
 
 class JobProgressUpdate(BaseModel):
     state: Optional[ProcessingState] = Field(
@@ -382,6 +404,26 @@ class JobProgressUpdate(BaseModel):
         examples=["Processing page 12 of 58."]
     )
 
+    final_log: Optional[str] = Field(
+        None,
+        examples=["Technical final report."],
+        description="Final technical report for the current attempt; replaces its previous report."
+    )
+
+    final_log_user: Optional[str] = Field(
+        None,
+        examples=["User final report."],
+        description="Final user-facing report for the current attempt; replaces its previous report."
+    )
+
+    @model_validator(mode="after")
+    def require_final_state_for_reports(self):
+        if (self.final_log is not None or self.final_log_user is not None) and self.state not in {
+            ProcessingState.DONE, ProcessingState.ERROR, ProcessingState.FAILED,
+        }:
+            raise ValueError("Final reports require a done, error, or failed state update.")
+        return self
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -395,11 +437,12 @@ class JobLease(BaseModel):
         description="Unique identifier of the job whose lease was renewed.",
         examples=["9fdc1a4c-022c-4ba3-9ea4-69dcfeb1b9d3"]
     )
-    lease_expire_at: datetime = Field(
+    lease_expire_at: Optional[datetime] = Field(
         ...,
         description=(
             "UTC timestamp when the job's lease will expire if no further heartbeats are received. "
-            "After this moment, the job may be considered stale and reassigned."
+            "After this moment, the job may be considered stale and reassigned. "
+            "Null means the lease does not expire and heartbeats are not required."
         ),
         examples=["2025-10-18T21:30:00+00:00"]
     )
@@ -456,6 +499,9 @@ class Key(BaseModel):
         examples=["2025-10-20T07:55:10+00:00"],
     )
 
+    email: Optional[EmailStr] = Field(None, description="Address for job notifications.")
+    email_notifications: bool = Field(False, description="Send final job reports to this key’s email address.")
+
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
@@ -471,6 +517,9 @@ class KeyNew(BaseModel):
         examples=[KeyRole.USER.value, KeyRole.WORKER.value, KeyRole.ADMIN.value],
     )
 
+    email: Optional[EmailStr] = Field(None, description="Address for job notifications.")
+    email_notifications: bool = Field(False, description="Send final job reports to this key’s email address.")
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -479,6 +528,8 @@ class KeyUpdate(BaseModel):
     role: Optional[KeyRole] = None
 
     active: Optional[bool] = None
+    email: Optional[EmailStr] = Field(None, description="Address for job notifications; send null to remove the address.")
+    email_notifications: Optional[bool] = None
 
     model_config = ConfigDict(extra="forbid")
 

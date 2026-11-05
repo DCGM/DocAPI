@@ -150,3 +150,69 @@ async def test_upgrade_job_attempt_logs(isolated_database):
         await migrate(engine, "c42d8f1e6a90", downgrade=True)
         async with engine.begin() as db:
             assert (await db.execute(text("SELECT count(*) FROM jobs"))).scalar_one() == len(cases)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_email_and_final_reports(isolated_database):
+    engine = isolated_database.engine
+    await migrate(engine, 'e51a7b3d902c')
+    owner, job_id = uuid4(), uuid4()
+    async with engine.begin() as db:
+        await db.execute(text("""INSERT INTO keys (id, kid, salt, key_hash, label, role, active, created_date)
+            VALUES (:id, 'mail-key', 'salt', 'hash', 'mail-owner', 'USER', true, now())"""), {'id': owner})
+        await db.execute(text("""INSERT INTO jobs (id, owner_key_id, definition, alto_required, page_required,
+            meta_json_required, meta_json_uploaded, state, progress, created_date, last_change, log, image_count)
+            VALUES (:id, :owner, '{}', false, false, false, false, 'DONE', 1, now(), now(), '["process text"]', 0)"""),
+            {'id': job_id, 'owner': owner})
+    await migrate(engine, 'head')
+    async with engine.begin() as db:
+        key = (await db.execute(text('SELECT email, email_notifications FROM keys WHERE id=:id'), {'id': owner})).one()
+        assert key.email is None and key.email_notifications is False
+        job = (await db.execute(text('SELECT log, final_log, final_log_user FROM jobs WHERE id=:id'), {'id': job_id})).one()
+        assert job.log == ['process text']
+        assert job.final_log is None and job.final_log_user is None
+    await migrate(engine, 'e51a7b3d902c', downgrade=True)
+    async with engine.begin() as db:
+        columns = await db.run_sync(lambda conn: {c['name'] for c in inspect(conn).get_columns('keys')})
+        assert not {'email', 'email_notifications'} & columns
+    await migrate(engine, 'head')
+
+
+@pytest.mark.asyncio
+async def test_upgrade_job_notifications(isolated_database):
+    from sqlalchemy import select, delete
+    from sqlalchemy.exc import IntegrityError
+    from doc_api.db import model
+    engine = isolated_database.engine
+    await migrate(engine, 'b43f0a82d713')
+    owner, job_id = uuid4(), uuid4()
+    async with engine.begin() as db:
+        await db.execute(text("""INSERT INTO keys
+            (id, kid, salt, key_hash, label, role, active, created_date, email_notifications)
+            VALUES (:id, 'notification-key', 'salt', 'hash', 'owner', 'USER', true, now(), false)"""), {'id': owner})
+        await db.execute(text("""INSERT INTO jobs (id, owner_key_id, definition, image_count, alto_required,
+            page_required, meta_json_required, meta_json_uploaded, state, progress, created_date, last_change)
+            VALUES (:id, :owner, '{}', 0, false, false, false, false, 'DONE', 1, now(), now())"""),
+            {'id': job_id, 'owner': owner})
+    await migrate(engine, 'head')
+    settings = dict(job_id=job_id, channel='EXTERNAL', recipient='owner@example.com', subject='done', body='report')
+    async with isolated_database.sessions.begin() as db:
+        db.add(model.JobNotification(**settings))
+        await db.flush()
+        with pytest.raises(IntegrityError):
+            async with db.begin_nested():
+                db.add(model.JobNotification(**settings))
+                await db.flush()
+        row = await db.scalar(select(model.JobNotification))
+        assert row.state == 'pending' and row.delivery_attempts == 0
+        assert row.next_attempt_at.tzinfo is not None
+    await migrate(engine, 'b43f0a82d713', downgrade=True)
+    async with engine.begin() as db:
+        assert not await db.run_sync(lambda conn: inspect(conn).has_table('job_notifications'))
+        assert (await db.execute(text('SELECT count(*) FROM jobs'))).scalar_one() == 1
+    await migrate(engine, 'head')
+    async with isolated_database.sessions.begin() as db:
+        db.add(model.JobNotification(**settings))
+        await db.flush()
+        await db.execute(delete(model.Job).where(model.Job.id == job_id))
+        assert await db.scalar(select(model.JobNotification.id)) is None

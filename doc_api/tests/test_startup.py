@@ -248,7 +248,8 @@ async def test_cleanup_task_lifecycle(monkeypatch, test_settings, inputs, output
 
 
 @pytest.mark.asyncio
-async def test_readiness_task_lifecycle(monkeypatch, startup_sessions):
+@pytest.mark.parametrize("checker", ["run_job_readiness_checks", "run_job_lease_checks", "run_job_mail_checks"])
+async def test_background_checker_lifecycle(monkeypatch, startup_sessions, checker):
     started = asyncio.Event()
     stopped = asyncio.Event()
 
@@ -259,7 +260,7 @@ async def test_readiness_task_lifecycle(monkeypatch, startup_sessions):
         finally:
             stopped.set()
 
-    monkeypatch.setattr(main, "run_job_readiness_checks", readiness_task)
+    monkeypatch.setattr(main, checker, readiness_task)
     async with main.lifespan(main.app):
         await asyncio.wait_for(started.wait(), timeout=5)
     assert stopped.is_set()
@@ -267,7 +268,7 @@ async def test_readiness_task_lifecycle(monkeypatch, startup_sessions):
 
 @pytest.mark.asyncio
 async def test_readiness_recovers_jobs_at_startup(monkeypatch, startup_sessions):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     from doc_api.api.schemas.base_objects import ProcessingState
 
     async with main.lifespan(main.app):

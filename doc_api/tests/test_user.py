@@ -24,7 +24,7 @@ from doc_api.api.database import DBError
 
 import pytest
 
-from doc_api.api import cleanup
+from doc_api.api.checkers import cleanup
 from doc_api.tests.helpers import (assert_generated_xml_save, xml_validation_combinations,
                                    assert_multipart_rejected, assert_deletion_timestamps, _ename, _put_file,
                                    OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES,
@@ -248,7 +248,7 @@ async def test_post_job_500_unexpected_crud_result(client, user_headers, engine_
                          ids=lambda values: "-".join(values))
 @pytest.mark.asyncio
 async def test_post_job_201_mixed_input_links(client, user_headers, worker_headers, db_sessions, sources):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     kinds = ["image", "alto", "page"]
     linked = {"name": "linked.jpg", "order": 0,
               **{f"{kind}_url": f"https://source.invalid/linked.{kind}" for kind in kinds}}
@@ -314,7 +314,7 @@ async def test_post_job_422_invalid_input_link(client, user_headers, kind, url):
 @pytest.mark.parametrize("meta_required", [False, True])
 @pytest.mark.asyncio
 async def test_post_job_201_input_links_metadata_requirement(client, user_headers, db_sessions, meta_required):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     payload = {"images": [{"name": "page.jpg", "order": 0, "image_url": "https://source.invalid/page.jpg",
                            "alto_url": "https://source.invalid/unused.xml"}], "meta_json_required": meta_required}
     response = await client.post("/v1/jobs", headers=user_headers, json=payload)
@@ -746,7 +746,7 @@ async def test_get_job_404_disappeared_before_images(client, reader_headers, job
 @pytest.mark.asyncio
 async def test_get_job_200_symmetric_input_links(client, user_headers, readonly_headers, worker_headers,
                                                admin_headers, db_sessions, role, provided):
-    from doc_api.api.job_readiness import queue_ready_jobs
+    from doc_api.api.checkers.job_readiness import queue_ready_jobs
     fields = [f"{kind}_url" for kind in ["image", "alto", "page"]]
     first = {"name": "first.jpg", "order": 0,
              **{field: f"https://files.invalid/{field}" for field, present in zip(fields, provided) if present}}
@@ -1130,7 +1130,7 @@ async def test_put_image_500_commit_failure(client, user_headers, input_upload_c
 @pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 async def test_put_image_201_concurrent_inputs_queue_job(client, user_headers, db_sessions, monkeypatch):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     from doc_api.api import file_saving as file_helpers
 
     response = await client.post("/v1/jobs", headers=user_headers,
@@ -1182,7 +1182,7 @@ async def test_put_image_201_concurrent_inputs_queue_job(client, user_headers, d
 @pytest.mark.parametrize("user_role", ["user", "admin"])
 @pytest.mark.asyncio
 async def test_put_image_201_parallel_input_formats(client, user_headers, db_sessions, monkeypatch):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     from doc_api.api import file_saving as file_helpers
     from doc_api.tests.dummy_data import VALID_ALTO_XML, VALID_PAGE_XML
 
@@ -1249,7 +1249,7 @@ async def test_put_input_409_file_save_in_progress(client, user_headers, input_u
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["queue", "cancel"])
 async def test_put_image_409_state_changed_during_staging(client, user_headers, input_upload_case, db_sessions, monkeypatch, change):
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     from doc_api.api import file_saving as file_helpers
     case = await input_upload_case("image")
     old = b"original image"
@@ -1279,7 +1279,7 @@ async def test_put_image_409_state_changed_during_staging(client, user_headers, 
 @pytest.mark.asyncio
 async def test_put_image_500_restore_before_readiness_unlock(client, user_headers, input_upload_case, db_sessions, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession
-    from doc_api.api import job_readiness
+    from doc_api.api.checkers import job_readiness
     case = await input_upload_case("image")
     old = b"previous image"
     case.path.parent.mkdir(exist_ok=True)
@@ -3472,3 +3472,26 @@ async def test_get_job_200_attempt_logs(client, reader_headers, reader_role, job
             assert job["log"] == "old technical\n\ncurrent technical"
         else:
             assert "log" not in job
+
+
+@pytest.mark.parametrize('reader_role', ['user', 'readonly', 'admin'])
+@pytest.mark.asyncio
+async def test_get_job_200_final_reports(client, reader_headers, reader_role, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.DONE)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 1
+        job.final_log = ['technical first', 'technical last']
+        job.final_log_user = ['user first', 'user last']
+    for url in (f'/v1/jobs/{job_id}', '/v1/jobs'):
+        response = await client.get(url, headers=reader_headers)
+        assert response.status_code == 200, response.text
+        data = response.json()['data']
+        if url == '/v1/jobs':
+            data = next(job for job in data if job['id'] == str(job_id))
+        if reader_role == 'admin':
+            assert data['final_log'] == 'technical first\n\ntechnical last'
+            assert data['final_log_user'] == 'user first\n\nuser last'
+        else:
+            assert 'final_log' not in data
+            assert data['final_log_user'] == 'user last'

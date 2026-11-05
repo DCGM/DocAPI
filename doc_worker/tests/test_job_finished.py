@@ -70,14 +70,14 @@ def test_a_processed_job_is_finished_ok_before_its_directory_is_cleaned_up(tmp_p
 
 def test_a_failed_processing_is_finished_with_its_failure(tmp_path):
     error = ValueError('broken')
-    worker = Worker(tmp_path, process=lambda result_dir: WorkerResponse.error('Processing failed', exception=error),
+    worker = Worker(tmp_path, process=lambda result_dir: WorkerResponse.error(final_log='Processing failed', final_log_user='Processing failed', exception=error),
                     cleanup_job_dir=True)
 
     assert worker.run_job_pipeline() is None
 
     [finished] = worker.finished
     assert finished['response'].status == WorkerResponseStatus.ERROR
-    assert finished['response'].error_message == 'Processing failed'
+    assert finished['response'].final_log_user == 'Processing failed'
     assert finished['response'].exception is error
     assert os.path.exists(finished['job_dir'])
 
@@ -89,7 +89,7 @@ def test_a_failed_download_is_finished_with_its_exception(tmp_path):
     assert worker.run_job_pipeline() is None
 
     [finished] = worker.finished
-    assert finished['response'].error_message == 'Failed to download job data from server'
+    assert finished['response'].final_log_user == 'Failed to download job data from server'
     assert isinstance(finished['response'].exception, ConnectionError)
 
 
@@ -113,42 +113,55 @@ def test_an_interrupted_job_is_released_not_finished(tmp_path):
     worker.adapter.delete_job_lease.assert_called_once()
 
 
-class LoggingWorker(Worker):
-    def job_api_logs(self, job, response, job_dir, duration_s):
-        assert job.id == 'job-1' and os.path.isdir(job_dir) and duration_s >= 0
-        state = 'ok' if response.status == WorkerResponseStatus.OK else response.error_message
-        return f'log {state}', f'user log {state}'
 
-
-def test_a_finished_job_sends_its_logs_with_the_finish(tmp_path):
-    worker = LoggingWorker(tmp_path)
+def test_a_finished_job_sends_its_final_reports(tmp_path):
+    response = WorkerResponse.ok(final_log='technical report', final_log_user='user report')
+    worker = Worker(tmp_path, process=lambda result_dir: response)
 
     worker.run_job_pipeline()
 
-    worker.adapter.patch_job_finish.assert_called_once_with(log='log ok', log_user='user log ok')
+    worker.adapter.patch_job_finish.assert_called_once_with(
+        final_log='technical report', final_log_user='user report')
+    assert worker.finished[0]['response'] is response
 
 
 @pytest.mark.parametrize('status', [WorkerResponseStatus.ERROR, WorkerResponseStatus.FAIL])
-def test_a_failed_job_appends_its_logs_to_the_reported_error(tmp_path, status):
-    response = (WorkerResponse.fail if status == WorkerResponseStatus.FAIL else WorkerResponse.error)('Processing failed')
+def test_an_error_or_failure_sends_separate_final_reports(tmp_path, status):
+    response = (WorkerResponse.fail if status == WorkerResponseStatus.FAIL else WorkerResponse.error)(
+        exception=ValueError('technical details'),
+        final_log='technical report', final_log_user='user report')
     assert response.status == status
-    worker = LoggingWorker(tmp_path, process=lambda result_dir: response)
+    worker = Worker(tmp_path, process=lambda result_dir: response)
 
     worker.run_job_pipeline()
 
     report = worker.adapter.patch_job_fail if status == WorkerResponseStatus.FAIL else worker.adapter.patch_job_error
     other_report = worker.adapter.patch_job_error if status == WorkerResponseStatus.FAIL else worker.adapter.patch_job_fail
     report.assert_called_once_with(
-        log='Processing failed for job job-1\n\nlog Processing failed',
-        log_user='Processing failed\n\nuser log Processing failed', job_id='job-1')
+        final_log='technical report\n\nException: ValueError: technical details',
+        final_log_user='user report', job_id='job-1')
     other_report.assert_not_called()
     worker.adapter.patch_job_finish.assert_not_called()
     assert worker.finished[0]['response'] is response
 
 
-def test_failing_job_logs_leave_the_finish_without_them(tmp_path):
+def test_a_quiet_finished_job_sends_no_final_report(tmp_path):
     worker = Worker(tmp_path)
-    worker.job_api_logs = mock.Mock(side_effect=RuntimeError('logs'))
 
     assert worker.run_job_pipeline().id == 'job-1'
-    worker.adapter.patch_job_finish.assert_called_once_with(log=None, log_user=None)
+    worker.adapter.patch_job_finish.assert_called_once_with(final_log=None, final_log_user=None)
+
+
+@pytest.mark.parametrize('factory', [WorkerResponse.ok, WorkerResponse.error, WorkerResponse.fail])
+@pytest.mark.parametrize('log,log_user', [('technical only', None), (None, 'user only'), (None, None)])
+def test_final_reports_are_explicit_without_fallback(tmp_path, factory, log, log_user):
+    response = factory(final_log=log, final_log_user=log_user)
+    worker = Worker(tmp_path, process=lambda result_dir: response)
+    worker.run_job_pipeline()
+    if response.status == WorkerResponseStatus.OK:
+        report = worker.adapter.patch_job_finish
+        expected = {}
+    else:
+        report = worker.adapter.patch_job_fail if response.status == WorkerResponseStatus.FAIL else worker.adapter.patch_job_error
+        expected = {'job_id': 'job-1'}
+    report.assert_called_once_with(final_log=log, final_log_user=log_user, **expected)

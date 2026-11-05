@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from doc_api.api import job_readiness
+from doc_api.api.checkers import job_readiness
 from doc_api.api.schemas import base_objects
 from doc_api.api.schemas.responses import AppCode
 from doc_api.tests.helpers import _put_file, _ename

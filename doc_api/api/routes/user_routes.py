@@ -251,6 +251,7 @@ async def get_jobs(
             job.pop("artifacts_deleted_at", None)
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
             job.pop("log", None)
+            job.pop("final_log", None)
         data.append(JobWithEngine(**job,
                                   engine_name=db_engine.name if db_engine else None,
                                   engine_version=db_engine.version if db_engine else None,

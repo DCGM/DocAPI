@@ -76,7 +76,7 @@ def test_worker_mixed_source_downloads(tmp_path, failed_kind, monkeypatch):
         assert (tmp_path / "alto" / "page.xml").exists()
         assert (tmp_path / "page_xml" / "page.xml").exists()
     else:
-        assert f"Failed to download {failed_kind if failed_kind == 'image' else failed_kind.upper()}" in result.error_message
+        assert f"Failed to download {failed_kind if failed_kind == 'image' else failed_kind.upper()}" in result.final_log_user
 
 
 @pytest.mark.parametrize("kind", ["image", "alto", "page"])
@@ -131,3 +131,27 @@ def test_worker_external_input_failure(tmp_path, monkeypatch, failure):
     assert result.error_adapter_response is None
     assert get.call_count == 1
     assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("expires", [None, "2026-11-05T12:00:00+00:00"])
+@pytest.mark.parametrize("updates", [{}, {"progress": 0.5}, {"log": "technical"}, {"log_user": "public"}])
+def test_worker_progress_with_non_expiring_lease(tmp_path, expires, updates):
+    worker = InputWorker("https://api.invalid", Mock(), base_dir=str(tmp_path))
+    worker.current_job = SimpleNamespace(id=uuid4())
+    worker.current_lease = SimpleNamespace(lease_expire_at=expires)
+    worker.adapter = Mock()
+    response = SimpleNamespace(is_success=True, data=SimpleNamespace(lease_expire_at=expires))
+    worker.adapter.patch_job_progress_update.return_value = response
+    worker.adapter.patch_job_lease.return_value = response
+    assert worker.update_job_progress(**updates)
+    if updates:
+        worker.adapter.patch_job_progress_update.assert_called_once_with(
+            progress=updates.get('progress'), log=updates.get('log'),
+            log_user=updates.get('log_user'), job_id=worker.current_job.id)
+        worker.adapter.patch_job_lease.assert_not_called()
+    else:
+        worker.adapter.patch_job_progress_update.assert_not_called()
+        if expires is None:
+            worker.adapter.patch_job_lease.assert_not_called()
+        else:
+            worker.adapter.patch_job_lease.assert_called_once_with(worker.current_job.id)

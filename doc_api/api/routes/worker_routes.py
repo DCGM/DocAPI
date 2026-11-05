@@ -61,7 +61,8 @@ async def post_lease(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    db_job, lease_expire_at, server_time, code = await worker_cruds.lease_job_to_worker(db=db, worker_key_id=key.id)
+    db_job, lease_expire_at, server_time, code = await worker_cruds.lease_job_to_worker(
+        db=db, worker_key_id=key.id)
 
     if code == AppCode.JOB_LEASED:
         return DocAPIResponseOK[base_objects.JobLease](

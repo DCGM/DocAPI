@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Tuple, Optional
 from uuid import UUID
 
-from sqlalchemy import select, exc, or_, and_, update, func
+from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.database import DBError
@@ -30,47 +30,11 @@ async def _lock_job_for_worker(db: AsyncSession, job_id: UUID, worker_key_id: Op
 
 
 async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
+    """Claim one queued job without changing other jobs."""
     try:
         async with db.begin():
-            # 1) Retry timed-out or ERROR jobs
             now = datetime.now(timezone.utc)
-            # this has to be aligned with get_new_lease()
-            timeout_threshold = now - timedelta(seconds=config.JOB_TIMEOUT_SECONDS) - timedelta(seconds=config.JOB_TIMEOUT_GRACE_SECONDS)
-            max_attempts_minus_1 = config.JOB_MAX_ATTEMPTS - 1
-
-            previous_attempts = func.coalesce(model.Job.previous_attempts, -1)
-
-            retryable_predicate = or_(
-                and_(
-                    model.Job.state == base_objects.ProcessingState.PROCESSING,
-                    model.Job.last_change < timeout_threshold,
-                ),
-                model.Job.state == base_objects.ProcessingState.ERROR,
-            )
-
-            await db.execute(
-                update(model.Job)
-                .where(retryable_predicate, previous_attempts < max_attempts_minus_1)
-                .values(
-                    state=base_objects.ProcessingState.QUEUED,
-                    worker_key_id=None,
-                    last_change=now,
-                    progress=0.0
-                )
-            )
-
-            await db.execute(
-                update(model.Job)
-                .where(retryable_predicate, previous_attempts >= max_attempts_minus_1)
-                .values(
-                    state=base_objects.ProcessingState.FAILED,
-                    last_change=now,
-                    finished_date=now,
-                    progress=1.0,
-                )
-            )
-
-            # 2) Pick one QUEUED job atomically
+            # Lease recovery is handled by the periodic checker.
             result = await db.execute(
                 select(model.Job)
                 .where(model.Job.state == base_objects.ProcessingState.QUEUED)
@@ -105,10 +69,11 @@ async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple
         raise DBError("Failed leasing job to worker.") from e
 
 
-def get_new_lease(server_time: datetime = None) -> Tuple[datetime, datetime]:
+def get_new_lease(server_time: datetime = None) -> Tuple[Optional[datetime], datetime]:
     if server_time is None:
         server_time = datetime.now(timezone.utc)
-    lease_expire_at = server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+    lease_expire_at = (server_time + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+                       if config.JOB_TIMEOUT_SECONDS > 0 else None)
     return lease_expire_at, server_time
 
 
@@ -227,6 +192,10 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, worker_key_id: 
                     message = getattr(job_progress_update, field)
                     if message:
                         db_job.update_log(field, message)
+                for field in ("final_log", "final_log_user"):
+                    message = getattr(job_progress_update, field)
+                    if message is not None:
+                        db_job.update_log(field, message, append=False)
 
             if job_progress_update.state is None:
                 return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED

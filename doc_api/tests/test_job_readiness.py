@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from doc_api.api import job_readiness
+from doc_api.api.checkers import job_readiness
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import Config, config
 from doc_api.db import model
