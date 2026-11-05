@@ -226,8 +226,8 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
                 if state != ProcessingState.QUEUED:
                     assert job.started_date == old
                     assert job.progress == 0.0
-                    assert job.log.count("ATTEMPT ") == 1
-                    assert job.log_user.count("ATTEMPT ") == 1
+                    assert "".join(entry or "" for entry in (job.log or [])).count("ATTEMPT ") == 1
+                    assert job.log_user == ["User log"] + [None] * job.previous_attempts
             elif state in {ProcessingState.ERROR, ProcessingState.PROCESSING}:
                 assert job.state == ProcessingState.FAILED
                 assert job.previous_attempts == 2
@@ -851,6 +851,29 @@ async def test_get_image_500_unexpected_crud_result(client, worker_headers, down
     assert_route_invariant(response, invariant_errors, code)
 
 
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_image_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0,
+                                                      **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
+                                        "alto_required": True, "page_required": True})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["data"]["id"]
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+    lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    job = await client.get(f"/v1/jobs/{job_id}", headers=worker_headers)
+    image = job.json()["data"]["images"][0]
+    assert image["image_url"] == "https://files.invalid/image"
+    result = await client.get(f"/v1/jobs/{job_id}/images/{image['id']}/files/image", headers=worker_headers)
+    assert result.status_code == 410, result.text
+    assert result.json()["code"] == AppCode.IMAGE_GONE.value
+
+
 #
 # GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 #
@@ -1033,6 +1056,29 @@ async def test_get_alto_500_unexpected_crud_result(client, worker_headers, downl
     assert_route_invariant(response, invariant_errors, code)
 
 
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_alto_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0,
+                                                      **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
+                                        "alto_required": True, "page_required": True})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["data"]["id"]
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+    lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    job = await client.get(f"/v1/jobs/{job_id}", headers=worker_headers)
+    image = job.json()["data"]["images"][0]
+    assert image["alto_url"] == "https://files.invalid/alto"
+    result = await client.get(f"/v1/jobs/{job_id}/images/{image['id']}/files/alto", headers=worker_headers)
+    assert result.status_code == 410, result.text
+    assert result.json()["code"] == AppCode.ALTO_GONE.value
+
+
 #
 # GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 403, 404, 409, 410, 422
 #
@@ -1213,6 +1259,29 @@ async def test_get_page_500_unexpected_crud_result(client, worker_headers, downl
     monkeypatch.setattr(worker_routes.general_cruds, "get_image_for_job", AsyncMock(return_value=(None, code)))
     response = await client.get(case.url, headers=worker_headers)
     assert_route_invariant(response, invariant_errors, code)
+
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_get_page_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0,
+                                                      **{f"{kind}_url": f"https://files.invalid/{kind}" for kind in ["image", "alto", "page"]}}],
+                                        "alto_required": True, "page_required": True})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["data"]["id"]
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+    lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    job = await client.get(f"/v1/jobs/{job_id}", headers=worker_headers)
+    image = job.json()["data"]["images"][0]
+    assert image["page_url"] == "https://files.invalid/page"
+    result = await client.get(f"/v1/jobs/{job_id}/images/{image['id']}/files/page", headers=worker_headers)
+    assert result.status_code == 410, result.text
+    assert result.json()["code"] == AppCode.PAGE_GONE.value
 
 
 #
@@ -2276,8 +2345,8 @@ async def test_patch_job_200_job_marked_failed(client, worker_headers, db_sessio
         assert job.progress == 1.0
         assert job.finished_date >= before
         assert job.last_change == job.finished_date
-        assert job.log == "Technical log\nPermanent error"
-        assert job.log_user == "User log\nCannot process input"
+        assert job.log == ["Technical log\nPermanent error"]
+        assert job.log_user == ["User log\nCannot process input"]
         assert job.previous_attempts == 0
         finished_date = job.finished_date
 
@@ -2287,7 +2356,7 @@ async def test_patch_job_200_job_marked_failed(client, worker_headers, db_sessio
         job = await db.get(model.Job, job_id)
         assert job.state == ProcessingState.FAILED
         assert job.finished_date == finished_date
-        assert job.log == "Technical log\nPermanent error"
+        assert job.log == ["Technical log\nPermanent error"]
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
@@ -2520,8 +2589,8 @@ async def test_patch_job_200_error_during_lease_poll(client, worker_headers, oth
         job = await db.get(model.Job, job_id)
         assert job.state == (ProcessingState.FAILED if exhausted else ProcessingState.PROCESSING)
         assert job.previous_attempts == (2 if exhausted else 1)
-        assert job.log.count("retry race") == 1
-        assert job.log.count("ATTEMPT ") == (0 if exhausted else 1)
+        assert "".join(entry or "" for entry in (job.log or [])).count("retry race") == 1
+        assert "".join(entry or "" for entry in (job.log or [])).count("ATTEMPT ") == (0 if exhausted else 1)
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin"])
@@ -2564,8 +2633,8 @@ async def test_patch_job_200_409_concurrent_error_and_failure(client, worker_hea
             job = await db.get(model.Job, job_id)
             assert job.state == ProcessingState.FAILED and job.progress == 1.0
             assert job.finished_date is not None
-            assert job.log.count("report-failed") == 1
-            assert job.log.count("report-error") == (1 if error.status_code == 200 else 0)
+            assert "".join(entry or "" for entry in (job.log or [])).count("report-failed") == 1
+            assert "".join(entry or "" for entry in (job.log or [])).count("report-error") == (1 if error.status_code == 200 else 0)
         retry = await client.post("/v1/jobs/lease", headers=worker_headers)
         assert retry.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
     finally:
@@ -2600,3 +2669,97 @@ async def test_patch_job_404_disappeared_before_update(client, worker_headers, j
                                    json={"progress": 0.5} if state is None else {"state": state})
     assert response.status_code == 404, response.text
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("state", ["done", "error", "failed"])
+@pytest.mark.asyncio
+async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers, user_headers, readonly_headers,
+                                         job_factory, db_sessions, state):
+    job_id = await job_factory(ProcessingState.QUEUED)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).previous_attempts = None
+    lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log is None and job.log_user is None
+    for message in ["first", "second\n"]:
+        response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                      json={"log": message, "log_user": message})
+        assert response.status_code == 200, response.text
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json={"state": "error"})
+    assert response.status_code == 200, response.text
+    lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log[0] == "first\nsecond\n"
+        assert job.log[1].startswith("ATTEMPT 2 STARTED AT ")
+        assert job.log_user == ["first\nsecond\n", None]
+    # The previous attempt's public messages must not appear while this one is quiet.
+    for headers in [user_headers, readonly_headers]:
+        response = await client.get(f"/v1/jobs/{job_id}", headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["data"].get("log_user") is None
+    if state == "done":
+        (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(b"result")
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers,
+                                  json={"log": "latest technical", "log_user": "latest public", "state": state})
+    assert response.status_code == 200, response.text
+    for headers in [user_headers, readonly_headers, worker_headers, admin_headers]:
+        response = await client.get(f"/v1/jobs/{job_id}", headers=headers)
+        assert response.status_code == 200, response.text
+        job = response.json()["data"]
+        is_admin = headers == admin_headers
+        assert job["log_user"] == ("first\nsecond\n\n\nlatest public" if is_admin else "latest public")
+        if is_admin:
+            assert "ATTEMPT 2 STARTED AT " in job["log"]
+            assert "latest technical" in job["log"] and "first\nsecond\n" in job["log"]
+        listing = await client.get("/v1/jobs", headers=headers)
+        # Workers cannot list jobs; user/readonly/admin must use the same log projection as GET.
+        if headers == user_headers or is_admin:
+            assert listing.status_code == 200, listing.text
+            listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
+            assert listed["log_user"] == job["log_user"]
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.asyncio
+async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, job_factory, db_sessions, attempt):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = attempt
+        job.log = ["previous technical"] * attempt + ["discard technical"]
+        job.log_user = ["previous public"] * attempt + ["discard public"]
+    response = await client.delete(f"/v1/jobs/{job_id}/lease", headers=worker_headers)
+    assert response.status_code == 204, response.text
+    response = await client.post("/v1/jobs/lease", headers=worker_headers)
+    assert response.json()["code"] == AppCode.JOB_LEASED.value
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.previous_attempts == attempt
+        if attempt == 0:
+            assert job.log is None and job.log_user is None
+        else:
+            assert job.log[0] == "previous technical"
+            assert job.log[1].startswith("ATTEMPT 2 STARTED AT ")
+            assert "discard" not in job.log[1]
+            assert job.log_user == ["previous public", None]
+
+
+@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.asyncio
+async def test_patch_job_200_quiet_first_attempt_logs(client, worker_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.QUEUED)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).previous_attempts = None
+    assert (await client.post("/v1/jobs/lease", headers=worker_headers)).json()["code"] == AppCode.JOB_LEASED.value
+    (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(b"result")
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json={"state": "done"})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log is None and job.log_user is None

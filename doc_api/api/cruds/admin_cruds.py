@@ -184,23 +184,10 @@ async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects
             if job_update.finished_date is not None:
                 db_job.finished_date = job_update.finished_date
 
-            if job_update.log is not None:
-                if append_logs:
-                    if db_job.log is None:
-                        db_job.log = job_update.log
-                    else:
-                        db_job.log += f"\n{job_update.log}"
-                else:
-                    db_job.log = job_update.log
-
-            if job_update.log_user is not None:
-                if append_logs:
-                    if db_job.log_user is None:
-                        db_job.log_user = job_update.log_user
-                    else:
-                        db_job.log_user += f"\n{job_update.log_user}"
-                else:
-                    db_job.log_user = job_update.log_user
+            for field in ("log", "log_user"):
+                message = getattr(job_update, field)
+                if message is not None:
+                    db_job.update_log(field, message, append=append_logs)
 
             return AppCode.JOB_UPDATED
 

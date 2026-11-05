@@ -95,15 +95,8 @@ async def lease_job_to_worker(*, db: AsyncSession, worker_key_id: UUID) -> Tuple
 
             lease_expire_at, server_time = get_new_lease(now)
 
-            if db_job.previous_attempts > 0:
-                log_msg = f"\n\n\n\nATTEMPT {db_job.previous_attempts + 1} STARTED AT {now} AFTER TIMEOUT/ERROR.\n\n"
-                if db_job.log is None:
-                    db_job.log = ""
-                db_job.log += log_msg
-                if db_job.log_user is None:
-                    db_job.log_user = ""
-                db_job.log_user += log_msg
-            else:
+            db_job.reset_attempt_logs(now)
+            if db_job.previous_attempts == 0:
                 db_job.started_date = now
 
         return db_job, lease_expire_at, server_time, AppCode.JOB_LEASED
@@ -230,21 +223,10 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, worker_key_id: 
                 update_logs = True
 
             if update_logs:
-                if job_progress_update.log:
-                    if db_job.log:
-                        if not db_job.log.endswith("\n"):
-                            db_job.log += "\n"
-                        db_job.log += job_progress_update.log
-                    else:
-                        db_job.log = job_progress_update.log
-
-                if job_progress_update.log_user:
-                    if db_job.log_user:
-                        if not db_job.log_user.endswith("\n"):
-                            db_job.log_user += "\n"
-                        db_job.log_user += job_progress_update.log_user
-                    else:
-                        db_job.log_user = job_progress_update.log_user
+                for field in ("log", "log_user"):
+                    message = getattr(job_progress_update, field)
+                    if message:
+                        db_job.update_log(field, message)
 
             if job_progress_update.state is None:
                 return db_job, lease_expire_at, server_time, AppCode.JOB_UPDATED

@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
+from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse, WorkerResponseStatus
 
 
 class Worker(DocWorkerWrapper):
@@ -61,7 +61,7 @@ def test_a_processed_job_is_finished_ok_before_its_directory_is_cleaned_up(tmp_p
     assert worker.run_job_pipeline().id == 'job-1'
 
     [finished] = worker.finished
-    assert finished['response'].success
+    assert finished['response'].status == WorkerResponseStatus.OK
     assert finished['job'].id == 'job-1'
     assert finished['results'] == ['metakat.json']
     assert finished['handler'] is not None and finished['duration_s'] >= 0
@@ -70,13 +70,13 @@ def test_a_processed_job_is_finished_ok_before_its_directory_is_cleaned_up(tmp_p
 
 def test_a_failed_processing_is_finished_with_its_failure(tmp_path):
     error = ValueError('broken')
-    worker = Worker(tmp_path, process=lambda result_dir: WorkerResponse.fail('Processing failed', exception=error),
+    worker = Worker(tmp_path, process=lambda result_dir: WorkerResponse.error('Processing failed', exception=error),
                     cleanup_job_dir=True)
 
     assert worker.run_job_pipeline() is None
 
     [finished] = worker.finished
-    assert not finished['response'].success
+    assert finished['response'].status == WorkerResponseStatus.ERROR
     assert finished['response'].error_message == 'Processing failed'
     assert finished['response'].exception is error
     assert os.path.exists(finished['job_dir'])
@@ -116,7 +116,7 @@ def test_an_interrupted_job_is_released_not_finished(tmp_path):
 class LoggingWorker(Worker):
     def job_api_logs(self, job, response, job_dir, duration_s):
         assert job.id == 'job-1' and os.path.isdir(job_dir) and duration_s >= 0
-        state = 'ok' if response.success else response.error_message
+        state = 'ok' if response.status == WorkerResponseStatus.OK else response.error_message
         return f'log {state}', f'user log {state}'
 
 
@@ -128,15 +128,22 @@ def test_a_finished_job_sends_its_logs_with_the_finish(tmp_path):
     worker.adapter.patch_job_finish.assert_called_once_with(log='log ok', log_user='user log ok')
 
 
-def test_a_failed_job_appends_its_logs_to_the_reported_error(tmp_path):
-    worker = LoggingWorker(tmp_path, process=lambda result_dir: WorkerResponse.fail('Processing failed'))
+@pytest.mark.parametrize('status', [WorkerResponseStatus.ERROR, WorkerResponseStatus.FAIL])
+def test_a_failed_job_appends_its_logs_to_the_reported_error(tmp_path, status):
+    response = (WorkerResponse.fail if status == WorkerResponseStatus.FAIL else WorkerResponse.error)('Processing failed')
+    assert response.status == status
+    worker = LoggingWorker(tmp_path, process=lambda result_dir: response)
 
     worker.run_job_pipeline()
 
-    worker.adapter.patch_job_fail.assert_called_once_with(
+    report = worker.adapter.patch_job_fail if status == WorkerResponseStatus.FAIL else worker.adapter.patch_job_error
+    other_report = worker.adapter.patch_job_error if status == WorkerResponseStatus.FAIL else worker.adapter.patch_job_fail
+    report.assert_called_once_with(
         log='Processing failed for job job-1\n\nlog Processing failed',
         log_user='Processing failed\n\nuser log Processing failed', job_id='job-1')
+    other_report.assert_not_called()
     worker.adapter.patch_job_finish.assert_not_called()
+    assert worker.finished[0]['response'] is response
 
 
 def test_failing_job_logs_leave_the_finish_without_them(tmp_path):

@@ -217,6 +217,9 @@ class Config:
                                                     "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
                                                     "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
                                                     "`page_required`, `meta_json_required` must be set to `true`.\n\n"
+                                                    "Each image can supply `image_url`, `alto_url`, and `page_url` for direct worker downloads. "
+                                                    "A required input needs either a URL or a normal upload; missing inputs keep the job in NEW. "
+                                                    "DocAPI stores links without downloading their contents.\n\n"
                                                     "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
                                                     "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.\n\n"
                                                     "Optionally, you can specify `engine_name` to select a specific processing engine. Default engine will be used if not specified.\n\n")
@@ -241,6 +244,23 @@ class Config:
                                                                         "page_required": False,
                                                                         "engine_name": "Engine A",
                                                                     }}})))
+
+        if "JOB_DEFINITION_EXAMPLES" not in os.environ:
+            self.JOB_DEFINITION_EXAMPLES.update({
+                "Linked inputs": {
+                    "summary": "Image and ALTO supplied by URL",
+                    "value": {"images": [{"name": "page.jpg", "order": 0,
+                                           "image_url": "https://files.example.org/page.jpg",
+                                           "alto_url": "https://files.example.org/page.alto.xml"}],
+                              "alto_required": True},
+                },
+                "Mixed inputs": {
+                    "summary": "Linked image with ALTO supplied by normal upload",
+                    "value": {"images": [{"name": "page.jpg", "order": 0,
+                                           "image_url": "https://files.example.org/page.jpg"}],
+                              "alto_required": True},
+                },
+            })
 
         # Meta JSON upload examples for documentation (validation is done only for valid JSON structure, not content)
         self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")

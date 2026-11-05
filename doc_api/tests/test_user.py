@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import subprocess
 import sys
-from itertools import combinations
+from itertools import combinations, product
 import os.path
 import logging
 from datetime import datetime, timedelta, timezone
@@ -240,6 +240,106 @@ async def test_post_job_500_unexpected_crud_result(client, user_headers, engine_
         monkeypatch.setattr(general_routes.general_cruds, "get_engine", AsyncMock(return_value=(None, code)))
     response = await client.post("/v1/jobs", headers=user_headers, json=payload)
     assert_route_invariant(response, invariant_errors, code)
+
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("sources", list(product(["url", "upload", "missing"], repeat=3)),
+                         ids=lambda values: "-".join(values))
+@pytest.mark.asyncio
+async def test_post_job_201_mixed_input_links(client, user_headers, worker_headers, db_sessions, sources):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    kinds = ["image", "alto", "page"]
+    linked = {"name": "linked.jpg", "order": 0,
+              **{f"{kind}_url": f"https://source.invalid/linked.{kind}" for kind in kinds}}
+    mixed = {"name": "mixed.jpg", "order": 1,
+             **{f"{kind}_url": f"https://source.invalid/mixed.{kind}" for kind, source in zip(kinds, sources) if source == "url"}}
+    payload = {"images": [linked, mixed], "alto_required": True, "page_required": True}
+    response = await client.post("/v1/jobs", headers=user_headers, json=payload)
+    assert response.status_code == 201, response.text
+    job_id = UUID(response.json()["data"]["id"])
+    assert not (Path(config.JOBS_DIR) / str(job_id)).exists()
+    async with db_sessions() as db:
+        images, _ = await general_routes.general_cruds.get_job_images(db=db, job_id=job_id)
+        assert len(images) == 2
+        for image in images:
+            assert not image.image_uploaded and not image.alto_uploaded and not image.page_uploaded
+        assert images[0].image_url_provided and images[0].alto_url_provided and images[0].page_url_provided
+        await queue_ready_jobs(db)
+        job = await db.get(model.Job, job_id)
+        assert job.definition == {**payload, "meta_json_required": False, "engine_name": None,
+                                  "engine_version": None, "engine_settings": None,
+                                  "images": [dict(linked), {**mixed, **{f"{kind}_url": None for kind, source in zip(kinds, sources) if source != "url"}}]}
+    for kind, source in zip(kinds, sources):
+        if source == "upload":
+            data = {"image": make_white_image_bytes()[0], "alto": VALID_ALTO_XML, "page": VALID_PAGE_XML}[kind]
+            uploaded = await client.put(f"/v1/jobs/{job_id}/images/mixed.jpg/files/{kind}", headers=user_headers,
+                                         files={"file": (f"input.{kind}", data)})
+            assert uploaded.status_code == 201, uploaded.text
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+        job = await db.get(model.Job, job_id)
+        ready = "missing" not in sources
+        assert job.state == (ProcessingState.QUEUED if ready else ProcessingState.NEW)
+    if ready:
+        lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+        assert lease.json()["code"] == AppCode.JOB_LEASED.value
+        fetched = await client.get(f"/v1/jobs/{job_id}", headers=worker_headers)
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["data"]["images"][0]["alto_url"] == linked["alto_url"]
+    # Fill every missing slot using normal uploads; URLs never set upload flags.
+    for kind, source in zip(kinds, sources):
+        if source == "missing":
+            data = {"image": make_white_image_bytes()[0], "alto": VALID_ALTO_XML, "page": VALID_PAGE_XML}[kind]
+            uploaded = await client.put(f"/v1/jobs/{job_id}/images/mixed.jpg/files/{kind}", headers=user_headers,
+                                         files={"file": (f"input.{kind}", data)})
+            assert uploaded.status_code == 201, uploaded.text
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+        assert (await db.get(model.Job, job_id)).state in {ProcessingState.QUEUED, ProcessingState.PROCESSING}
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("kind", ["image", "alto", "page"])
+@pytest.mark.parametrize("url", ["", "/relative/path", "ftp://source.invalid/file", "file:///tmp/input"])
+@pytest.mark.asyncio
+async def test_post_job_422_invalid_input_link(client, user_headers, kind, url):
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0, f"{kind}_url": url}]})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.parametrize("meta_required", [False, True])
+@pytest.mark.asyncio
+async def test_post_job_201_input_links_metadata_requirement(client, user_headers, db_sessions, meta_required):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    payload = {"images": [{"name": "page.jpg", "order": 0, "image_url": "https://source.invalid/page.jpg",
+                           "alto_url": "https://source.invalid/unused.xml"}], "meta_json_required": meta_required}
+    response = await client.post("/v1/jobs", headers=user_headers, json=payload)
+    assert response.status_code == 201, response.text
+    job_id = UUID(response.json()["data"]["id"])
+    async with db_sessions() as db:
+        await queue_ready_jobs(db)
+        assert (await db.get(model.Job, job_id)).state == (ProcessingState.NEW if meta_required else ProcessingState.QUEUED)
+    if meta_required:
+        uploaded = await client.put(f"/v1/jobs/{job_id}/files/metadata", headers=user_headers, json={"source": "linked"})
+        assert uploaded.status_code == 201, uploaded.text
+        async with db_sessions() as db:
+            await queue_ready_jobs(db)
+            assert (await db.get(model.Job, job_id)).state == ProcessingState.QUEUED
+
+
+
+@pytest.mark.parametrize("user_role", ["user", "admin"])
+@pytest.mark.asyncio
+async def test_post_job_201_preserves_input_link(client, user_headers):
+    url = "https://files.invalid/a%2Fb.jpg?signature=a%2Fb%3D&token=" + "x" * 5000
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0, "image_url": url}]})
+    assert response.status_code == 201, response.text
+    assert response.json()["data"]["images"][0]["image_url"] == url
 
 
 #
@@ -638,6 +738,46 @@ async def test_get_job_404_disappeared_before_images(client, reader_headers, job
     response = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
     assert response.status_code == 404, response.text
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
+
+
+
+@pytest.mark.parametrize("role", ["user", "readonly", "worker", "admin"])
+@pytest.mark.parametrize("provided", list(product([False, True], repeat=3)))
+@pytest.mark.asyncio
+async def test_get_job_200_symmetric_input_links(client, user_headers, readonly_headers, worker_headers,
+                                               admin_headers, db_sessions, role, provided):
+    from doc_api.api.job_readiness import queue_ready_jobs
+    fields = [f"{kind}_url" for kind in ["image", "alto", "page"]]
+    first = {"name": "first.jpg", "order": 0,
+             **{field: f"https://files.invalid/{field}" for field, present in zip(fields, provided) if present}}
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [first, {"name": "second.jpg", "order": 1}]})
+    assert response.status_code == 201, response.text
+    created = response.json()["data"]
+    for image in created["images"]:
+        for field, present in zip(fields, provided):
+            assert (field in image) == present
+            if present:
+                assert image[field] == (first[field] if image["name"] == "first.jpg" else None)
+    job_id = created["id"]
+    for name in ["first.jpg", "second.jpg"]:
+        result = await client.put(f"/v1/jobs/{job_id}/images/{name}/files/image", headers=user_headers,
+                                   files={"file": (name, make_white_image_bytes()[0])})
+        assert result.status_code == 201, result.text
+    if role == "worker":
+        async with db_sessions() as db:
+            await queue_ready_jobs(db)
+        lease = await client.post("/v1/jobs/lease", headers=worker_headers)
+        assert lease.json()["code"] == AppCode.JOB_LEASED.value
+    headers = {"user": user_headers, "readonly": readonly_headers, "worker": worker_headers, "admin": admin_headers}[role]
+    fetched = await client.get(f"/v1/jobs/{job_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    for image in fetched.json()["data"]["images"]:
+        for field, present in zip(fields, provided):
+            assert (field in image) == present
+            assert f"{field}_provided" not in image
+            if present:
+                assert image[field] == (first[field] if image["name"] == "first.jpg" else None)
 
 
 #
@@ -3309,3 +3449,26 @@ async def test_head_documentation_200_public_pages(client, path):
     response = await client.head(path)
     assert response.status_code == 200, response.text
     assert not response.content
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin"])
+@pytest.mark.parametrize("latest", [None, "current public"])
+@pytest.mark.asyncio
+async def test_get_job_200_attempt_logs(client, reader_headers, reader_role, job_factory, db_sessions, latest):
+    job_id = await job_factory(ProcessingState.DONE)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 1
+        job.log = ["old technical", "current technical"]
+        job.log_user = ["old public", latest]
+    detail = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
+    listing = await client.get("/v1/jobs", headers=reader_headers)
+    assert detail.status_code == listing.status_code == 200
+    listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
+    expected = "old public" + ("\n\n" + latest if latest is not None else "") if reader_role == "admin" else latest
+    for job in [detail.json()["data"], listed]:
+        assert job.get("log_user") == expected
+        if reader_role == "admin":
+            assert job["log"] == "old technical\n\ncurrent technical"
+        else:
+            assert "log" not in job

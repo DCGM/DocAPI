@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, get_origin, Union, get_args, List, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
 class ProcessingState(str, enum.Enum):
@@ -59,6 +59,22 @@ class Image(BaseModel):
         examples=[False],
         description="Indicates whether the corresponding PAGE XML file has been uploaded."
     )
+
+    image_url: Optional[str] = Field(None, description="Image download URL for direct worker access.")
+    alto_url: Optional[str] = Field(None, description="ALTO XML download URL for direct worker access.")
+    page_url: Optional[str] = Field(None, description="PAGE XML download URL for direct worker access.")
+
+    @model_serializer(mode="wrap")
+    def serialize_input_urls(self, serialize):
+        data = serialize(self)
+        # URL keys are supplied together for the whole job during enrichment.
+        # Preserve explicit nulls even when the user response omits other nulls.
+        for field in ("image_url", "alto_url", "page_url"):
+            if field in self.model_fields_set:
+                data[field] = getattr(self, field)
+            else:
+                data.pop(field, None)
+        return data
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
@@ -169,18 +185,25 @@ class JobProper(BaseModel):
     log_user: Optional[str] = Field(
         None,
         examples=["USER log."],
-        description="User facing log message displayed in the interface. "
-                    "Helps indicate current processing step or progress in human-readable form."
+        description="User-facing log text for the latest attempt; admins receive all attempts joined as text."
     )
 
     log: Optional[str] = Field(
         None,
         examples=["ADMIN log."],
         description=(
-            "Technical or debug log text appended to the internal system log. "
-            "Used for diagnostics or backend monitoring."
+            "Technical log text for the latest attempt; admins receive all attempts joined as text."
         )
     )
+
+    @field_validator("log", "log_user", mode="before")
+    @classmethod
+    def format_attempt_logs(cls, value, info):
+        if isinstance(value, list):
+            if (info.context or {}).get("all_attempt_logs", False):
+                return "\n\n".join(entry for entry in value if entry is not None) or None
+            return value[-1] if value else None
+        return value
 
     inputs_deleted_at: Optional[datetime] = Field(
         None, description="UTC time input cleanup removed files or detected their absence."
@@ -311,8 +334,7 @@ class JobUpdate(BaseModel):
     log: Optional[str] = Field(
         None,
         description=(
-            "Technical or debug log text appended to the internal system log. "
-            "Used for diagnostics or backend monitoring."
+            "Technical log text for the current attempt."
         ),
         examples=["Loaded 500 image tiles and initialized OCR engine."]
     )
@@ -346,8 +368,7 @@ class JobProgressUpdate(BaseModel):
     log: Optional[str] = Field(
         None,
         description=(
-            "Technical or debug log text appended to the internal system log. "
-            "Used for diagnostics or backend monitoring."
+            "Technical log text for the current attempt."
         ),
         examples=["Loaded 500 image tiles and initialized OCR engine."]
     )

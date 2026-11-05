@@ -1444,8 +1444,8 @@ async def test_patch_job_200_force_update(client, admin_headers, job_factory, db
             assert getattr(job, field) == fields[field]
         for field in ["created_date", "started_date", "last_change", "finished_date"]:
             assert getattr(job, field).isoformat() == now
-        assert job.log == ("Technical log\nadmin" if append_logs else "admin")
-        assert job.log_user == ("User log\nuser" if append_logs else "user")
+        assert job.log == ["Technical log", None, "admin"]
+        assert job.log_user == ["User log", None, "user"]
 
 
 @pytest.mark.asyncio
@@ -1582,3 +1582,22 @@ async def test_get_engines_200_admin_filters(client, admin_headers, engine_facto
     for engine in response.json()["data"]:
         assert engine["id"] is not None
         assert engine["definition"] == {"type": "test"}
+
+
+@pytest.mark.parametrize("append_logs", [True, False])
+@pytest.mark.asyncio
+async def test_patch_job_200_current_attempt_logs(client, admin_headers, job_factory, db_sessions, append_logs):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 1
+        job.log = ["first technical", "second technical"]
+        job.log_user = ["first public", "second public"]
+    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers,
+                                  params={"append_logs": str(append_logs).lower()},
+                                  json={"log": "new technical", "log_user": "new public"})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log == ["first technical", ("second technical\n" if append_logs else "") + "new technical"]
+        assert job.log_user == ["first public", ("second public\n" if append_logs else "") + "new public"]

@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -270,3 +270,27 @@ async def test_cleanup_skips_locked_and_requeued_jobs(db_sessions, input_storage
     async with db_sessions() as db:
         await cleanup.delete_completed_job_inputs(db)
     assert path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delete_records", [False, True])
+async def test_cleanup_linked_inputs(client, user_headers, db_sessions, input_storage, monkeypatch, delete_records):
+    monkeypatch.setattr(config, "DELETE_JOB_IMAGE_RECORDS_WITH_INPUTS", delete_records)
+    url = "https://files.invalid/linked.jpg"
+    response = await client.post("/v1/jobs", headers=user_headers,
+                                  json={"images": [{"name": "page.jpg", "order": 0, "image_url": url}]})
+    assert response.status_code == 201, response.text
+    job_id = UUID(response.json()["data"]["id"])
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, job_id)).state = ProcessingState.DONE
+    async with db_sessions() as db:
+        await cleanup.delete_completed_job_inputs(db)
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.inputs_deleted_at is not None
+        assert job.image_count == 1
+        assert job.definition["images"][0]["image_url"] == url
+        images = list(await db.scalars(select(model.Image).where(model.Image.job_id == job_id)))
+        assert len(images) == (0 if delete_records else 1)
+        if images:
+            assert images[0].image_url_provided and not images[0].image_uploaded
