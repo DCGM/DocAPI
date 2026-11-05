@@ -155,3 +155,29 @@ def test_worker_progress_with_non_expiring_lease(tmp_path, expires, updates):
             worker.adapter.patch_job_lease.assert_not_called()
         else:
             worker.adapter.patch_job_lease.assert_called_once_with(worker.current_job.id)
+
+
+def test_worker_engine_download_always_streams(tmp_path):
+    import io
+    import zipfile
+    from datetime import datetime, timezone
+    worker = InputWorker("http://test", Mock(), base_dir=str(tmp_path))
+    worker.current_job = SimpleNamespace(engine_id=uuid4(), engine_files_updated=datetime.now(timezone.utc))
+    worker.adapter = Mock()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("model.txt", "engine data")
+    payload = archive.getvalue()
+    def download(*, engine_id, output_path):
+        from pathlib import Path
+        Path(output_path).write_bytes(payload)
+        return AdapterResponse(status=200, no_data_response=True)
+    worker.adapter.get_engine_files_stream.side_effect = download
+    worker.adapter.get_engine_files.side_effect = AssertionError("Worker must not buffer engine ZIPs")
+    result = worker._check_and_download_engine_files()
+    assert result.status == WorkerResponseStatus.OK
+    engine_dir = next((tmp_path / "engines").iterdir())
+    assert (engine_dir / "model.txt").read_text() == "engine data"
+    assert not (engine_dir / "engine.zip").exists()
+    worker.adapter.get_engine_files_stream.assert_called_once()
+    worker.adapter.get_engine_files.assert_not_called()
