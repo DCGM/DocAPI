@@ -227,6 +227,44 @@ class Config:
                 raise ValueError(f"{setting} must be a positive integer")
 
         # =============================================================================
+        # Secret masking
+        # =============================================================================
+
+        # Engine settings and job logs shown to user/readonly keys, logged
+        # exceptions and the emails chosen below are masked; admin and worker keys
+        # and stored data are not. false turns masking off, except for
+        # SECRET_MASKING_PARTIAL_KEYS.
+        self.SECRET_MASKING = self._env_bool("SECRET_MASKING", True)
+        # Keys whose names contain key, secret, token, password, passwd,
+        # credential, auth, cookie, session or private are secret. Comma-separated
+        # exact key names that only look secret, e.g. api_key_env,max_tokens,author.
+        # Case-insensitive; "-" matches "_". Empty by default.
+        self.SECRET_MASKING_ALLOWED_KEYS = [
+            name.strip() for name in os.getenv("SECRET_MASKING_ALLOWED_KEYS", "").split(",")
+            if name.strip()
+        ]
+        # Also mask long random-looking tokens in text; hashes and ids may be hidden too.
+        self.SECRET_MASKING_HIGH_ENTROPY = self._env_bool("SECRET_MASKING_HIGH_ENTROPY", False)
+        # Replaces every secret, whatever its length; empty means the default.
+        self.SECRET_MASKING_MASK = os.getenv("SECRET_MASKING_MASK") or "*****"
+        # Comma-separated exact key names whose values are revealed partly, e.g.
+        # sk-proj-*****wxyz, to tell which API key a job used. They override the
+        # rest: masked this way even if they do not look secret and even with
+        # SECRET_MASKING off. Values shorter than twice START + END are masked fully.
+        self.SECRET_MASKING_PARTIAL_KEYS = [
+            name.strip() for name in os.getenv("SECRET_MASKING_PARTIAL_KEYS", "").split(",")
+            if name.strip()
+        ]
+        # Characters kept at the start and end of partly revealed values.
+        self.SECRET_MASKING_PARTIAL_START = max(int(os.getenv("SECRET_MASKING_PARTIAL_START", "8")), 0)
+        self.SECRET_MASKING_PARTIAL_END = max(int(os.getenv("SECRET_MASKING_PARTIAL_END", "4")), 0)
+        # Mask emails before sending: internal ones (server errors, admin job
+        # reports) and external ones (user job reports). External reports are
+        # sent as the worker wrote them by default.
+        self.SECRET_MASKING_INTERNAL_MAIL = self._env_bool("SECRET_MASKING_INTERNAL_MAIL", True)
+        self.SECRET_MASKING_EXTERNAL_MAIL = self._env_bool("SECRET_MASKING_EXTERNAL_MAIL", False)
+
+        # =============================================================================
         # Logging
         # =============================================================================
 
@@ -242,11 +280,20 @@ class Config:
                     'format': '%(asctime)s : %(name)s : %(hostname)s : %(levelname)s : %(message)s'
                 }
             },
+            # Masks the message and traceback of exception records these handlers
+            # write, third-party loggers included; other records are unchanged.
+            # Follows SECRET_MASKING.
+            'filters': {
+                'mask_secrets': {
+                    '()': 'doc_api.tools.secrets.SecretMaskingFilter'
+                }
+            },
             'handlers': {
                 'console': {
                     'class': 'logging.StreamHandler',
                     'level': self.LOGGING_CONSOLE_LEVEL,
                     'formatter': 'base',
+                    'filters': ['mask_secrets'],
                     'stream': 'ext://sys.stdout'
                 },
                 'file_log': {
@@ -255,6 +302,7 @@ class Config:
                     'when': 'midnight',
                     'utc': True,
                     'formatter': 'base',
+                    'filters': ['mask_secrets'],
                     'filename': os.path.join(self.LOGGING_DIR, f'server.log')
                 }
             },
