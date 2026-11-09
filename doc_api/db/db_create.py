@@ -56,7 +56,9 @@ async def create_database_if_does_not_exist():
             else:
                 logger.info(f"Database '{db_name}' exists.")
     except:
-        logger.error(f"Error while connecting to the database server using '{root_url}' or when creating database '{db_name}'. Please check the database connection settings.")
+        # The password is never logged; SQLAlchemy renders it as ***.
+        shown_url = url.set(database="postgres").render_as_string(hide_password=True)
+        logger.error(f"Error while connecting to the database server using '{shown_url}' or when creating database '{db_name}'. Please check the database connection settings.")
         raise
     finally:
         # Ensure everything is torn down before the loop ends

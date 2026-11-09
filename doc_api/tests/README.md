@@ -772,6 +772,47 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 - [x] mail checker recovers after failure. [`test_job_mail.py::test_mail_checker_recovers_after_failure`](test_job_mail.py).
 - [x] upgrade job notifications. [`test_migrations.py::test_upgrade_job_notifications`](test_migrations.py).
 
+### Secret masking
+
+`doc_api.tools.secrets` masks values under secret-looking keys at any depth and
+known secret patterns in free text. User/readonly responses show masked engine
+settings and job logs; admin and worker responses keep the real values, for jobs
+and debugging. Logged exceptions are masked too. Masking happens in the server
+routes and checkers, not the shared schemas. Stored data is never changed.
+
+- `SECRET_MASKING` turns masking off.
+- `SECRET_MASKING_ALLOWED_KEYS` (empty by default) lists key names that only look secret.
+- `SECRET_MASKING_MASK` (`*****` by default) replaces each secret.
+- `SECRET_MASKING_PARTIAL_KEYS` (empty by default) lists keys whose values keep
+  their start and end visible, overriding everything else.
+- `SECRET_MASKING_INTERNAL_MAIL` (on: server errors, admin job reports) and
+  `SECRET_MASKING_EXTERNAL_MAIL` (off: user job reports) choose which emails are
+  masked before sending.
+
+- [x] nested keys, subtrees and unchanged input. [`test_secret_masking.py::test_mask_secrets_in_struct_nested_keys_and_subtrees`](test_secret_masking.py).
+- [x] allowlist, empty by default. [`test_secret_masking.py::test_mask_secrets_in_struct_allowlist`](test_secret_masking.py).
+- [x] token shapes, URL credentials and key/value pairs in free text. [`test_secret_masking.py::test_mask_secrets_in_text_patterns`](test_secret_masking.py).
+- [x] DocAPI keys are recognized by the configured `KEY_PREFIX`. [`test_secret_masking.py::test_mask_secrets_in_text_uses_configured_key_prefix`](test_secret_masking.py).
+- [x] partial keys reveal the start and end of a value in structures. [`test_secret_masking.py::test_partial_keys_in_struct`](test_secret_masking.py).
+- [x] partial keys in free text. [`test_secret_masking.py::test_partial_keys_in_text`](test_secret_masking.py).
+- [x] partial keys apply with masking turned off. [`test_secret_masking.py::test_partial_keys_apply_with_masking_disabled`](test_secret_masking.py).
+- [x] configurable mask. [`test_secret_masking.py::test_custom_mask`](test_secret_masking.py).
+- [x] optional high-entropy switch. [`test_secret_masking.py::test_mask_secrets_in_text_high_entropy_switch`](test_secret_masking.py).
+- [x] server log handlers carry the masking filter. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
+- [x] only exception records are masked, traceback included. [`test_secret_masking.py::test_logging_masks_only_exceptions`](test_secret_masking.py).
+- [x] unhandled errors mask the logged URL and the error mail. [`test_secret_masking.py::test_unhandled_error_masks_url_and_mail`](test_secret_masking.py).
+- [x] masking can be disabled. [`test_secret_masking.py::test_masking_can_be_disabled`](test_secret_masking.py).
+- [x] settings from the environment. [`test_secret_masking.py::test_masking_configuration`](test_secret_masking.py).
+- [x] job report mail masking by default: internal on, external off. [`test_secret_masking.py::test_job_report_mail_masking_defaults_per_channel`](test_secret_masking.py).
+- [x] job report mail masking switches per channel. [`test_secret_masking.py::test_job_report_mail_masking_per_channel_switch`](test_secret_masking.py).
+- [x] server error mail unmasked with internal mail masking off; the log stays masked. [`test_secret_masking.py::test_unhandled_error_mail_unmasked_when_internal_mail_masking_off`](test_secret_masking.py).
+- [x] job report mail subject and body. [`test_secret_masking.py::test_job_report_mail_is_masked`](test_secret_masking.py).
+- [x] engine settings and job logs by role; storage intact. [`test_secret_masking.py::test_get_job_200_engine_settings_masked_for_readers`](test_secret_masking.py).
+- [x] engine settings and job logs with partial keys by role. [`test_secret_masking.py::test_get_job_200_partial_keys_revealed_partly`](test_secret_masking.py).
+- [x] validation errors echoing input. [`test_secret_masking.py::test_post_job_422_masks_echoed_input`](test_secret_masking.py).
+- [x] workers and clients never load masking. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
+- [x] the database password is never logged. [`test_secret_masking.py::test_database_password_is_never_logged`](test_secret_masking.py).
+
 ### Alembic migrations
 
 Migration coverage includes cleanup timestamps, image-count backfill, and the

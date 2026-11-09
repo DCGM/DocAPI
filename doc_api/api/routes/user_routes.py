@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.guards.general_guards import challenge_job_exists, require_job_record
 from doc_api.api.routes import root_router
-from doc_api.api.routes.general_routes import prepare_job_data, result_availability
+from doc_api.api.routes.general_routes import prepare_job_data, result_availability, displayed_engine_settings, \
+    mask_job_logs
 from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.file_saving import file_save_transaction
 from doc_api.api.guards.user_guards import challenge_user_access_to_new_job, challenge_user_access_to_job
@@ -246,6 +247,7 @@ async def get_jobs(
             continue
         job = base_objects.JobProper.model_validate(
             db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
+        mask_job_logs(job, key)
         job["result_available"] = availability[db_job.id]
         if key.role != base_objects.KeyRole.ADMIN:
             job.pop("artifacts_deleted_at", None)
@@ -255,7 +257,7 @@ async def get_jobs(
         data.append(JobWithEngine(**job,
                                   engine_name=db_engine.name if db_engine else None,
                                   engine_version=db_engine.version if db_engine else None,
-                                  engine_settings=db_job.definition.get("engine_settings", None)))
+                                  engine_settings=displayed_engine_settings(db_job, key)))
 
     return validate_ok_response(DocAPIResponseOK[List[base_objects.JobWithEngine]](
         status=status.HTTP_200_OK,

@@ -19,6 +19,7 @@ from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import config
 from doc_api.db import model
 from doc_api.tools.mail.mail_sender import MailSender
+from doc_api.tools.secrets import mask_secrets_in_text
 
 logger = logging.getLogger(__name__)
 _flood_lock = Lock()
@@ -107,7 +108,12 @@ def send_final_report(mail: JobMail) -> bool | None:
             sender_name=getattr(config, f"{mail.channel}_MAIL_SENDER_NAME"),
             password=getattr(config, f"{mail.channel}_MAIL_PASSWORD"),
         )
-        return sender.send(mail.subject, mail.body, recipients)
+        # Workers are expected to write reports fit to send; masking is opt-in
+        # per channel, SECRET_MASKING_INTERNAL_MAIL / SECRET_MASKING_EXTERNAL_MAIL.
+        subject, body = mail.subject, mail.body
+        if getattr(config, f"SECRET_MASKING_{mail.channel}_MAIL"):
+            subject, body = mask_secrets_in_text(subject), mask_secrets_in_text(body)
+        return sender.send(subject, body, recipients)
     except Exception:
         logger.exception("Failed preparing job notification %r", mail.subject)
         return False

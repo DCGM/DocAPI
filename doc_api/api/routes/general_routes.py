@@ -28,6 +28,7 @@ from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, Do
 
 from doc_api.db import model
 from doc_api.config import config
+from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from uuid import UUID
 
 
@@ -223,9 +224,35 @@ async def result_availability(jobs):
     return await asyncio.to_thread(check)
 
 
+# Roles that read engine settings and job logs unmasked.
+UNMASKED_ROLES = {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}
+
+
+def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dict]:
+    """Admins and workers need the real settings to run jobs; owners and readers
+    see them masked, even though the secrets are their own."""
+    engine_settings = db_job.definition.get("engine_settings", None)
+    if key.role in UNMASKED_ROLES:
+        return engine_settings
+    return mask_secrets_in_struct(engine_settings)
+
+
+def mask_job_logs(job: dict, key: model.Key) -> dict:
+    """Workers write free text, e.g. tracebacks or config dumps. Admins read the
+    logs as they are, for debugging, and workers wrote them; owners and readers
+    see them masked. Stored logs stay intact."""
+    if key.role in UNMASKED_ROLES:
+        return job
+    for field in ("log", "log_user", "final_log", "final_log_user"):
+        if job.get(field) is not None:
+            job[field] = mask_secrets_in_text(job[field])
+    return job
+
+
 async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
     job = base_objects.JobProper.model_validate(
         db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
+    mask_job_logs(job, key)
     job["result_available"] = (await result_availability([db_job]))[db_job.id]
     if key.role != base_objects.KeyRole.ADMIN:
         job.pop("artifacts_deleted_at", None)
@@ -258,13 +285,11 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
             engine_id = None
             engine_definition = None
             engine_files_updated = None
-        logger.info("Engine settings: ")
-        logger.info(db_job.definition.get("engine_settings", None))
         data = base_objects.Job(**job,
                                 images=images,
                                 engine_name=db_engine.name,
                                 engine_version=db_engine.version,
-                                engine_settings=db_job.definition.get("engine_settings", None),
+                                engine_settings=displayed_engine_settings(db_job, key),
                                 engine_id=engine_id,
                                 engine_files_updated=engine_files_updated,
                                 engine_definition=engine_definition)

@@ -33,6 +33,7 @@ from doc_api.api.schemas.responses import AppCode, validate_server_error_respons
     DETAILS_GENERAL, make_responses
 from doc_api.config import config
 from doc_api.tools.mail.mail_logger import get_internal_mail_logger
+from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from doc_api.db import model
 
 
@@ -275,23 +276,31 @@ async def validation_handler(_: Request, exc: RequestValidationError):
         detail=VALIDATION_RESPONSE[AppCode.REQUEST_VALIDATION_ERROR]["detail"],
         # UploadFile/type validators can include exception objects in ctx.
         # Preserve their messages without turning a client error into a 500.
-        details=jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
+        # Errors echo the submitted input, which may hold secrets.
+        details=mask_secrets_in_struct(jsonable_encoder(exc.errors(), custom_encoder={Exception: str}))
     )
     return validate_client_error_response(payload)
 
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
     # last resort: 500 with generic app code, exact info logged (optionally emailed to admins)
+    # The URL and the error may echo what the client sent, secrets included. The
+    # logged exception is masked by the log handlers' filter; the URL line is
+    # plain text and is masked here, and so is the mail if
+    # SECRET_MASKING_INTERNAL_MAIL is on.
+    url = mask_secrets_in_text(str(request.url))
     if config.INTERNAL_MAIL_SERVER is not None:
         subject = config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
             server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME)
-        internal_mail_logger.critical(f'URL: {request.url}\n'
-                                      f'METHOD: {request.method}\n'
-                                      f'CLIENT: {request.client}\n\n'
-                                      f'ERROR: {exc}\n\n'
-                                      f'{traceback.format_exc()}',
-                                      extra={'subject': " ".join(subject.splitlines())})
-    exception_logger.error(f'URL: {request.url}')
+        body = (f'URL: {request.url}\n'
+                f'METHOD: {request.method}\n'
+                f'CLIENT: {request.client}\n\n'
+                f'ERROR: {exc}\n\n'
+                f'{traceback.format_exc()}')
+        if config.SECRET_MASKING_INTERNAL_MAIL:
+            body = mask_secrets_in_text(body)
+        internal_mail_logger.critical(body, extra={'subject': " ".join(subject.splitlines())})
+    exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
     return validate_server_error_response(DocAPIResponseServerError(
