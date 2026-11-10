@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
-from sqlalchemy import ForeignKey, DateTime, Text, UniqueConstraint, Index
+from sqlalchemy import ForeignKey, DateTime, Text, UniqueConstraint, Index, CheckConstraint
 from sqlalchemy.types import String
 
 from datetime import datetime, timezone
@@ -167,3 +167,12 @@ class JobNotification(Base):
     claim_token: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DatabaseMetadata(Base):
+    __tablename__ = "database_metadata"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_database_metadata_singleton"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    git_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    migrated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

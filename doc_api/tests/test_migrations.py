@@ -216,3 +216,35 @@ async def test_upgrade_job_notifications(isolated_database):
         await db.flush()
         await db.execute(delete(model.Job).where(model.Job.id == job_id))
         assert await db.scalar(select(model.JobNotification.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_upgrade_database_metadata(isolated_database, monkeypatch):
+    from doc_api.config import config
+    from doc_api.db.migration_metadata import get_migration_metadata
+    from sqlalchemy.exc import IntegrityError
+    engine = isolated_database.engine
+    await migrate(engine, "c43a1b93e824")
+    async with engine.connect() as db:
+        assert await db.run_sync(get_migration_metadata) is None
+    monkeypatch.setattr(config, "APP_GIT_COMMIT", None)
+    await migrate(engine, "head")
+    async with engine.begin() as db:
+        unknown = dict(await db.run_sync(get_migration_metadata))
+        assert unknown["git_commit"] is None
+        assert unknown["migrated_at"].tzinfo is not None
+        with pytest.raises(IntegrityError):
+            async with db.begin_nested():
+                await db.execute(text("INSERT INTO database_metadata (id) VALUES (2)"))
+    monkeypatch.setattr(config, "APP_GIT_COMMIT", "a" * 40)
+    await migrate(engine, "head")  # A no-op Alembic command does not start a new API build.
+    async with engine.connect() as db:
+        assert dict(await db.run_sync(get_migration_metadata)) == unknown
+    await migrate(engine, "c43a1b93e824", downgrade=True)
+    async with engine.connect() as db:
+        assert await db.run_sync(get_migration_metadata) is None
+    await migrate(engine, "head")
+    async with engine.connect() as db:
+        metadata = await db.run_sync(get_migration_metadata)
+        assert metadata["git_commit"] == "a" * 40
+        assert metadata["migrated_at"] >= unknown["migrated_at"]

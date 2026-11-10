@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 # Database-backed tests require an explicit PostgreSQL maintenance connection.
 # Only uniquely named databases created here are migrated or dropped.
 @pytest_asyncio.fixture
-async def isolated_database():
+async def isolated_database(monkeypatch):
+    # Deployment commit pinning must not affect disposable test databases.
+    monkeypatch.setattr(config, "DATABASE_REQUIRE_MATCHING_COMMIT", False)
+    monkeypatch.setattr(config, "DATABASE_ALLOW_COMMIT_UPDATE", True)
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("Set TEST_DATABASE_URL to run isolated PostgreSQL tests (see tests/README.md)")

@@ -4,6 +4,35 @@ import logging
 import time
 import socket
 from string import Formatter
+from pathlib import Path
+import re
+import subprocess
+
+COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
+
+
+def resolve_git_commit() -> str | None:
+    """Honor build metadata, otherwise resolve this source checkout once at startup."""
+    commit = os.getenv("APP_GIT_COMMIT", "").strip()
+    if commit:
+        if not COMMIT_PATTERN.fullmatch(commit):
+            raise ValueError("APP_GIT_COMMIT must be a hexadecimal Git commit hash (7–64 characters)")
+        return commit
+
+    root = Path(__file__).resolve().parents[1]
+    if not (root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                check=True, capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    if not COMMIT_PATTERN.fullmatch(commit):
+        return None
+    os.environ["APP_GIT_COMMIT"] = commit
+    return commit
+
 
 class DocAPIFormatter(logging.Formatter):
     converter = time.gmtime
@@ -41,9 +70,11 @@ class Config:
         # =============================================================================
 
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_api_db")
-        # Allow automatic schema migrations; FORCE skips database initialization.
-        self.DATABASE_ALLOW_UPDATE = self._env_bool("DATABASE_ALLOW_UPDATE", False)
-        self.DATABASE_FORCE = self._env_bool("DATABASE_FORCE", False)
+        # Guards check compatibility; update flags control automatic changes.
+        self.DATABASE_REQUIRE_MATCHING_SCHEMA = self._env_bool("DATABASE_REQUIRE_MATCHING_SCHEMA", True)
+        self.DATABASE_ALLOW_SCHEMA_UPDATE = self._env_bool("DATABASE_ALLOW_SCHEMA_UPDATE", False)
+        self.DATABASE_REQUIRE_MATCHING_COMMIT = self._env_bool("DATABASE_REQUIRE_MATCHING_COMMIT", False)
+        self.DATABASE_ALLOW_COMMIT_UPDATE = self._env_bool("DATABASE_ALLOW_COMMIT_UPDATE", True)
 
         # =============================================================================
         # Application
@@ -78,6 +109,8 @@ class Config:
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
         self.APP_VERSION = os.getenv("APP_VERSION", "custom")
+        # Build metadata in Docker; resolved from this checkout for local Python runs.
+        self.APP_GIT_COMMIT = resolve_git_commit()
 
         # =============================================================================
         # Job processing

@@ -830,6 +830,73 @@ current coverage scope.
 
 - [x] upgrade job attempt logs. [`test_migrations.py::test_upgrade_job_attempt_logs`](test_migrations.py).
 
+### Build identity and migration metadata
+
+`APP_GIT_COMMIT` respects an explicit build hash; local Git checkouts resolve/export
+it at startup. Outside a checkout it stays unknown unless supplied. Docker preserves
+the `COMMIT_SHA` build argument in this variable; for local builds pass
+`--build-arg COMMIT_SHA="$(git rev-parse HEAD)"`. Uncommitted edits are not represented
+by the hash.
+
+The DB stores the running build's Git commit and the last successful migration's
+UTC timestamp in `database_metadata`; `alembic_version` identifies the schema.
+
+Startup has four independent controls:
+
+| Setting | Default |
+| --- | --- |
+| `DATABASE_REQUIRE_MATCHING_SCHEMA` | `true` |
+| `DATABASE_ALLOW_SCHEMA_UPDATE` | `false` |
+| `DATABASE_REQUIRE_MATCHING_COMMIT` | `false` |
+| `DATABASE_ALLOW_COMMIT_UPDATE` | `true` |
+
+Guards check the original state and reject mismatches before any updates, even
+when the corresponding update flag is enabled. To upgrade an existing schema,
+disable its guard and enable schema updates. Disabling both schema flags leaves
+the schema unchanged without requiring a match. An unrecognized or newer revision
+cannot be automatically upgraded. The commit guard requires a known, matching
+commit; missing metadata cannot establish a match. Unknown running commits are
+stored as NULL when commit updates are enabled and the guard is off. Disabling
+commit updates preserves the previous value, including during migrations.
+Code-only updates never change `migrated_at`.
+
+Fresh databases initialize their schema and code identity regardless of update
+flags; the commit guard still requires a known build commit. Setting all four
+flags to false skips database preparation, replacing `DATABASE_FORCE`.
+
+Online Alembic migrations are explicitly requested schema changes rather than
+automatic startup updates, so the startup schema flags do not prevent them. They
+honor the commit guard and commit update flag. Successful schema changes record
+the migration timestamp in the same transaction. No-op Alembic commands leave
+metadata unchanged. Concurrent initialization uses a PostgreSQL advisory lock.
+Keep all instances sharing a DB on the same code revision; the stored commit
+represents the latest accepted code identity, not all concurrently running builds.
+DocAPI does not create backups; see the [migration guide](../README.md) for backup
+and recovery instructions.
+
+- [x] explicit build commit is preserved. [`test_build_info.py::test_explicit_build_commit_is_preserved`](test_build_info.py).
+- [x] invalid build commit is rejected. [`test_build_info.py::test_invalid_build_commit_is_rejected`](test_build_info.py).
+- [x] checkout commit is exported once. [`test_build_info.py::test_checkout_commit_is_exported_once`](test_build_info.py).
+- [x] git failure leaves commit unknown. [`test_build_info.py::test_git_failure_leaves_commit_unknown`](test_build_info.py).
+- [x] installed package does not use unrelated checkout. [`test_build_info.py::test_installed_package_does_not_use_unrelated_checkout`](test_build_info.py).
+- [x] initialization and code updates preserve migration time. [`test_db_update.py::test_initialization_and_code_update_preserve_migration_time`](test_db_update.py).
+- [x] startup upgrades preserve existing data. [`test_db_update.py::test_startup_upgrade_preserves_data`](test_db_update.py).
+- [x] disallowed upgrades preserve the schema. [`test_db_update.py::test_disallowed_upgrade_preserves_schema`](test_db_update.py).
+- [x] failed migrations roll back metadata and release the lock. [`test_db_update.py::test_failed_migration_rolls_back_metadata_and_releases_lock`](test_db_update.py).
+- [x] concurrent startups apply one migration. [`test_db_update.py::test_concurrent_startups_apply_one_migration`](test_db_update.py).
+- [x] incompatible schemas reject startup with or without automatic updates. [`test_db_update.py::test_incompatible_schema_rejects_startup`](test_db_update.py).
+- [x] unversioned databases reject startup. [`test_db_update.py::test_unversioned_database_rejects_startup`](test_db_update.py).
+- [x] online Alembic commands record migration metadata. [`test_db_update.py::test_online_alembic_records_migration_metadata`](test_db_update.py).
+- [x] database policy defaults and overrides. [`test_db_update.py::test_database_policy_configuration`](test_db_update.py).
+- [x] startup updates commits or rejects mismatches according to policy. [`test_db_update.py::test_startup_commit_policy`](test_db_update.py).
+- [x] strict initialization requires a known build commit. [`test_db_update.py::test_strict_commit_initialization`](test_db_update.py).
+- [x] strict commit checks precede startup and direct Alembic migrations. [`test_db_update.py::test_strict_commit_check_precedes_migration`](test_db_update.py).
+- [x] schema guard takes precedence over automatic updates. [`test_db_update.py::test_schema_guard_precedes_updates`](test_db_update.py).
+- [x] migrations preserve the commit when commit updates are disabled. [`test_db_update.py::test_migration_preserves_commit_when_updates_disabled`](test_db_update.py).
+- [x] disabled schema policies leave unchecked databases unchanged. [`test_db_update.py::test_disabled_schema_policy_preserves_unchecked_database`](test_db_update.py).
+- [x] fresh databases initialize without update permissions and pass strict restarts. [`test_db_update.py::test_fresh_database_initializes_without_update_permissions`](test_db_update.py).
+- [x] database metadata migration and no-op preservation. [`test_migrations.py::test_upgrade_database_metadata`](test_migrations.py).
+
 ### Test isolation and documentation consistency
 
 - [x] failed tests drop databases. [`test_test_isolation.py::test_failed_tests_drop_databases`](test_test_isolation.py).

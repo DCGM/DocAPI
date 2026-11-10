@@ -14,12 +14,12 @@ def main():
     from doc_api.db.db_create import create_database_if_does_not_exist
     from doc_api.db.db_update import init_and_update_db
 
-    if not config.DATABASE_FORCE:
+    if any((config.DATABASE_REQUIRE_MATCHING_SCHEMA, config.DATABASE_ALLOW_SCHEMA_UPDATE,
+            config.DATABASE_REQUIRE_MATCHING_COMMIT, config.DATABASE_ALLOW_COMMIT_UPDATE)):
         asyncio.run(create_database_if_does_not_exist())
         init_and_update_db()
     else:
-        logger.warning("Skipping creating DB and alembic upgrade due to DB_FORCE=True. "
-                       "Assuming the database exist and the schema is up to date.")
+        logger.warning("Database guards and automatic updates are disabled; skipping database preparation.")
 
     logger.info(f"Running DocAPI on {config.APP_HOST}:{config.APP_PORT} (production={config.PRODUCTION})")
 
