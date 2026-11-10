@@ -1,7 +1,7 @@
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -9,16 +9,18 @@ from alembic import context
 
 from doc_api.config import config as doc_api_config
 from doc_api.db.model import Base
+from doc_api.db.migration_metadata import MIGRATION_LOCK, record_migration_metadata, validate_database_commit
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", doc_api_config.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", doc_api_config.DATABASE_URL.replace("%", "%%"))
 
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+# Embedded startup/tests already configure logging (including secret filters).
+if config.config_file_name is not None and config.attributes.get("connection") is None:
     fileConfig(config.config_file_name)
 
 # add your model's MetaData object here
@@ -62,7 +64,17 @@ def do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
+        # This also protects direct online Alembic commands, not just API startup.
+        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK})
+        before = context.get_context().get_current_revision()
+        validate_database_commit(connection, doc_api_config.APP_GIT_COMMIT,
+                                 doc_api_config.DATABASE_REQUIRE_MATCHING_COMMIT, new_database=before is None)
         context.run_migrations()
+        after = context.get_context().get_current_revision()
+        if before != after:
+            # This write commits or rolls back with the schema change itself.
+            record_migration_metadata(connection, doc_api_config.APP_GIT_COMMIT,
+                                      update_commit=doc_api_config.DATABASE_ALLOW_COMMIT_UPDATE or before is None)
 
 
 async def run_async_migrations() -> None:
@@ -77,10 +89,11 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 def run_migrations_online() -> None:

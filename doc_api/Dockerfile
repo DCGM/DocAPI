@@ -19,6 +19,7 @@ LABEL org.opencontainers.image.created=$BUILD_DATE
 LABEL org.opencontainers.image.authors="Jan Kohút"
 
 ENV APP_VERSION=${VERSION:-custom}
+ENV APP_GIT_COMMIT=${COMMIT_SHA}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -50,10 +51,11 @@ ENV POSTGRES_PASSWORD=postgres
 ENV POSTGRES_HOST=localhost
 ENV POSTGRES_PORT=5432
 ENV DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/doc_api_db
-# if true, allow alembic to upgrade existing DB (upgrading to new image versions wit old DB)
-ENV DATABASE_ALLOW_UPGRADE=false
-# if true, skip creating DB and alembic upgrade, simply assume the DB is ready
-ENV DATABASE_FORCE=false
+# Startup guards take precedence over automatic updates.
+ENV DATABASE_REQUIRE_MATCHING_SCHEMA=true
+ENV DATABASE_ALLOW_SCHEMA_UPDATE=false
+ENV DATABASE_REQUIRE_MATCHING_COMMIT=false
+ENV DATABASE_ALLOW_COMMIT_UPDATE=true
 
 WORKDIR /app/doc_api
 

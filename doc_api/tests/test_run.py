@@ -34,22 +34,26 @@ def test_production_configuration(monkeypatch, value, expected):
 
 
 @pytest.mark.parametrize("production", [False, True], ids=["development", "production"])
-@pytest.mark.parametrize("force", [False, True], ids=["prepare-db", "force-db"])
-def test_runner_reload_and_database_setup(runner_mocks, monkeypatch, production, force):
+@pytest.mark.parametrize("enabled_setting", [None, "DATABASE_REQUIRE_MATCHING_SCHEMA",
+    "DATABASE_ALLOW_SCHEMA_UPDATE", "DATABASE_REQUIRE_MATCHING_COMMIT", "DATABASE_ALLOW_COMMIT_UPDATE"])
+def test_runner_reload_and_database_setup(runner_mocks, monkeypatch, production, enabled_setting):
     monkeypatch.setattr(config, "PRODUCTION", production)
-    monkeypatch.setattr(config, "DATABASE_FORCE", force)
+    for setting in ("DATABASE_REQUIRE_MATCHING_SCHEMA", "DATABASE_ALLOW_SCHEMA_UPDATE",
+                    "DATABASE_REQUIRE_MATCHING_COMMIT", "DATABASE_ALLOW_COMMIT_UPDATE"):
+        monkeypatch.setattr(config, setting, setting == enabled_setting)
+    database_setup = enabled_setting is not None
     run.main()
-    expected = [] if force else [call.create(), call.migrate()]
+    expected = [call.create(), call.migrate()] if database_setup else []
     expected.append(call.serve("doc_api.api.main:app", host=config.APP_HOST, port=config.APP_PORT,
                                reload=not production, log_config=config.LOGGING_CONFIG))
     assert runner_mocks.mock_calls == expected
-    if not force:
+    if database_setup:
         runner_mocks.create.assert_awaited_once()
 
 
 @pytest.mark.parametrize("operation", ["create", "migrate"])
 def test_runner_database_failure_prevents_serving(runner_mocks, monkeypatch, operation):
-    monkeypatch.setattr(config, "DATABASE_FORCE", False)
+    monkeypatch.setattr(config, "DATABASE_REQUIRE_MATCHING_SCHEMA", True)
     getattr(runner_mocks, operation).side_effect = RuntimeError("injected database setup failure")
     with pytest.raises(RuntimeError, match="injected database setup failure"):
         run.main()
