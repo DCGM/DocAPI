@@ -9,6 +9,6 @@ starlette
 uvicorn==0.37.0
 numpy~=2.2.6
 SQLAlchemy~=2.0.44
-pydantic~=2.12.3
+pydantic[email]~=2.12.3
 defusedxml~=0.7.1
 natsort~=8.4.0
