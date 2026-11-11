@@ -41,7 +41,7 @@ async def _challenge_worker_access_to_job(
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, code)
 
-    if db_job.worker_key_id != key.id:
+    if key.role not in {KeyRole.ADMIN, KeyRole.MANAGER} and db_job.worker_key_id != key.id:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_403_FORBIDDEN,
             code=AppCode.API_KEY_FORBIDDEN_FOR_JOB,
@@ -72,7 +72,7 @@ def challenge_worker_access_to_processing_job(fn):
     async def wrapper(*args, **kwargs):
         job_id, key, db = _get_job_access_params(kwargs)
 
-        if key.role != KeyRole.WORKER:
+        if key.role not in {KeyRole.WORKER, KeyRole.MANAGER}:
             return await fn(*args, **kwargs)
 
         await _challenge_worker_access_to_processing_job(db=db, key=key, job_id=job_id)

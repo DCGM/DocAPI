@@ -81,7 +81,24 @@ Keep all instances sharing a DB on the same code revision: the row records the
 latest successful startup or migration that allowed commit updates. Take the
 pre-upgrade backup before starting the new image to retain the previous commit.
 
-## Admin operations
+## Management roles
+
+`manager` has access to all authenticated operations except debug routes, including key and engine
+management and jobs belonging to any owner. Managers see technical logs from all
+attempts and unmasked engine settings, just like admins. Application logging and
+mail masking policies are unchanged.
+
+Normal workflow rules apply to managers: inputs can be saved only while a job is
+NEW and only when required; results are available after DONE; worker operations
+may act on any worker’s jobs but still require the appropriate job state. Managers may
+cancel jobs across owners, but cannot cancel terminal jobs, force state changes,
+clear logs, or edit administrative job fields. Explicit engine versions may be
+selected, provided the engine is active.
+
+The manager role requires the accompanying database migration. Downgrading
+requires reassigning all manager keys to another role first.
+
+### Admin overrides
 
 An active admin key can use every authenticated endpoint and bypasses ownership,
 worker assignment, job-state restrictions, and optional-input requirements. Admin
@@ -99,7 +116,7 @@ can be edited without changing state. Activity/finalization defaults still apply
 and explicit admin field values override them. Ordinary user/worker requests keep
 their existing workflow rules and responses.
 
-`PUT /debug/jobs/{job_id}/start` manually invokes the normal readiness check. It
+`PUT /debug/jobs/{job_id}/start` is restricted to admins and manually invokes the normal readiness check. It
 still requires a NEW job and complete required inputs. Use PATCH to force a job
 state directly instead.
 

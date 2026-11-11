@@ -110,7 +110,7 @@ async def get_engines(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    if key.role == base_objects.KeyRole.ADMIN:
+    if key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
         db_engines, code = await general_cruds.get_engines(db=db,
                                                            engine_name=name,
                                                            engine_version=version,
@@ -139,7 +139,7 @@ async def get_engines(
         engines: List[base_objects.Engine] = []
         for db_engine in db_engines:
             engine = base_objects.Engine.model_validate(db_engine).model_dump()
-            if key.role != base_objects.KeyRole.ADMIN:
+            if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
                 engine.pop("id")
                 engine.pop("active", None)
                 engine.pop("definition", None)
@@ -227,11 +227,11 @@ async def result_availability(jobs):
 
 
 # Roles that read engine settings and job logs unmasked.
-UNMASKED_ROLES = {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}
+UNMASKED_ROLES = {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}
 
 
 def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dict]:
-    """Admins and workers need the real settings to run jobs; owners and readers
+    """Admins, managers, and workers need the real settings to run jobs; owners and readers
     see them masked, even though the secrets are their own."""
     engine_settings = db_job.definition.get("engine_settings", None)
     if key.role in UNMASKED_ROLES:
@@ -241,7 +241,7 @@ def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dic
 
 def mask_job_logs(job: dict, key: model.Key) -> dict:
     """Workers write free text, e.g. tracebacks or config dumps. Admins read the
-    logs as they are, for debugging, and workers wrote them; owners and readers
+    logs as they are, for debugging, as do managers; workers wrote them; owners and readers
     see them masked. Stored logs stay intact."""
     if key.role in UNMASKED_ROLES:
         return job
@@ -253,10 +253,10 @@ def mask_job_logs(job: dict, key: model.Key) -> dict:
 
 async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], key: model.Key, db_engine: Optional[model.Engine] = None):
     job = base_objects.JobProper.model_validate(
-        db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
+        db_job, context={"all_attempt_logs": key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}}).model_dump()
     mask_job_logs(job, key)
     job["result_available"] = (await result_availability([db_job]))[db_job.id]
-    if key.role != base_objects.KeyRole.ADMIN:
+    if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
         job.pop("artifacts_deleted_at", None)
     images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]
     url_fields = [f"{kind}_url" for kind in ("image", "alto", "page")
@@ -271,7 +271,7 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
                 image[field] = source.get(field)
 
     # drop everything that is only for admins
-    if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+    if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}:
         job.pop("log", None)
         job.pop("final_log", None)
         for img in images:
@@ -283,7 +283,7 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
         engine_id = db_engine.id
         engine_files_updated = db_engine.files_updated
         engine_definition = db_engine.definition
-        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}:
             engine_id = None
             engine_definition = None
             engine_files_updated = None
@@ -523,8 +523,16 @@ async def patch_job(
         errors = [dict(item, loc=("body", *item["loc"])) for item in error.errors()]
         raise RequestValidationError(errors) from error
 
+    # Managers use cancellation rules for CANCELLED and worker rules otherwise.
+    user_operation = key.role == base_objects.KeyRole.USER or (
+        key.role == base_objects.KeyRole.MANAGER
+        and job_progress_update.state == base_objects.ProcessingState.CANCELLED)
+    worker_operation = key.role == base_objects.KeyRole.WORKER or (
+        key.role == base_objects.KeyRole.MANAGER
+        and job_progress_update.state != base_objects.ProcessingState.CANCELLED)
+
     # user guards
-    if key.role == base_objects.KeyRole.USER:
+    if user_operation:
         if job_progress_update.state != base_objects.ProcessingState.CANCELLED:
             raise DocAPIClientErrorException(
                 status=status.HTTP_403_FORBIDDEN,
@@ -543,7 +551,7 @@ async def patch_job(
             )
 
     # worker guards
-    if key.role == base_objects.KeyRole.WORKER:
+    if worker_operation:
         if job_progress_update.state not in {
             base_objects.ProcessingState.DONE,
             base_objects.ProcessingState.ERROR,
@@ -595,7 +603,7 @@ async def patch_job(
 
     # at this point we know the request is valid
 
-    if key.role == base_objects.KeyRole.USER and \
+    if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.MANAGER} and \
             job_progress_update.state == base_objects.ProcessingState.CANCELLED:
         code_update_job = await user_cruds.cancel_job(db, job_id)
         if code_update_job == AppCode.JOB_NOT_FOUND:
@@ -617,11 +625,11 @@ async def patch_job(
 
         raise RouteInvariantError(code=code_update_job, request=request)
 
-    if key.role == base_objects.KeyRole.WORKER:
+    if worker_operation:
         db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
             db=db,
             job_id=job_id,
-            worker_key_id=key.id,
+            expected_worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
             job_progress_update=job_progress_update,
         )
         if code_update_job in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB,

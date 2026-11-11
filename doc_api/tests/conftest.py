@@ -162,8 +162,10 @@ def reader_role():
     return "user"
 
 
-@pytest.fixture
-def reader_headers(test_settings, reader_role):
+@pytest_asyncio.fixture
+async def reader_headers(client, test_settings, reader_role):
+    if reader_role == "manager":
+        return await _manager_headers(client, "test-manager-reader")
     return {"X-API-Key": getattr(config, f"TEST_{reader_role.upper()}_KEY")}
 
 
@@ -175,13 +177,17 @@ async def reader_owner(db_sessions, reader_role):
         return (await db.execute(select(model.Key).where(model.Key.label == label))).scalar_one()
 
 
-@pytest.fixture
-def user_headers(test_settings, user_role):
+@pytest_asyncio.fixture
+async def user_headers(client, test_settings, user_role):
+    if user_role == "manager":
+        return await _manager_headers(client, "test-manager-user")
     return {"X-API-Key": getattr(config, f"TEST_{user_role.upper()}_KEY")}
 
 
-@pytest.fixture
-def worker_headers(test_settings, worker_role):
+@pytest_asyncio.fixture
+async def worker_headers(client, test_settings, worker_role):
+    if worker_role == "manager":
+        return await _manager_headers(client, "test-manager-worker")
     return {"X-API-Key": getattr(config, f"TEST_{worker_role.upper()}_KEY")}
 
 
@@ -571,11 +577,11 @@ def key_role(request):
     return request.param
 
 @pytest_asyncio.fixture
-async def new_key(client, admin_headers, key_role):
+async def new_key(client, management_headers, key_role):
     label = f"test-{key_role}-key-{os.urandom(4).hex()}"
     r = await client.post(
         "/v1/admin/keys",
-        headers=admin_headers,
+        headers=management_headers,
         json={
             "label": label,
             "role": key_role
@@ -911,3 +917,33 @@ def job_mail_outbox(monkeypatch):
             (sender, recipients, Parser(policy=policy.default).parsestr(text))))
     monkeypatch.setattr("doc_api.tools.mail.mail_sender.smtplib.SMTP", smtp)
     return messages
+
+
+@pytest_asyncio.fixture
+async def manager_headers(client, admin_headers):
+    response = await client.post("/v1/admin/keys", headers=admin_headers,
+                                 json={"label": "test-manager", "role": "manager"})
+    assert response.status_code == 201, response.text
+    return {"X-API-Key": response.json()["data"]["secret"]}
+
+
+@pytest.fixture
+def management_role():
+    return "admin"
+
+
+@pytest_asyncio.fixture
+async def management_headers(client, admin_headers, management_role):
+    if management_role == "admin":
+        return admin_headers
+    response = await client.post("/v1/admin/keys", headers=admin_headers,
+                                 json={"label": "test-manager", "role": "manager"})
+    assert response.status_code == 201, response.text
+    return {"X-API-Key": response.json()["data"]["secret"]}
+
+
+async def _manager_headers(client, label):
+    response = await client.post("/v1/admin/keys", headers={"X-API-Key": config.TEST_ADMIN_KEY},
+                                 json={"label": label, "role": "manager"})
+    assert response.status_code == 201, response.text
+    return {"X-API-Key": response.json()["data"]["secret"]}

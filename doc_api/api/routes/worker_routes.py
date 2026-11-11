@@ -110,7 +110,9 @@ async def patch_lease(
         db: AsyncSession = Depends(get_async_session)):
 
     lease_expire_at, server_time, code = await worker_cruds.update_processing_job_lease(
-        db=db, job_id=job_id, worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None)
+        db=db, job_id=job_id,
+        expected_worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
+        expected_state=None if key.role == base_objects.KeyRole.ADMIN else base_objects.ProcessingState.PROCESSING)
 
     if code in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB, AppCode.JOB_NOT_IN_PROCESSING}:
         response = (GENERAL_RESPONSES[code] if code != AppCode.JOB_NOT_IN_PROCESSING else
@@ -153,7 +155,9 @@ async def delete_lease(
         db: AsyncSession = Depends(get_async_session)):
 
     code = await worker_cruds.release_job_lease(
-        db=db, job_id=job_id, worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None)
+        db=db, job_id=job_id,
+        expected_worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
+        expected_state=None if key.role == base_objects.KeyRole.ADMIN else base_objects.ProcessingState.PROCESSING)
 
     if code in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB, AppCode.JOB_NOT_IN_PROCESSING}:
         response = (GENERAL_RESPONSES[code] if code != AppCode.JOB_NOT_IN_PROCESSING else

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # POST /v1/jobs/lease - 200
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASED], indirect=True)
 async def test_post_job_lease_200_job_leased(client, worker_headers, lease_job):
@@ -67,7 +67,7 @@ async def test_post_job_lease_200_job_leased(client, worker_headers, lease_job):
     assert job_after_lease["state"] == base_objects.ProcessingState.PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASED], indirect=True)
 async def test_post_job_lease_200_job_leased_with_engine(client, worker_headers, admin_headers, lease_job_with_engine):
@@ -109,7 +109,7 @@ async def test_post_job_lease_200_job_leased_with_engine(client, worker_headers,
     assert engines[0]["last_used"] is not None
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.JOB_QUEUE_EMPTY])
 async def test_post_job_lease_200_queue_empty(client, worker_headers, dummy):
@@ -125,7 +125,7 @@ async def test_post_job_lease_200_queue_empty(client, worker_headers, dummy):
     assert body["data"] is None
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("offset", [-1, 0, 1])
 @pytest.mark.parametrize("exhausted", [False, True])
@@ -155,7 +155,7 @@ async def test_post_job_lease_200_timeout_boundaries(client, worker_headers, job
             assert job.progress == 1.0
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_concurrent_assignment(client, worker_headers, job_factory, db_sessions):
     job_id = await job_factory(ProcessingState.QUEUED)
@@ -171,7 +171,7 @@ async def test_post_job_lease_200_concurrent_assignment(client, worker_headers, 
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, job_factory, db_sessions, monkeypatch):
     monkeypatch.setattr(config, "JOB_MAX_ATTEMPTS", 3)
@@ -245,7 +245,7 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
     assert response.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_lease_cancelled_before_commit(client, worker_headers, job_factory, db_sessions, monkeypatch):
     job_id = await job_factory(ProcessingState.QUEUED)
@@ -289,7 +289,7 @@ async def test_post_job_lease_cancelled_before_commit(client, worker_headers, jo
         assert (await db.get(model.Job, job_id)).previous_attempts == 0
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("interruption", ["cancellation", "disconnect"])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_lost_response(client, worker_headers, worker_pool, job_factory,
@@ -363,7 +363,7 @@ async def test_post_job_lease_200_lost_response(client, worker_headers, worker_p
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -373,7 +373,7 @@ async def test_post_job_lease_500_unexpected_crud_result(client, worker_headers,
     assert_route_invariant(response, invariant_errors, code)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_non_expiring(client, worker_headers, job_factory, db_sessions, monkeypatch, worker_role):
     from doc_api.api.schemas.base_objects import JobLease
@@ -401,7 +401,7 @@ async def test_post_job_lease_200_non_expiring(client, worker_headers, job_facto
 # PATCH /v1/jobs/{job_id}/lease - 200, 403, 404, 409, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASE_EXTENDED], indirect=True)
 async def test_patch_job_lease_extend_200(client, worker_headers, lease_job, payload):
@@ -424,7 +424,7 @@ async def test_patch_job_lease_extend_200(client, worker_headers, lease_job, pay
     assert extended_lease["server_time"] > lease["server_time"], "Server time should be updated"
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -443,6 +443,7 @@ async def test_patch_job_lease_403_job_access_forbidden(client, worker_headers, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_patch_job_lease_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('PATCH', f'/v1/jobs/{job_id}/lease', headers=worker_headers)
@@ -450,7 +451,7 @@ async def test_patch_job_lease_409_job_not_processing(client, worker_headers, jo
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_422_invalid_request(client, worker_headers):
     response = await client.request('PATCH', '/v1/jobs/not-a-uuid/lease', headers=worker_headers)
@@ -468,7 +469,7 @@ async def test_patch_job_lease_403_reassignment_during_request(client, worker_he
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker"])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_409_cancellation_during_request(client, worker_headers, other_worker_headers,
                                                         user_headers, job_factory, db_sessions, monkeypatch):
@@ -478,7 +479,7 @@ async def test_patch_job_lease_409_cancellation_during_request(client, worker_he
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -489,7 +490,7 @@ async def test_patch_job_lease_500_unexpected_crud_result(client, worker_headers
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_404_disappeared_after_check(client, worker_headers, job_factory, db_sessions, monkeypatch):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -500,7 +501,7 @@ async def test_patch_job_lease_404_disappeared_after_check(client, worker_header
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_lease_404_disappeared_before_update(client, worker_headers, job_factory, db_sessions, monkeypatch):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -514,7 +515,7 @@ async def test_patch_job_lease_404_disappeared_before_update(client, worker_head
 # DELETE /v1/jobs/{job_id}/lease - 204, 403, 404, 409, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_LEASE_RELEASED], indirect=True)
 async def test_delete_job_lease_204(client, worker_headers, worker_role, user_headers, lease_job, payload):
@@ -546,7 +547,7 @@ async def test_delete_job_lease_204(client, worker_headers, worker_role, user_he
         headers=worker_headers,
     )
     body = r.json()
-    if worker_role == "admin":
+    if worker_role in {"admin", "manager"}:
         assert r.status_code == 200, r.text
         assert body["code"] == AppCode.JOB_RETRIEVED.value
         assert body["data"]["state"] == base_objects.ProcessingState.QUEUED.value
@@ -556,7 +557,7 @@ async def test_delete_job_lease_204(client, worker_headers, worker_role, user_he
         assert body["code"] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -575,6 +576,7 @@ async def test_delete_job_lease_403_job_access_forbidden(client, worker_headers,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_delete_job_lease_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('DELETE', f'/v1/jobs/{job_id}/lease', headers=worker_headers)
@@ -582,7 +584,7 @@ async def test_delete_job_lease_409_job_not_processing(client, worker_headers, j
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_422_invalid_request(client, worker_headers):
     response = await client.request('DELETE', '/v1/jobs/not-a-uuid/lease', headers=worker_headers)
@@ -590,7 +592,7 @@ async def test_delete_job_lease_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attempts", [0, 1, 2])
 async def test_delete_job_lease_204_attempts_restored(client, worker_headers, job_factory, db_sessions, attempts):
@@ -617,7 +619,7 @@ async def test_delete_job_lease_403_reassignment_during_request(client, worker_h
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker"])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_409_cancellation_during_request(client, worker_headers, other_worker_headers,
                                                         user_headers, job_factory, db_sessions, monkeypatch):
@@ -627,7 +629,7 @@ async def test_delete_job_lease_409_cancellation_during_request(client, worker_h
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_500_unexpected_crud_result(client, worker_headers, job_factory, monkeypatch, invariant_errors):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -638,7 +640,7 @@ async def test_delete_job_lease_500_unexpected_crud_result(client, worker_header
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_404_disappeared_after_check(client, worker_headers, job_factory, db_sessions, monkeypatch):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -649,7 +651,7 @@ async def test_delete_job_lease_404_disappeared_after_check(client, worker_heade
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_delete_job_lease_404_disappeared_before_update(client, worker_headers, job_factory, db_sessions, monkeypatch):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -663,7 +665,7 @@ async def test_delete_job_lease_404_disappeared_before_update(client, worker_hea
 # GET /v1/jobs/{job_id} - 200, 403, 404
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RETRIEVED], indirect=True)
 async def test_get_job_200(client, worker_headers, lease_job, payload):
@@ -682,7 +684,7 @@ async def test_get_job_200(client, worker_headers, lease_job, payload):
     assert job["id"] == job_id
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RETRIEVED], indirect=True)
 async def test_get_job_200_with_engine(client, worker_headers, lease_job_with_engine, payload):
@@ -707,7 +709,7 @@ async def test_get_job_200_with_engine(client, worker_headers, lease_job_with_en
     assert "engine_files_updated" in job
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_job_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -728,7 +730,7 @@ async def test_get_job_403_job_access_forbidden(client, worker_headers, job_fact
 # GET /v1/jobs/{job_id}/images/{image_id}/files/image - 200, 403, 404, 409, 410, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_DOWNLOADED], indirect=True)
 async def test_get_image_200(client, worker_headers, lease_job, payload):
@@ -755,7 +757,7 @@ async def test_get_image_200(client, worker_headers, lease_job, payload):
     assert r.headers["Content-Type"].startswith("image/")
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB], indirect=True)
 async def test_get_image_404(client, worker_headers, lease_job, payload):
@@ -782,7 +784,7 @@ async def test_get_image_404(client, worker_headers, lease_job, payload):
     assert body["code"] == AppCode.IMAGE_NOT_FOUND_FOR_JOB.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.IMAGE_GONE], indirect=True)
 async def test_get_image_410(client, worker_headers, lease_job, payload, tmp_path):
@@ -817,7 +819,7 @@ async def test_get_image_410(client, worker_headers, lease_job, payload, tmp_pat
         assert body["code"] == AppCode.IMAGE_GONE.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_image_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -836,6 +838,7 @@ async def test_get_image_403_job_access_forbidden(client, worker_headers, job_fa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_get_image_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('GET', f'/v1/jobs/{job_id}/images/00000000-0000-0000-0000-000000000001/files/image', headers=worker_headers)
@@ -843,7 +846,7 @@ async def test_get_image_409_job_not_processing(client, worker_headers, job_fact
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_image_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/images/00000000-0000-0000-0000-000000000001/files/image', headers=worker_headers)
@@ -851,7 +854,7 @@ async def test_get_image_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
 @pytest.mark.asyncio
 async def test_get_image_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
@@ -865,7 +868,7 @@ async def test_get_image_200_stream_failure(client, worker_headers, download_cas
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_image_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
     case = await download_case("image")
@@ -876,7 +879,7 @@ async def test_get_image_500_unexpected_crud_result(client, worker_headers, down
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_image_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
     from doc_api.api.checkers.job_readiness import queue_ready_jobs
@@ -902,7 +905,7 @@ async def test_get_image_410_link_is_not_upload(client, user_headers, worker_hea
 # GET /v1/jobs/{job_id}/images/{image_id}/files/alto - 200, 403, 404, 409, 410, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_DOWNLOADED], indirect=True)
 async def test_get_alto_200(client, worker_headers, lease_job, payload):
@@ -929,7 +932,7 @@ async def test_get_alto_200(client, worker_headers, lease_job, payload):
     assert r.headers["Content-Type"] == "application/xml"
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB], indirect=True)
 async def test_get_alto_404(client, worker_headers, lease_job, payload):
@@ -985,7 +988,7 @@ async def test_get_alto_409(client, worker_headers, lease_job, payload):
         assert body["code"] == AppCode.ALTO_NOT_REQUIRED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[2]], ids=[AppCode.ALTO_GONE], indirect=True)
 async def test_get_alto_410(client, worker_headers, lease_job, payload, tmp_path):
@@ -1020,7 +1023,7 @@ async def test_get_alto_410(client, worker_headers, lease_job, payload, tmp_path
         assert body["code"] == AppCode.ALTO_GONE.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_alto_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -1039,6 +1042,7 @@ async def test_get_alto_403_job_access_forbidden(client, worker_headers, job_fac
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_get_alto_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('GET', f'/v1/jobs/{job_id}/images/00000000-0000-0000-0000-000000000001/files/alto', headers=worker_headers)
@@ -1046,7 +1050,7 @@ async def test_get_alto_409_job_not_processing(client, worker_headers, job_facto
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_alto_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/images/00000000-0000-0000-0000-000000000001/files/alto', headers=worker_headers)
@@ -1054,7 +1058,7 @@ async def test_get_alto_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
 @pytest.mark.asyncio
 async def test_get_alto_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
@@ -1068,7 +1072,7 @@ async def test_get_alto_200_stream_failure(client, worker_headers, download_case
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_alto_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
     case = await download_case("alto")
@@ -1079,7 +1083,7 @@ async def test_get_alto_500_unexpected_crud_result(client, worker_headers, downl
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_alto_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
     from doc_api.api.checkers.job_readiness import queue_ready_jobs
@@ -1105,7 +1109,7 @@ async def test_get_alto_410_link_is_not_upload(client, user_headers, worker_head
 # GET /v1/jobs/{job_id}/images/{image_id}/files/page - 200, 403, 404, 409, 410, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_DOWNLOADED], indirect=True)
 async def test_get_page_200(client, worker_headers, lease_job, payload):
@@ -1132,7 +1136,7 @@ async def test_get_page_200(client, worker_headers, lease_job, payload):
     assert r.headers["Content-Type"] == "application/xml"
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.IMAGE_NOT_FOUND_FOR_JOB], indirect=True)
 async def test_get_page_404(client, worker_headers, lease_job, payload):
@@ -1188,7 +1192,7 @@ async def test_get_page_409(client, worker_headers, lease_job, payload):
         assert body["code"] == AppCode.PAGE_NOT_REQUIRED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[3]], ids=[AppCode.PAGE_GONE], indirect=True)
 async def test_get_page_410(client, worker_headers, lease_job, payload, tmp_path):
@@ -1223,7 +1227,7 @@ async def test_get_page_410(client, worker_headers, lease_job, payload, tmp_path
         assert body["code"] == AppCode.PAGE_GONE.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_page_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -1242,6 +1246,7 @@ async def test_get_page_403_job_access_forbidden(client, worker_headers, job_fac
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_get_page_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('GET', f'/v1/jobs/{job_id}/images/00000000-0000-0000-0000-000000000001/files/page', headers=worker_headers)
@@ -1249,7 +1254,7 @@ async def test_get_page_409_job_not_processing(client, worker_headers, job_facto
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_page_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/images/00000000-0000-0000-0000-000000000001/files/page', headers=worker_headers)
@@ -1257,7 +1262,7 @@ async def test_get_page_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
 @pytest.mark.asyncio
 async def test_get_page_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
@@ -1271,7 +1276,7 @@ async def test_get_page_200_stream_failure(client, worker_headers, download_case
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_page_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
     case = await download_case("page")
@@ -1282,7 +1287,7 @@ async def test_get_page_500_unexpected_crud_result(client, worker_headers, downl
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_page_410_link_is_not_upload(client, user_headers, worker_headers, db_sessions):
     from doc_api.api.checkers.job_readiness import queue_ready_jobs
@@ -1308,7 +1313,7 @@ async def test_get_page_410_link_is_not_upload(client, user_headers, worker_head
 # GET /v1/jobs/{job_id}/files/metadata - 200, 403, 404, 409, 410, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.META_JSON_DOWNLOADED], indirect=True)
 async def test_get_metadata_200(client, worker_headers, lease_job, payload):
@@ -1358,7 +1363,7 @@ async def test_get_metadata_409(client, worker_headers, lease_job, payload):
     assert body["code"] == AppCode.META_JSON_NOT_REQUIRED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[-1]], ids=[AppCode.META_JSON_GONE], indirect=True)
 async def test_get_metadata_410(client, worker_headers, lease_job, payload, tmp_path):
@@ -1388,7 +1393,7 @@ async def test_get_metadata_410(client, worker_headers, lease_job, payload, tmp_
     assert body["code"] == AppCode.META_JSON_GONE.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_metadata_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -1407,6 +1412,7 @@ async def test_get_metadata_403_job_access_forbidden(client, worker_headers, job
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_get_metadata_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('GET', f'/v1/jobs/{job_id}/files/metadata', headers=worker_headers)
@@ -1414,7 +1420,7 @@ async def test_get_metadata_409_job_not_processing(client, worker_headers, job_f
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_metadata_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/jobs/not-a-uuid/files/metadata', headers=worker_headers)
@@ -1422,7 +1428,7 @@ async def test_get_metadata_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
 @pytest.mark.asyncio
 async def test_get_metadata_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
@@ -1436,7 +1442,7 @@ async def test_get_metadata_200_stream_failure(client, worker_headers, download_
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_metadata_404_disappeared_after_check(client, worker_headers, download_case, db_sessions, monkeypatch):
     case = await download_case("metadata")
@@ -1450,7 +1456,7 @@ async def test_get_metadata_404_disappeared_after_check(client, worker_headers, 
 # GET /v1/engines/{engine_id}/files - 200, 404, 410, 422
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ENGINE_FILES_RETRIEVED], indirect=True)
 async def test_get_engine_files_200(client, worker_headers, lease_job_with_uploaded_engine, payload):
@@ -1505,7 +1511,7 @@ async def test_get_engine_files_404(client, worker_headers, lease_job_with_engin
     assert body["code"] == AppCode.ENGINE_FILES_NOT_FOUND.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.ENGINE_FILES_GONE], indirect=True)
 async def test_get_engine_files_410(client, worker_headers, lease_job_with_uploaded_engine, payload, tmp_path):
@@ -1539,7 +1545,7 @@ async def test_get_engine_files_410(client, worker_headers, lease_job_with_uploa
     assert body["code"] == AppCode.ENGINE_FILES_GONE.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_engine_files_422_invalid_request(client, worker_headers):
     response = await client.request('GET', '/v1/engines/not-a-uuid/files', headers=worker_headers)
@@ -1547,7 +1553,7 @@ async def test_get_engine_files_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_engine_files_404_engine_not_found(client, worker_headers):
     response = await client.get(f"/v1/engines/{uuid4()}/files", headers=worker_headers)
@@ -1555,7 +1561,7 @@ async def test_get_engine_files_404_engine_not_found(client, worker_headers):
     assert response.json()["code"] == AppCode.ENGINE_NOT_FOUND.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("failure", ["open", "read", "disconnect"])
 @pytest.mark.asyncio
 async def test_get_engine_files_200_stream_failure(client, worker_headers, download_case, db_sessions, monkeypatch, failure):
@@ -1569,7 +1575,7 @@ async def test_get_engine_files_200_stream_failure(client, worker_headers, downl
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_engine_files_500_unexpected_crud_result(client, worker_headers, download_case, monkeypatch, invariant_errors):
     case = await download_case("engine")
@@ -1583,13 +1589,13 @@ async def test_get_engine_files_500_unexpected_crud_result(client, worker_header
 # POST /v1/jobs/{job_id}/result - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_UPLOADED.value], indirect=True)
 async def test_post_job_result_201(client, worker_headers, job_with_result, payload):
     pass
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_201_preserves_deletion_timestamps(client, worker_headers, db_sessions, job_with_deletion_timestamps):
     job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.PROCESSING)
@@ -1599,7 +1605,7 @@ async def test_post_job_result_201_preserves_deletion_timestamps(client, worker_
     await assert_deletion_timestamps(db_sessions, job_id, before)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_REUPLOADED.value], indirect=True)
 async def test_post_job_result_200(client, worker_headers, job_with_result, payload):
@@ -1617,7 +1623,7 @@ async def test_post_job_result_200(client, worker_headers, job_with_result, payl
     assert body["code"] == AppCode.JOB_RESULT_REUPLOADED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_RESULT_INVALID], indirect=True)
 async def test_post_job_result_415(client, worker_headers, lease_job, payload):
@@ -1635,7 +1641,7 @@ async def test_post_job_result_415(client, worker_headers, lease_job, payload):
     assert body["code"] == AppCode.JOB_RESULT_INVALID.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -1654,6 +1660,7 @@ async def test_post_job_result_403_job_access_forbidden(client, worker_headers, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_post_job_result_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('POST', f'/v1/jobs/{job_id}/result', headers=worker_headers, files={'file': ('output.zip', b'data')})
@@ -1661,7 +1668,7 @@ async def test_post_job_result_409_job_not_processing(client, worker_headers, jo
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_422_invalid_request(client, worker_headers):
     response = await client.request('POST', '/v1/jobs/00000000-0000-0000-0000-000000000001/result', headers=worker_headers)
@@ -1669,7 +1676,7 @@ async def test_post_job_result_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_201_validation_disabled(client, worker_headers, job_factory, monkeypatch):
     monkeypatch.setattr(config, 'RESULT_ZIP_VALIDATION', False)
@@ -1680,7 +1687,7 @@ async def test_post_job_result_201_validation_disabled(client, worker_headers, j
     assert response.json()["code"] == AppCode.JOB_RESULT_UPLOADED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.parametrize("failure", ["read", "write", "replace"])
 @pytest.mark.asyncio
@@ -1700,7 +1707,7 @@ async def test_post_job_result_500_upload_failure(client, worker_headers, zip_up
     assert case.path.read_bytes() == VALID_ZIP
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_415_preserves_existing_file(client, worker_headers, zip_upload_case, db_sessions):
     case = await zip_upload_case("result")
@@ -1711,7 +1718,7 @@ async def test_post_job_result_415_preserves_existing_file(client, worker_header
     await assert_records_unchanged(db_sessions, case.records)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.asyncio
 async def test_post_job_result_400_interrupted_upload(client, worker_headers, zip_upload_case, db_sessions, existing):
@@ -1727,7 +1734,7 @@ async def test_post_job_result_400_interrupted_upload(client, worker_headers, zi
     await assert_records_unchanged(db_sessions, case.records)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.asyncio
 async def test_post_job_result_cancelled_upload(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing):
@@ -1768,7 +1775,7 @@ async def test_post_job_result_cancelled_upload(client, worker_headers, zip_uplo
     assert retry.status_code == (200 if existing else 201), retry.text
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_409_file_save_in_progress(client, worker_headers, zip_upload_case, monkeypatch, db_sessions):
     from doc_api.tests.helpers import assert_file_save_conflict
@@ -1779,7 +1786,7 @@ async def test_post_job_result_409_file_save_in_progress(client, worker_headers,
     assert case.path.read_bytes() == VALID_ZIP
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_200_progress_during_staging(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
     case = await zip_upload_case("result")
@@ -1817,7 +1824,7 @@ async def test_post_job_result_200_progress_during_staging(client, worker_header
         assert (await db.get(model.Job, job_id)).progress == 0.7
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_200_responsive_during_preparation(client, worker_headers, zip_upload_case, db_sessions, blocked_upload_preparation):
     case = await zip_upload_case("result")
@@ -1843,7 +1850,7 @@ async def test_post_job_result_200_responsive_during_preparation(client, worker_
         assert (await db.get(model.Job, job_id)).progress == 0.6
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_cancelled_during_preparation(client, worker_headers, zip_upload_case, blocked_upload_preparation, db_sessions):
     case = await zip_upload_case("result")
@@ -1874,7 +1881,7 @@ async def test_post_job_result_cancelled_during_preparation(client, worker_heade
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
 @pytest.mark.asyncio
 async def test_post_job_result_200_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
@@ -1883,7 +1890,7 @@ async def test_post_job_result_200_generated_zip(client, worker_headers, admin_h
                                     kind="result", variant=variant, code=AppCode.JOB_RESULT_REUPLOADED, invalid=False)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["truncated", "invalid_directory"])
 @pytest.mark.asyncio
 async def test_post_job_result_415_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
@@ -1893,7 +1900,7 @@ async def test_post_job_result_415_generated_zip(client, worker_headers, admin_h
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
 @pytest.mark.asyncio
 async def test_post_job_result_400_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
@@ -1902,7 +1909,7 @@ async def test_post_job_result_400_multipart(client, worker_headers, zip_upload_
                                     method="POST", variant=variant)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
 @pytest.mark.asyncio
 async def test_post_job_result_422_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
@@ -1912,7 +1919,7 @@ async def test_post_job_result_422_multipart(client, worker_headers, zip_upload_
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_result_404_disappeared_before_install(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
     case = await zip_upload_case("result")
@@ -1930,13 +1937,13 @@ async def test_post_job_result_404_disappeared_before_install(client, worker_hea
 # POST /v1/jobs/{job_id}/artifacts - 201, 200, 403, 404, 409, 415, 422, 400, 500
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_UPLOADED.value], indirect=True)
 async def test_post_job_artifacts_201(client, worker_headers, job_with_artifacts, payload):
     pass
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_201_preserves_deletion_timestamps(client, worker_headers, db_sessions, job_with_deletion_timestamps):
     job_id, before = await job_with_deletion_timestamps(base_objects.ProcessingState.PROCESSING)
@@ -1946,7 +1953,7 @@ async def test_post_job_artifacts_201_preserves_deletion_timestamps(client, work
     await assert_deletion_timestamps(db_sessions, job_id, before)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_REUPLOADED.value], indirect=True)
 async def test_post_job_artifacts_200(client, worker_headers, job_with_artifacts, payload):
@@ -1963,7 +1970,7 @@ async def test_post_job_artifacts_200(client, worker_headers, job_with_artifacts
     assert body["status"] == 200
     assert body["code"] == AppCode.JOB_ARTIFACTS_REUPLOADED.value
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ARTIFACTS_INVALID], indirect=True)
 async def test_post_job_artifacts_415(client, worker_headers, lease_job, payload):
@@ -1981,7 +1988,7 @@ async def test_post_job_artifacts_415(client, worker_headers, lease_job, payload
     assert body["code"] == AppCode.JOB_ARTIFACTS_INVALID.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -2000,6 +2007,7 @@ async def test_post_job_artifacts_403_job_access_forbidden(client, worker_header
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [state for state in base_objects.ProcessingState if state != base_objects.ProcessingState.PROCESSING])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 async def test_post_job_artifacts_409_job_not_processing(client, worker_headers, job_factory, state):
     job_id = await job_factory(state)
     response = await client.request('POST', f'/v1/jobs/{job_id}/artifacts', headers=worker_headers, files={'file': ('output.zip', b'data')})
@@ -2007,7 +2015,7 @@ async def test_post_job_artifacts_409_job_not_processing(client, worker_headers,
     assert response.json()["code"] == AppCode.JOB_NOT_IN_PROCESSING.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_422_invalid_request(client, worker_headers):
     response = await client.request('POST', '/v1/jobs/00000000-0000-0000-0000-000000000001/artifacts', headers=worker_headers)
@@ -2015,7 +2023,7 @@ async def test_post_job_artifacts_422_invalid_request(client, worker_headers):
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_201_validation_disabled(client, worker_headers, job_factory, monkeypatch):
     monkeypatch.setattr(config, 'ARTIFACTS_ZIP_VALIDATION', False)
@@ -2026,7 +2034,7 @@ async def test_post_job_artifacts_201_validation_disabled(client, worker_headers
     assert response.json()["code"] == AppCode.JOB_ARTIFACTS_UPLOADED.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.parametrize("failure", ["read", "write", "replace"])
 @pytest.mark.asyncio
@@ -2046,7 +2054,7 @@ async def test_post_job_artifacts_500_upload_failure(client, worker_headers, zip
     assert case.path.read_bytes() == VALID_ZIP
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_415_preserves_existing_file(client, worker_headers, zip_upload_case, db_sessions):
     case = await zip_upload_case("artifacts")
@@ -2057,7 +2065,7 @@ async def test_post_job_artifacts_415_preserves_existing_file(client, worker_hea
     await assert_records_unchanged(db_sessions, case.records)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_400_interrupted_upload(client, worker_headers, zip_upload_case, db_sessions, existing):
@@ -2073,7 +2081,7 @@ async def test_post_job_artifacts_400_interrupted_upload(client, worker_headers,
     await assert_records_unchanged(db_sessions, case.records)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("existing", [False, True], ids=["first-upload", "replacement"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_cancelled_upload(client, worker_headers, zip_upload_case, db_sessions, monkeypatch, existing):
@@ -2114,7 +2122,7 @@ async def test_post_job_artifacts_cancelled_upload(client, worker_headers, zip_u
     assert retry.status_code == (200 if existing else 201), retry.text
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_409_file_save_in_progress(client, worker_headers, zip_upload_case, monkeypatch, db_sessions):
     from doc_api.tests.helpers import assert_file_save_conflict
@@ -2125,7 +2133,7 @@ async def test_post_job_artifacts_409_file_save_in_progress(client, worker_heade
     assert case.path.read_bytes() == VALID_ZIP
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_200_progress_during_staging(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
     case = await zip_upload_case("artifacts")
@@ -2164,7 +2172,7 @@ async def test_post_job_artifacts_200_progress_during_staging(client, worker_hea
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_200_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
@@ -2173,7 +2181,7 @@ async def test_post_job_artifacts_200_generated_zip(client, worker_headers, admi
                                     kind="artifacts", variant=variant, code=AppCode.JOB_ARTIFACTS_REUPLOADED, invalid=False)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["truncated", "invalid_directory"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_415_generated_zip(client, worker_headers, admin_headers, zip_upload_case, db_sessions, variant):
@@ -2183,7 +2191,7 @@ async def test_post_job_artifacts_415_generated_zip(client, worker_headers, admi
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["missing_boundary", "invalid_body"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_400_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
@@ -2192,7 +2200,7 @@ async def test_post_job_artifacts_400_multipart(client, worker_headers, zip_uplo
                                     method="POST", variant=variant)
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("variant", ["wrong_field", "empty_filename", "text_field"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_422_multipart(client, worker_headers, zip_upload_case, db_sessions, variant):
@@ -2202,7 +2210,7 @@ async def test_post_job_artifacts_422_multipart(client, worker_headers, zip_uplo
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_post_job_artifacts_404_disappeared_before_install(client, worker_headers, zip_upload_case, db_sessions, monkeypatch):
     case = await zip_upload_case("artifacts")
@@ -2220,7 +2228,7 @@ async def test_post_job_artifacts_404_disappeared_before_install(client, worker_
 # PATCH /v1/jobs/{job_id} - 200, 400, 403, 404, 409
 #
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_UPDATED], indirect=True)
 async def test_patch_job_200_update_progress(client, worker_headers, lease_job, payload, worker_role):
@@ -2257,7 +2265,7 @@ async def test_patch_job_200_update_progress(client, worker_headers, lease_job, 
     assert job["progress"] == 0.7
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_COMPLETED], indirect=True)
 async def test_patch_job_200_job_completed(client, worker_headers, job_marked_done, payload, worker_role):
@@ -2278,7 +2286,7 @@ async def test_patch_job_200_job_completed(client, worker_headers, job_marked_do
     assert job["log_user"] == update_payload["log_user"]
     assert job["progress"] == 1.0
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ALREADY_COMPLETED], indirect=True)
 async def test_patch_job_200_job_already_completed(client, worker_headers, job_marked_done, payload, worker_role):
@@ -2296,7 +2304,7 @@ async def test_patch_job_200_job_already_completed(client, worker_headers, job_m
     assert body["code"] == (AppCode.JOB_COMPLETED if worker_role == "admin" else AppCode.JOB_ALREADY_COMPLETED).value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_MARKED_ERROR], indirect=True)
 async def test_patch_job_200_job_marked_error(client, worker_headers, job_marked_error, payload, worker_role):
@@ -2317,7 +2325,7 @@ async def test_patch_job_200_job_marked_error(client, worker_headers, job_marked
     assert job["log_user"] == update_payload["log_user"]
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload", [JOB_DEFINITION_PAYLOADS[0]], ids=[AppCode.JOB_ALREADY_MARKED_ERROR], indirect=True)
 async def test_patch_job_200_job_already_marked_error(client, worker_headers, job_marked_error, payload, worker_role):
@@ -2335,7 +2343,7 @@ async def test_patch_job_200_job_already_marked_error(client, worker_headers, jo
     assert body["code"] == (AppCode.JOB_MARKED_ERROR if worker_role == "admin" else AppCode.JOB_ALREADY_MARKED_ERROR).value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("initial_state", [ProcessingState.PROCESSING, ProcessingState.ERROR],
                          ids=[f"{AppCode.JOB_MARKED_FAILED}:{state.name}" for state in [ProcessingState.PROCESSING, ProcessingState.ERROR]])
@@ -2367,7 +2375,7 @@ async def test_patch_job_200_job_marked_failed(client, worker_headers, db_sessio
         assert job.log == ["Technical log\nPermanent error"]
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_200_job_already_marked_failed(client, worker_headers, db_sessions, job_factory, worker_role):
     job_id = await job_factory(ProcessingState.FAILED)
@@ -2379,14 +2387,14 @@ async def test_patch_job_200_job_already_marked_failed(client, worker_headers, d
     assert response.json()["code"] == (AppCode.JOB_MARKED_FAILED if worker_role == "admin" else AppCode.JOB_ALREADY_MARKED_FAILED).value
     async with db_sessions() as db:
         after = model.orm2dict(await db.get(model.Job, job_id))
-        if worker_role == "worker":
+        if worker_role != "admin":
             assert after == before
         else:
             assert after["log"] == ["Technical log\nMust not append again"]
             assert after["state"] == ProcessingState.FAILED
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_200_error_remains_retryable(client, worker_headers, db_sessions, job_factory, worker_key, worker_role):
     job_id = await job_factory(ProcessingState.PROCESSING)
@@ -2477,11 +2485,11 @@ async def test_patch_job_409_update_failed_job(client, worker_headers, db_sessio
         assert model.orm2dict(await db.get(model.Job, job_id)) == before
 
 
-@pytest.mark.parametrize("worker_role", ["worker"])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [ProcessingState.NEW, ProcessingState.QUEUED,
                                    ProcessingState.CANCELLED, ProcessingState.DONE])
-async def test_patch_job_409_failure_invalid_source_state(client, worker_headers, db_sessions, state, job_factory):
+async def test_patch_job_409_failure_invalid_source_state(client, worker_headers, db_sessions, state, job_factory, worker_key):
     job_id = await job_factory(state)
     response = await client.patch(f"/v1/jobs/{job_id}", headers=worker_headers, json={"state": "failed"})
     assert response.status_code == 409, response.text
@@ -2491,12 +2499,12 @@ async def test_patch_job_409_failure_invalid_source_state(client, worker_headers
         await db.rollback()
         # The transaction-level check also rejects a stale request after a state change.
         _, _, _, code = await worker_cruds.update_job_progress(
-            worker_key_id=None,
+            expected_worker_key_id=worker_key.id,
             db=db, job_id=job_id, job_progress_update=JobProgressUpdate(state="failed"))
         assert code == AppCode.JOB_UNFINISHABLE
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_404_job_not_found(client, worker_headers):
     job_id = uuid4()
@@ -2523,7 +2531,7 @@ async def test_patch_job_403_unsupported_worker_state(client, worker_headers, jo
     assert response.json()["code"] == AppCode.API_KEY_WORKER_FORBIDDEN.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 @pytest.mark.parametrize("progress,expected", [(0, 0), (0.4, 0.4), (1, 1)])
 async def test_patch_job_200_progress_in_range(client, worker_headers, job_factory, db_sessions, progress, expected, worker_role):
@@ -2580,7 +2588,7 @@ async def test_patch_job_403_reassignment_during_request(client, worker_headers,
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker"])
+@pytest.mark.parametrize("worker_role", ["worker", "manager"])
 @pytest.mark.parametrize("operation", ["progress", "done", "error", "failed"])
 @pytest.mark.asyncio
 async def test_patch_job_409_cancellation_during_request(client, worker_headers, other_worker_headers,
@@ -2591,7 +2599,7 @@ async def test_patch_job_409_cancellation_during_request(client, worker_headers,
 
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("exhausted", [False, True])
 @pytest.mark.asyncio
 async def test_patch_job_200_error_during_lease_poll(client, worker_headers, other_worker_headers,
@@ -2721,7 +2729,7 @@ async def test_patch_job_404_disappeared_before_update(client, worker_headers, j
     assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("state", ["done", "error", "failed"])
 @pytest.mark.asyncio
 async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers, user_headers, readonly_headers,
@@ -2763,20 +2771,20 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
         response = await client.get(f"/v1/jobs/{job_id}", headers=headers)
         assert response.status_code == 200, response.text
         job = response.json()["data"]
-        is_admin = headers == admin_headers
-        assert job["log_user"] == ("first\nsecond\n\n\nlatest public" if is_admin else "latest public")
-        if is_admin:
+        all_attempts = headers == admin_headers or (headers == worker_headers and worker_role == "manager")
+        assert job["log_user"] == ("first\nsecond\n\n\nlatest public" if all_attempts else "latest public")
+        if all_attempts:
             assert "ATTEMPT 2 STARTED AT " in job["log"]
             assert "latest technical" in job["log"] and "first\nsecond\n" in job["log"]
         listing = await client.get("/v1/jobs", headers=headers)
         # Workers cannot list jobs; user/readonly/admin must use the same log projection as GET.
-        if headers == user_headers or is_admin:
+        if headers == user_headers or all_attempts:
             assert listing.status_code == 200, listing.text
             listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
             assert listed["log_user"] == job["log_user"]
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.parametrize("attempt", [0, 1])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, job_factory, db_sessions, attempt):
@@ -2806,7 +2814,7 @@ async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, jo
             assert job.log_user == ["previous public", None]
 
 
-@pytest.mark.parametrize("worker_role", ["worker", "admin"])
+@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_patch_job_200_quiet_first_attempt_logs(client, worker_headers, job_factory, db_sessions, worker_role):
     job_id = await job_factory(ProcessingState.QUEUED)
@@ -3181,3 +3189,80 @@ async def test_patch_job_200_worker_null_logs_do_not_clear(client, worker_header
     if operation == 'progress':
         response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers, json={'log': None})
         assert response.status_code == 400, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["extend", "progress", "done", "error", "failed"])
+async def test_patch_job_200_manager_other_worker(client, manager_headers, job_factory, db_sessions, operation):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions() as db:
+        assigned_worker = (await db.get(model.Job, job_id)).worker_key_id
+    if operation == "done":
+        Path(config.RESULTS_DIR, f"{job_id}.zip").write_bytes(VALID_ZIP)
+    suffix = "/lease" if operation == "extend" else ""
+    kwargs = {} if operation == "extend" else {
+        "json": {"progress": .5} if operation == "progress" else {"state": operation}}
+    response = await client.patch(f"/v1/jobs/{job_id}{suffix}", headers=manager_headers, **kwargs)
+    assert response.status_code == 200, response.text
+    expected = {"extend": AppCode.JOB_LEASE_EXTENDED, "progress": AppCode.JOB_UPDATED,
+                "done": AppCode.JOB_COMPLETED, "error": AppCode.JOB_MARKED_ERROR,
+                "failed": AppCode.JOB_MARKED_FAILED}
+    assert response.json()["code"] == expected[operation].value
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).worker_key_id == assigned_worker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["result", "artifacts"])
+async def test_post_job_output_201_manager_other_worker(client, manager_headers, job_factory, db_sessions, kind):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    async with db_sessions() as db:
+        assigned_worker = (await db.get(model.Job, job_id)).worker_key_id
+    response = await client.post(f"/v1/jobs/{job_id}/{kind}", headers=manager_headers,
+                                 files={"file": ("output.zip", VALID_ZIP)})
+    assert response.status_code == 201, response.text
+    directory = config.RESULTS_DIR if kind == "result" else config.ARTIFACTS_DIR
+    assert Path(directory, f"{job_id}.zip").read_bytes() == VALID_ZIP
+    async with db_sessions() as db:
+        assert (await db.get(model.Job, job_id)).worker_key_id == assigned_worker
+
+
+@pytest.mark.asyncio
+async def test_delete_job_lease_204_manager_other_worker(client, manager_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    response = await client.delete(f"/v1/jobs/{job_id}/lease", headers=manager_headers)
+    assert response.status_code == 204, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.state == ProcessingState.QUEUED
+        assert job.worker_key_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["image", "alto", "page", "metadata"])
+async def test_get_input_200_manager_other_worker(client, manager_headers, download_case, kind):
+    case = await download_case(kind)
+    response = await client.get(case.url, headers=manager_headers)
+    assert response.status_code == 200, response.text
+    assert response.content == case.content
+
+
+@pytest.mark.asyncio
+async def test_patch_job_200_manager_null_logs_preserved(client, manager_headers, job_factory, db_sessions):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    identity = await client.get("/v1/me", headers=manager_headers)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.worker_key_id = UUID(identity.json()["data"]["id"])
+        job.final_log = ["technical report"]
+        job.final_log_user = ["public report"]
+    response = await client.patch(f"/v1/jobs/{job_id}", headers=manager_headers,
+                                  json={"progress": .5, "log": None, "log_user": None,
+                                        "final_log": None, "final_log_user": None})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        assert job.log == ["Technical log"]
+        assert job.log_user == ["User log"]
+        assert job.final_log == ["technical report"]
+        assert job.final_log_user == ["public report"]
