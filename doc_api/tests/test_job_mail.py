@@ -55,13 +55,12 @@ def mail_database(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('template,expected,needs_engine', [
     ('[{server_name}] {status} job {job_id_short}', '[Server] DONE job 12345678', False),
-    ('[{server_name}] {state} job {job_id}', '[Server] done job 12345678-0000-0000-0000-000000000001', False),
-    ('{server_name}|{state}|{job_id_short}|{image_count}|{attempt}|{engine_name}|{engine_version}|{owner_label}',
-     'Server|done|12345678|12|2|OCR|1.7|owner', True),
-    ('{state}: {image_count:03d} images', 'done: 012 images', False),
+    ('[{server_name}] {status} job {job_id}', '[Server] DONE job 12345678-0000-0000-0000-000000000001', False),
+    ('{server_name}|{status}|{job_id_short}|{image_count}|{attempt}|{engine_name}|{engine_version}|{owner_label}',
+     'Server|DONE|12345678|12|2|OCR|1.7|owner', True),
+    ('{status}: {image_count:03d} images', 'DONE: 012 images', False),
     ('Notification', 'Notification', False),
     ('{server_name}/{admin_server_name}', 'Server/Admin Server', False),
-    ('[{server_name}] {state_upper} job {job_id_short}', '[Server] DONE job 12345678', False),
 ])
 async def test_subject_template(job_mail_outbox, mail_database, monkeypatch, template, expected, needs_engine):
     monkeypatch.setattr(config, 'USER_JOB_MAIL_SUBJECT_TEMPLATE', template)
@@ -113,7 +112,7 @@ async def test_subject_template_missing_optional_values(job_mail_outbox, mail_da
 
 
 @pytest.mark.parametrize('setting', ['USER_JOB_MAIL_SUBJECT_TEMPLATE', 'ADMIN_JOB_MAIL_SUBJECT_TEMPLATE', 'INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE'])
-@pytest.mark.parametrize('template', ['{unknown}', '{job_id.__class__}', '{', '', 'a\nb', '{image_count:invalid}'])
+@pytest.mark.parametrize('template', ['{unknown}', '{state}', '{state_upper}', '{job_id.__class__}', '{', '', 'a\nb', '{image_count:invalid}'])
 def test_subject_template_invalid_configuration(monkeypatch, template, setting):
     monkeypatch.setenv(setting, template)
     with pytest.raises(ValueError, match=f'Invalid {setting}'):

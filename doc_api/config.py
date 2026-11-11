@@ -47,7 +47,7 @@ TRUE_VALUES = {"true", "1"}
 MAIL_SERVER_SUBJECT_EXAMPLES = {"server_name": "DocAPI", "admin_server_name": "DocAPI admin"}
 
 JOB_MAIL_SUBJECT_EXAMPLES = {
-    **MAIL_SERVER_SUBJECT_EXAMPLES, "status": "DONE", "state": "done", "state_upper": "DONE", "job_id": "00000000-0000-0000-0000-000000000001",
+    **MAIL_SERVER_SUBJECT_EXAMPLES, "status": "DONE", "job_id": "00000000-0000-0000-0000-000000000001",
     "job_id_short": "00000000", "image_count": 10, "attempt": 1,
     "engine_name": "ocr", "engine_version": "1.0", "owner_label": "user",
 }
@@ -231,7 +231,6 @@ class Config:
         # Job subjects: server_name, admin_server_name, status (DONE/FAILED), job_id,
         # job_id_short, image_count, attempt, engine_name, engine_version, owner_label.
         # Use {field} or Python format specs; omit unused fields.
-        # Legacy state (lowercase) and state_upper placeholders remain supported.
         # Server-error subjects accept only server_name and admin_server_name.
 
         # Internal: server errors and admin job reports -------------------------------
