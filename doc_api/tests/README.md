@@ -652,18 +652,22 @@ requests omit DocAPI credentials and do not parse source data as an API envelope
 
 ### Per-attempt job logs
 
-Process logs and separate final reports contain JSON arrays indexed from the first attempt.
+Process logs and separate final reports contain sparse JSON objects keyed by the
+zero-based attempt number. Missing attempts have no entry; responses select the
+current attempt explicitly and history is ordered numerically.
 Worker updates append to the current entry; admin replacement affects only that
 entry. Leasing clears a reused entry, adds a technical-only retry header, and
 leaves a quiet first attempt's logs null. Job detail/list responses keep string
-fields: user/readonly/worker responses show the latest attempt; admins see joined
-history. A quiet current attempt does not expose an earlier public message.
+fields: user/readonly/worker responses show the current attempt; admins and
+managers see joined history. A quiet current attempt does not expose an earlier public message.
 
 - [x] worker progress/finalization logs. [`test_worker.py::test_patch_job_200_attempt_logs`](test_worker.py).
 - [x] reused attempt entries. [`test_worker.py::test_post_job_lease_200_reused_attempt_logs`](test_worker.py).
 - [x] quiet first attempt. [`test_worker.py::test_patch_job_200_quiet_first_attempt_logs`](test_worker.py).
 - [x] admin append/replace current entry. [`test_user.py::test_patch_job_200_current_attempt_logs`](test_user.py).
 - [x] role-specific detail/list text. [`test_user.py::test_get_job_200_attempt_logs`](test_user.py).
+- [x] Convert all four log arrays to sparse objects, preserving indices, empty strings, SQL nulls and text; downgrade/re-upgrade with current-attempt padding across migration batches. [`test_migrations.py::test_upgrade_sparse_attempt_logs`](test_migrations.py).
+- [x] Send final reports only when the current attempt has nonblank text; order technical history numerically. [`test_job_mail.py::test_sparse_final_reports_use_current_attempt`](test_job_mail.py).
 
 ### Final reports and email notifications
 
@@ -721,8 +725,8 @@ an SMTP attempt. All tests mock SMTP.
 - [x] recipient flood limits. [`test_job_mail.py::test_recipient_flood_limits`](test_job_mail.py).
 - [x] invalid mail configuration is logged. [`test_job_mail.py::test_invalid_mail_configuration_is_logged`](test_job_mail.py).
 
-- [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_pad_missing_attempts`](test_worker.py).
-- [x] admin append/replace writes pad missing attempt positions. [`test_user.py::test_patch_job_200_logs_pad_missing_attempts`](test_user.py).
+- [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_sparse_attempts`](test_worker.py).
+- [x] admin append/replace writes pad missing attempt positions. [`test_user.py::test_patch_job_200_logs_sparse_attempts`](test_user.py).
 
 - [x] configurable internal-error subjects. [`test_job_mail.py::test_internal_error_subject_template`](test_job_mail.py).
 - [x] admin subjects use the admin server name by default. [`test_job_mail.py::test_admin_subject_default_uses_admin_server_name`](test_job_mail.py).
@@ -1273,7 +1277,7 @@ User/worker bodies retain the narrower `JobProgressUpdate` validation, and worke
 retain their existing transition checks, return codes, and lease payloads.
 
 - [x] Every source/target state combination and final-report editing outside finalization; [`test_user.py::test_patch_job_200_admin_any_transition`](test_user.py).
-- [x] Former admin job-edit tests moved to the shared route in [`test_user.py`](test_user.py), including explicit field overrides, attempt padding, log replacement, deletion races, and notification behavior.
+- [x] Former admin job-edit tests moved to the shared route in [`test_user.py`](test_user.py), including explicit field overrides, sparse attempt logs, log replacement, deletion races, and notification behavior.
 - [x] Optional input uploads and existing result downloads in every state, with another owner's job; [`test_user.py`](test_user.py).
 - [x] Admin-only fields remain rejected for ordinary user/worker requests, and the old admin PATCH path is absent from routing and OpenAPI; [`test_user.py`](test_user.py).
 - [x] Inactive engine selection by name/version/default, including names with multiple inactive versions; [`test_user.py::test_post_job_201_admin_inactive_engine`](test_user.py).

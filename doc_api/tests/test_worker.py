@@ -232,8 +232,8 @@ async def test_post_job_lease_200_many_workers_and_retries(client, worker_pool, 
                 if state != ProcessingState.QUEUED:
                     assert job.started_date == old
                     assert job.progress == 0.0
-                    assert "".join(entry or "" for entry in (job.log or [])).count("ATTEMPT ") == 1
-                    assert job.log_user == ["User log"] + [None] * job.previous_attempts
+                    assert "".join(entry or "" for entry in (job.log or {}).values()).count("ATTEMPT ") == 1
+                    assert job.log_user == {"0": "User log"}
             elif state in {ProcessingState.ERROR, ProcessingState.PROCESSING}:
                 assert job.state == ProcessingState.FAILED
                 assert job.previous_attempts == 2
@@ -394,7 +394,7 @@ async def test_post_job_lease_200_non_expiring(client, worker_headers, job_facto
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.progress == 0.5
-        assert job.log[job.previous_attempts].endswith("still working")
+        assert job.log[str(job.previous_attempts)].endswith("still working")
 
 
 #
@@ -2361,8 +2361,8 @@ async def test_patch_job_200_job_marked_failed(client, worker_headers, db_sessio
         assert job.progress == 1.0
         assert job.finished_date >= before
         assert job.last_change == job.finished_date
-        assert job.log == ["Technical log\nPermanent error"]
-        assert job.log_user == ["User log\nCannot process input"]
+        assert job.log == {'0': "Technical log\nPermanent error"}
+        assert job.log_user == {'0': "User log\nCannot process input"}
         assert job.previous_attempts == 0
         finished_date = job.finished_date
 
@@ -2372,7 +2372,7 @@ async def test_patch_job_200_job_marked_failed(client, worker_headers, db_sessio
         job = await db.get(model.Job, job_id)
         assert job.state == ProcessingState.FAILED
         assert job.finished_date == finished_date
-        assert job.log == ["Technical log\nPermanent error"]
+        assert job.log == {'0': "Technical log\nPermanent error"}
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
@@ -2390,7 +2390,7 @@ async def test_patch_job_200_job_already_marked_failed(client, worker_headers, d
         if worker_role != "admin":
             assert after == before
         else:
-            assert after["log"] == ["Technical log\nMust not append again"]
+            assert after["log"] == {"0": "Technical log\nMust not append again"}
             assert after["state"] == ProcessingState.FAILED
 
 
@@ -2647,8 +2647,8 @@ async def test_patch_job_200_error_during_lease_poll(client, worker_headers, oth
         job = await db.get(model.Job, job_id)
         assert job.state == (ProcessingState.FAILED if exhausted else ProcessingState.PROCESSING)
         assert job.previous_attempts == (2 if exhausted else 1)
-        assert "".join(entry or "" for entry in (job.log or [])).count("retry race") == 1
-        assert "".join(entry or "" for entry in (job.log or [])).count("ATTEMPT ") == (0 if exhausted else 1)
+        assert "".join(entry or "" for entry in (job.log or {}).values()).count("retry race") == 1
+        assert "".join(entry or "" for entry in (job.log or {}).values()).count("ATTEMPT ") == (0 if exhausted else 1)
 
 
 @pytest.mark.parametrize("worker_role", ["worker"])
@@ -2691,8 +2691,8 @@ async def test_patch_job_200_409_concurrent_error_and_failure(client, worker_hea
             job = await db.get(model.Job, job_id)
             assert job.state == ProcessingState.FAILED and job.progress == 1.0
             assert job.finished_date is not None
-            assert "".join(entry or "" for entry in (job.log or [])).count("report-failed") == 1
-            assert "".join(entry or "" for entry in (job.log or [])).count("report-error") == (1 if error.status_code == 200 else 0)
+            assert "".join(entry or "" for entry in (job.log or {}).values()).count("report-failed") == 1
+            assert "".join(entry or "" for entry in (job.log or {}).values()).count("report-error") == (1 if error.status_code == 200 else 0)
         retry = await client.post("/v1/jobs/lease", headers=worker_headers)
         assert retry.json()["code"] == AppCode.JOB_QUEUE_EMPTY.value
     finally:
@@ -2754,9 +2754,9 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
     assert lease.json()["code"] == AppCode.JOB_LEASED.value
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
-        assert job.log[0] == "first\nsecond\n"
-        assert job.log[1].startswith("ATTEMPT 2 STARTED AT ")
-        assert job.log_user == ["first\nsecond\n", None]
+        assert job.log['0'] == "first\nsecond\n"
+        assert job.log['1'].startswith("ATTEMPT 2 STARTED AT ")
+        assert job.log_user == {'0': "first\nsecond\n"}
     # The previous attempt's public messages must not appear while this one is quiet.
     for headers in [user_headers, readonly_headers]:
         response = await client.get(f"/v1/jobs/{job_id}", headers=headers)
@@ -2785,17 +2785,21 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
-@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.parametrize("attempt", [0, 1, 2])
 @pytest.mark.asyncio
 async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, job_factory, db_sessions, attempt):
     job_id = await job_factory(ProcessingState.PROCESSING)
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.previous_attempts = attempt
-        job.log = ["previous technical"] * attempt + ["discard technical"]
-        job.log_user = ["previous public"] * attempt + ["discard public"]
-        job.final_log = ["previous final technical"] * attempt + ["discard final technical"]
-        job.final_log_user = ["previous final public"] * attempt + ["discard final public"]
+        job.log = {**({"0": "previous technical"} if attempt else {}),
+                     str(attempt): "discard technical", "9": "discard later attempt"}
+        job.log_user = {**({"0": "previous public"} if attempt else {}),
+                     str(attempt): "discard public", "9": "discard later attempt"}
+        job.final_log = {**({"0": "previous final technical"} if attempt else {}),
+                     str(attempt): "discard final technical", "9": "discard later attempt"}
+        job.final_log_user = {**({"0": "previous final public"} if attempt else {}),
+                     str(attempt): "discard final public", "9": "discard later attempt"}
     response = await client.delete(f"/v1/jobs/{job_id}/lease", headers=worker_headers)
     assert response.status_code == 204, response.text
     response = await client.post("/v1/jobs/lease", headers=worker_headers)
@@ -2803,15 +2807,16 @@ async def test_post_job_lease_200_reused_attempt_logs(client, worker_headers, jo
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.previous_attempts == attempt
-        assert job.final_log == (["previous final technical", None] if attempt else None)
-        assert job.final_log_user == (["previous final public", None] if attempt else None)
+        assert set(job.log or {}) == ({"0", str(attempt)} if attempt else set())
+        assert job.final_log == ({'0': "previous final technical"} if attempt else None)
+        assert job.final_log_user == ({'0': "previous final public"} if attempt else None)
         if attempt == 0:
             assert job.log is None and job.log_user is None
         else:
-            assert job.log[0] == "previous technical"
-            assert job.log[1].startswith("ATTEMPT 2 STARTED AT ")
-            assert "discard" not in job.log[1]
-            assert job.log_user == ["previous public", None]
+            assert job.log['0'] == "previous technical"
+            assert job.log[str(attempt)].startswith(f"ATTEMPT {attempt + 1} STARTED AT ")
+            assert "discard" not in job.log[str(attempt)]
+            assert job.log_user == {'0': "previous public"}
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
@@ -2845,10 +2850,10 @@ async def test_patch_job_200_final_reports(client, worker_headers, job_factory, 
     assert response.status_code == 200, response.text
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
-        assert job.log == ['Technical log']
-        assert job.log_user == ['User log']
-        assert job.final_log == ['technical final report']
-        assert job.final_log_user == ['user final report']
+        assert job.log == {'0': 'Technical log'}
+        assert job.log_user == {'0': 'User log'}
+        assert job.final_log == {'0': 'technical final report'}
+        assert job.final_log_user == {'0': 'user final report'}
     await check_job_notifications()
     if state == 'error':
         assert job_mail_outbox == []
@@ -2900,7 +2905,7 @@ async def test_post_job_lease_200_exhausted_attempt_mail(client, worker_headers,
         job = await db.get(model.Job, job_id)
         job.previous_attempts = config.JOB_MAX_ATTEMPTS - 1
         job.last_change = datetime.now(timezone.utc) - timedelta(days=1)
-        job.final_log = [None] * (config.JOB_MAX_ATTEMPTS - 1) + ['last report']
+        job.final_log = {str(config.JOB_MAX_ATTEMPTS - 1): 'last report'}
     await run_lease_check(db_sessions)
     await check_job_notifications()
     response = await client.post('/v1/jobs/lease', headers=worker_headers)
@@ -2926,7 +2931,7 @@ async def test_patch_job_200_smtp_failure(client, worker_headers, job_factory, d
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.state == ProcessingState.FAILED
-        assert job.final_log == ['report']
+        assert job.final_log == {'0': 'report'}
 
 
 @pytest.mark.parametrize('worker_role', ['worker', 'admin'])
@@ -2988,12 +2993,13 @@ async def test_patch_job_200_api_responsive_during_mail(client, worker_headers, 
 
 
 @pytest.mark.parametrize('worker_role', ['worker', 'admin'])
+@pytest.mark.parametrize('attempt', [2, 1000])
 @pytest.mark.asyncio
-async def test_patch_job_200_logs_pad_missing_attempts(client, worker_headers, job_factory, db_sessions):
+async def test_patch_job_200_logs_sparse_attempts(client, worker_headers, job_factory, db_sessions, attempt):
     job_id = await job_factory(ProcessingState.PROCESSING)
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
-        job.previous_attempts = 2
+        job.previous_attempts = attempt
         job.log = job.log_user = job.final_log = job.final_log_user = None
     response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
         json={'log': 'technical progress', 'log_user': 'user progress'})
@@ -3003,10 +3009,10 @@ async def test_patch_job_200_logs_pad_missing_attempts(client, worker_headers, j
     assert response.status_code == 200, response.text
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
-        assert job.log == [None, None, 'technical progress']
-        assert job.log_user == [None, None, 'user progress']
-        assert job.final_log == [None, None, 'technical final']
-        assert job.final_log_user == [None, None, 'user final']
+        assert job.log == {str(attempt): 'technical progress'}
+        assert job.log_user == {str(attempt): 'user progress'}
+        assert job.final_log == {str(attempt): 'technical final'}
+        assert job.final_log_user == {str(attempt): 'user final'}
 
 
 @pytest.mark.parametrize('worker_role', ['worker', 'admin'])
@@ -3033,7 +3039,7 @@ async def test_patch_job_200_mail_preparation_failure(client, worker_headers, jo
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.state == ProcessingState.FAILED
-        assert job.final_log == ['final report']
+        assert job.final_log == {'0': 'final report'}
 
 
 # Admin bypasses on the shared worker routes.
@@ -3161,7 +3167,7 @@ async def test_patch_job_200_admin_log_lease_explicit_timestamp(client, admin_he
     assert lease.lease_expire_at == timestamp + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
-        assert getattr(job, field)[0].endswith('new message')
+        assert getattr(job, field)['0'].endswith('new message')
         assert job.last_change == timestamp
 
 
@@ -3170,7 +3176,7 @@ async def test_patch_job_200_admin_log_lease_explicit_timestamp(client, admin_he
 async def test_patch_job_200_worker_null_logs_do_not_clear(client, worker_headers, job_factory, db_sessions, operation):
     job_id = await job_factory(ProcessingState.PROCESSING)
     fields = ['log', 'log_user', 'final_log', 'final_log_user']
-    entries = ['earlier attempt', 'current attempt']
+    entries = {'0': 'earlier attempt', '1': 'current attempt'}
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.previous_attempts = 1
@@ -3254,15 +3260,15 @@ async def test_patch_job_200_manager_null_logs_preserved(client, manager_headers
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
         job.worker_key_id = UUID(identity.json()["data"]["id"])
-        job.final_log = ["technical report"]
-        job.final_log_user = ["public report"]
+        job.final_log = {'0': "technical report"}
+        job.final_log_user = {'0': "public report"}
     response = await client.patch(f"/v1/jobs/{job_id}", headers=manager_headers,
                                   json={"progress": .5, "log": None, "log_user": None,
                                         "final_log": None, "final_log_user": None})
     assert response.status_code == 200, response.text
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
-        assert job.log == ["Technical log"]
-        assert job.log_user == ["User log"]
-        assert job.final_log == ["technical report"]
-        assert job.final_log_user == ["public report"]
+        assert job.log == {'0': "Technical log"}
+        assert job.log_user == {'0': "User log"}
+        assert job.final_log == {'0': "technical report"}
+        assert job.final_log_user == {'0': "public report"}

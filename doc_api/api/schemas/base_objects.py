@@ -228,10 +228,12 @@ class JobProper(BaseModel):
     @field_validator("log", "log_user", "final_log", "final_log_user", mode="before")
     @classmethod
     def format_attempt_logs(cls, value, info):
-        if isinstance(value, list):
+        if isinstance(value, dict):
             if (info.context or {}).get("all_attempt_logs", False):
-                return "\n\n".join(entry for entry in value if entry is not None) or None
-            return value[-1] if value else None
+                return "\n\n".join(value[key] for key in sorted(value, key=int)) or None
+            previous_attempts = info.data.get("previous_attempts")
+            index = 0 if previous_attempts is None else previous_attempts
+            return value.get(str(index))
         return value
 
     inputs_deleted_at: Optional[datetime] = Field(

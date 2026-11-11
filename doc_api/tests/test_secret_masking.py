@@ -362,8 +362,8 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
         job.engine_id = engine.id
         job.definition = {"images": [], "engine_settings": copy.deepcopy(SETTINGS)}
         job.previous_attempts = 1
-        job.log = [None, f"worker dump api_key={OPENAI_KEY}"]
-        job.log_user = [f"old {OPENAI_KEY}", f"using {OPENAI_KEY}"]
+        job.log = {'1': f"worker dump api_key={OPENAI_KEY}"}
+        job.log_user = {'0': f"old {OPENAI_KEY}", '1': f"using {OPENAI_KEY}"}
     responses = [await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)]
     if reader_role != "worker":
         responses.append(await client.get("/v1/jobs", headers=reader_headers))
@@ -382,7 +382,7 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.definition["engine_settings"] == SETTINGS
-        assert job.log_user == [f"old {OPENAI_KEY}", f"using {OPENAI_KEY}"]
+        assert job.log_user == {'0': f"old {OPENAI_KEY}", '1': f"using {OPENAI_KEY}"}
 
 
 @pytest.mark.parametrize("reader_role", ["user", "admin", "manager"])
@@ -396,7 +396,7 @@ async def test_get_job_200_partial_keys_revealed_partly(monkeypatch, client, rea
         job = await db.get(model.Job, job_id)
         job.engine_id = engine.id
         job.definition = {"images": [], "engine_settings": {"vlm": {"api_key": OPENAI_KEY, "token": OPENAI_KEY}}}
-        job.log_user = [f"calling api_key={OPENAI_KEY}"]
+        job.log_user = {'0': f"calling api_key={OPENAI_KEY}"}
     response = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
     assert response.status_code == 200, response.text
     data = response.json()["data"]

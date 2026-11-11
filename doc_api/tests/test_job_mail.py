@@ -72,7 +72,7 @@ async def test_subject_template(job_mail_outbox, mail_database, monkeypatch, tem
     db = mail_database(owner, engine)
     job = SimpleNamespace(id=UUID('12345678-0000-0000-0000-000000000001'), owner_key_id='owner-id',
         engine_id='engine-id', image_count=12, previous_attempts=1, state=ProcessingState.DONE,
-        final_log=[None, 'technical report'], final_log_user=[None, 'user report'])
+        final_log={'1': 'technical report'}, final_log_user={'1': 'user report'})
     reports = await job_mail.get_final_reports(db, job)
     assert [report.subject for report in reports] == [expected, 'Admin: ' + expected]
     assert db.get.await_count == (2 if needs_engine else 1)
@@ -83,7 +83,7 @@ async def test_subject_template_missing_optional_values(job_mail_outbox, mail_da
     monkeypatch.setattr(config, 'ADMIN_JOB_MAIL_SUBJECT_TEMPLATE', '{engine_name}/{engine_version}/{owner_label}/{attempt}')
     db = mail_database(None)
     job = SimpleNamespace(id=UUID(int=1), owner_key_id='owner-id', engine_id=None, image_count=0,
-        previous_attempts=None, state=ProcessingState.FAILED, final_log=['report'], final_log_user=None)
+        previous_attempts=None, state=ProcessingState.FAILED, final_log={'0': 'report'}, final_log_user=None)
     reports = await job_mail.get_final_reports(db, job)
     assert reports[0].subject == '///0'
     db.get.assert_awaited_once()
@@ -133,7 +133,7 @@ async def finalized_job(job_factory, db_sessions, job_mail_outbox):
     job_id = await job_factory(ProcessingState.DONE)
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, job_id)
-        job.final_log_user = ['user final report']
+        job.final_log_user = {'0': 'user final report'}
         owner = await db.get(model.Key, job.owner_key_id)
         owner.email = 'owner@example.com'
         owner.email_notifications = True
@@ -154,7 +154,7 @@ async def test_notification_preparation_and_restart_are_idempotent(finalized_job
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, finalized_job)
         job.previous_attempts = 1
-        job.final_log_user = ['user final report', 'report after reprocessing']
+        job.final_log_user = {'0': 'user final report', '1': 'report after reprocessing'}
     await job_mail.check_job_notifications()
     assert len(job_mail_outbox) == 1
     rows = await notification_rows(db_sessions, finalized_job)
@@ -164,7 +164,7 @@ async def test_notification_preparation_and_restart_are_idempotent(finalized_job
 @pytest.mark.asyncio
 async def test_concurrent_mail_checkers_claim_once(finalized_job, db_sessions, job_mail_outbox):
     async with db_sessions.begin() as db:
-        (await db.get(model.Job, finalized_job)).final_log = ['technical final report']
+        (await db.get(model.Job, finalized_job)).final_log = {'0': 'technical final report'}
     await asyncio.gather(*(job_mail.check_job_notifications() for _ in range(4)))
     assert len(job_mail_outbox) == 2
     rows = await notification_rows(db_sessions, finalized_job)
@@ -347,6 +347,32 @@ async def test_admin_subject_default_uses_admin_server_name(job_mail_outbox, mai
     db = mail_database(SimpleNamespace(label='owner'))
     job = SimpleNamespace(id=UUID('12345678-0000-0000-0000-000000000001'), owner_key_id='owner-id',
         engine_id=None, image_count=1, previous_attempts=0, state=ProcessingState.DONE,
-        final_log=['technical report'], final_log_user=None)
+        final_log={'0': 'technical report'}, final_log_user=None)
     reports = await job_mail.get_final_reports(db, job)
     assert reports[0].subject == '[Admin] DONE job 12345678 (owner)'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('current_report', [None, '', '   ', 'current report'])
+async def test_sparse_final_reports_use_current_attempt(job_factory, db_sessions, job_mail_outbox, current_report):
+    job_id = await job_factory(ProcessingState.DONE)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 10
+        entries = {'2': 'middle report', '0': 'first report'}
+        if current_report is not None:
+            entries['10'] = current_report
+        job.final_log = job.final_log_user = entries
+        owner = await db.get(model.Key, job.owner_key_id)
+        owner.email = 'owner@example.com'
+        owner.email_notifications = True
+    await job_mail.check_job_notifications()
+    rows = await notification_rows(db_sessions, job_id)
+    if current_report and current_report.strip():
+        assert {row.channel: row.body for row in rows} == {
+            'EXTERNAL': current_report,
+            'INTERNAL': 'first report\n\nmiddle report\n\n' + current_report,
+        }
+        assert len(job_mail_outbox) == 2
+    else:
+        assert not rows and not job_mail_outbox

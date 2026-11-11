@@ -9,7 +9,7 @@ from time import time
 from string import Formatter
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import exc, select, exists, func, and_, or_
+from sqlalchemy import exc, select, exists, func, and_, or_, cast, String
 from sqlalchemy.dialects.postgresql import insert
 
 from doc_api.api.database import open_session
@@ -64,16 +64,16 @@ async def get_final_reports(db: AsyncSession, job: model.Job) -> list[JobMail]:
     subjects = {channel: " ".join(template.format(**values).splitlines())
                 for channel, template in templates.items()}
     reports = []
-    index = job.previous_attempts or 0
-    user_report = job.final_log_user[index] if job.final_log_user and index < len(job.final_log_user) else None
-    technical_report = job.final_log[index] if job.final_log and index < len(job.final_log) else None
+    key = str(0 if job.previous_attempts is None else job.previous_attempts)
+    user_report = (job.final_log_user or {}).get(key)
+    technical_report = (job.final_log or {}).get(key)
     if (user_report and user_report.strip() and owner is not None and owner.email_notifications
             and owner.email):
         reports.append(JobMail("EXTERNAL", (owner.email,), subjects["EXTERNAL"], user_report))
     recipients = tuple(address for address in config.INTERNAL_MAIL_RECEIVER_MAILS if address.strip())
     if technical_report and technical_report.strip() and recipients:
         # Admins retain history, but an empty current report must not resend old reports.
-        history = "\n\n".join(entry for entry in job.final_log if entry is not None)
+        history = "\n\n".join(job.final_log[key] for key in sorted(job.final_log, key=int))
         reports.append(JobMail("INTERNAL", recipients, subjects["INTERNAL"], history))
     return reports
 
@@ -122,10 +122,10 @@ def send_final_report(mail: JobMail) -> bool | None:
 async def prepare_job_notifications(db: AsyncSession):
     """Create each job's recipient snapshots once, across API processes."""
     last_id = None
-    index = func.coalesce(model.Job.previous_attempts, 0)
+    key = cast(func.coalesce(model.Job.previous_attempts, 0), String)
     has_report = or_(
-        func.length(func.btrim(model.Job.final_log.op('->>')(index), ' \t\r\n')) > 0,
-        func.length(func.btrim(model.Job.final_log_user.op('->>')(index), ' \t\r\n')) > 0,
+        func.length(func.btrim(model.Job.final_log.op('->>')(key), ' \t\r\n')) > 0,
+        func.length(func.btrim(model.Job.final_log_user.op('->>')(key), ' \t\r\n')) > 0,
     )
     already_prepared = exists(select(model.JobNotification.id).where(
         model.JobNotification.job_id == model.Job.id,
