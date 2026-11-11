@@ -941,6 +941,92 @@ downloads, and failed source requests.
 - [x] worker external request has no docapi credentials. [`test_worker_external_request_has_no_docapi_credentials`](../../doc_worker/tests/test_doc_worker_wrapper.py).
 - [x] worker external input failure. [`test_worker_external_input_failure`](../../doc_worker/tests/test_doc_worker_wrapper.py).
 
+### Optional worker health mail
+
+The wrapper accepts `health_config=WorkerHealthConfig(...)` from
+`doc_worker.doc_worker_wrapper`, together with a `mail_sender`. Constructor arguments `identity` (class name by default), `hostname` (automatic
+by default), and `mail_subject` apply to both alive and failure emails. The subject
+default is `[{identity}] {status}: {hostname}`; supported placeholders are
+`identity`, `hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
+Startup uses the same
+alive report as periodic checks. Configuring health without a mail sender logs
+a warning and rejects initialization before creating directories or polling. Reports use short aligned rows and separate
+time-window sections for mobile reading. Lifecycle mail is
+opt-in and independent of job final reports. Defaults are an immediate alive report at startup, daily
+alive mail; an alive interval of zero disables
+periodic mail. Alive messages report process uptime and the last pipeline
+return, rather than guaranteeing that processing is progressing.
+
+- [x] Startup, periodic alive mail, disabling mail, masking, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+- [x] Wrapper lifecycle integration, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+- [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+
+Explicit worker failures are mailed whenever a mail sender is configured, even
+without health reports. Each failure sends an alert with available exception
+details and tracebacks; secrets are masked and SMTP failures are contained.
+
+### Persistent worker job history
+
+`job_history_path` enables per-worker JSONL history independently of mail settings.
+It is disabled by default in the general wrapper. Each completed local attempt
+records the job ID, attempt number, UTC start/finish times, duration, outcome,
+engine identity and image count. Retried job IDs produce separate entries; idle
+polls produce none. Logs, exceptions, input links and engine definitions are not
+stored. Outcomes describe the worker attempt, including interrupted/crashed
+attempts observed by Python; a hard kill cannot write a completion record.
+
+Each attempt appends one JSON record per line without reading or rewriting
+previous entries. History survives job-directory cleanup and restarts. A sibling
+`.stats.json` file holds cumulative totals, known job IDs for unique-job counts,
+and compact recent records for the exact 7-day and 24-hour windows.
+
+Normal appends and alive reports use the cache. All-time counters are updated
+incrementally; rolling windows inspect only the recent cached records. A stale
+cache reads only the missing JSONL tail. Missing/invalid caches rebuild from
+history once, and the cache is atomically replaced. Use separate paths per worker.
+Malformed history lines are preserved, skipped with a warning, and counted in
+the health report. History/cache write failures are logged without changing the
+processing outcome. Rolling windows use completion timestamps.
+
+- [x] Persistence, retry counts, time windows, append-only writes, cache reconstruction/tail recovery, corrupt records and concurrent statistics reads. [`test_job_history.py`](../../doc_worker/tests/test_job_history.py).
+- [x] Pipeline outcomes, interruptions, crashes, idle polls and history failures. [`test_job_finished.py`](../../doc_worker/tests/test_job_finished.py).
+- [x] Identical startup/periodic alive reports and graceful handling of unavailable statistics. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+
+### Worker final reports and automatic error messages
+
+`DocWorkerWrapper._report_job_response()` handles OK, ERROR and FAIL reporting
+and failure emails when a mail sender is configured. Success is sent only after uploading results.
+Reporting returns a boolean and never replaces the original pipeline response
+or reports a different state as a fallback. Reporting failures send a worker failure email,
+retain local job files, and are recorded separately as `reported_to_api`
+in history and `report fail` in alive summaries. Callbacks receive the original
+pipeline response.
+Implementations return their final logs directly through
+`WorkerResponse.ok/error/fail(final_log=..., final_log_user=...)`. The wrapper
+sends those reports, adding exception and API diagnostics only to the technical
+log. Failures outside processing use the wrapper's configurable error messages.
+
+The `error_messages` constructor argument overrides selected entries from
+[`DEFAULT_WORKER_ERRORS`](../../doc_worker/doc_worker_wrapper.py), for example:
+
+```python
+error_messages={
+    "download_job_data": WorkerErrorMessage(
+        final_log="Input preparation failed",
+        final_log_user="Could not download the inputs. Please try again later.",
+    ),
+}
+```
+
+Import `WorkerErrorMessage` from `doc_worker.doc_worker_wrapper`. Omitted entries keep
+the existing English defaults. Either field may be `None` to omit its message;
+technical diagnostics are retained. `download_input` supports `{kind}` and
+`{filename}` in both messages. Invalid names or templates fail at construction.
+Explicit responses returned by `process_job` retain their own messages.
+
+- [x] Separate technical/user overrides, unchanged defaults, original outcomes and technical-only exception diagnostics. [`test_job_finished.py`](../../doc_worker/tests/test_job_finished.py).
+- [x] Custom input download messages for image, ALTO and PAGE inputs from both DocAPI and external links. [`test_doc_worker_wrapper.py`](../../doc_worker/tests/test_doc_worker_wrapper.py).
+
 ### File-transfer failure behavior
 
 Temporary siblings use a single naming convention beside their official file:

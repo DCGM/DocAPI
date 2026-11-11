@@ -181,3 +181,24 @@ def test_worker_engine_download_always_streams(tmp_path):
     assert not (engine_dir / "engine.zip").exists()
     worker.adapter.get_engine_files_stream.assert_called_once()
     worker.adapter.get_engine_files.assert_not_called()
+
+
+@pytest.mark.parametrize('kind', ['image', 'alto', 'page'])
+@pytest.mark.parametrize('external', [False, True])
+def test_custom_input_download_errors_apply_to_both_sources(tmp_path, kind, external):
+    from doc_worker.doc_worker_wrapper import WorkerErrorMessage
+    worker = InputWorker('https://api.invalid', Mock(), base_dir=str(tmp_path), error_messages={
+        'download_input': WorkerErrorMessage('Cannot download {kind}: {filename}', 'Soubor {filename} není dostupný.')})
+    image = SimpleNamespace(id=uuid4(), name='page.jpg', **{
+        f'{kind}_uploaded': not external,
+        f'{kind}_url': 'https://files.invalid/input' if external else None})
+    worker.current_job = SimpleNamespace(id=uuid4())
+    worker.adapter = Mock()
+    getattr(worker.adapter, f'get_{kind}').return_value = AdapterResponse(status=503)
+    worker._download_external_input = Mock(side_effect=ValueError('private diagnostic'))
+    result = worker._download_input(image, kind, str(tmp_path / 'output'))
+    assert result.status == WorkerResponseStatus.ERROR
+    label = 'image' if kind == 'image' else kind.upper()
+    assert result.final_log == f'Cannot download {label}: page.jpg'
+    assert result.final_log_user == 'Soubor page.jpg není dostupný.'
+    assert not (tmp_path / 'output').exists()
