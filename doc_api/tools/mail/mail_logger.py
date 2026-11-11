@@ -18,6 +18,9 @@ def get_internal_mail_logger():
                       port=config.INTERNAL_MAIL_PORT,
                       sender_name=config.INTERNAL_MAIL_SENDER_NAME,
                       password=config.INTERNAL_MAIL_PASSWORD,
+                      username=config.INTERNAL_MAIL_USERNAME,
+                      security=config.INTERNAL_MAIL_SECURITY,
+                      timeout=config.INTERNAL_MAIL_TIMEOUT_SECONDS,
                       flood_level=config.INTERNAL_MAIL_FLOOD_LEVEL)
 
 
@@ -29,6 +32,9 @@ def get_external_mail_logger():
                       port=config.EXTERNAL_MAIL_PORT,
                       sender_name=config.EXTERNAL_MAIL_SENDER_NAME,
                       password=config.EXTERNAL_MAIL_PASSWORD,
+                      username=config.EXTERNAL_MAIL_USERNAME,
+                      security=config.EXTERNAL_MAIL_SECURITY,
+                      timeout=config.EXTERNAL_MAIL_TIMEOUT_SECONDS,
                       flood_level=config.EXTERNAL_MAIL_FLOOD_LEVEL)
 
 
@@ -54,7 +60,8 @@ class MailLogger:
             flood_level: int = 1000000000000000,
             subject: str = f'%(subject)s',
             username: Optional[str] = None,
-            security: str = 'auto'):
+            security: str = 'auto',
+            timeout: float = 60):
 
         self.logger_name = logger_name
         self.mail_handler = None
@@ -91,7 +98,8 @@ class MailLogger:
                             sender_name=sender_name,
                             username=username,
                             password=password,
-                            security=security)
+                            security=security,
+                            timeout=timeout)
         self.mail_handler = MailHandler(sender, subject=subject, flood_level=flood_level)
         self.mail_handler.name = 'mail_handler'
 

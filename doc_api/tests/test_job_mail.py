@@ -376,3 +376,40 @@ async def test_sparse_final_reports_use_current_attempt(job_factory, db_sessions
         assert len(job_mail_outbox) == 2
     else:
         assert not rows and not job_mail_outbox
+
+
+@pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
+def test_job_mail_passes_smtp_security_and_username(job_mail_outbox, monkeypatch, channel):
+    sender_factory = Mock()
+    monkeypatch.setattr(job_mail, "MailSender", sender_factory)
+    monkeypatch.setattr(config, f"{channel}_MAIL_SECURITY", "starttls")
+    monkeypatch.setattr(config, f"{channel}_MAIL_USERNAME", "smtp-user")
+    monkeypatch.setattr(config, f"{channel}_MAIL_TIMEOUT_SECONDS", 12.5)
+    job_mail.send_final_report(job_mail.JobMail(channel, ("one@example.com",), "subject", "report"))
+    assert sender_factory.call_args.kwargs["security"] == "starttls"
+    assert sender_factory.call_args.kwargs["username"] == "smtp-user"
+    assert sender_factory.call_args.kwargs["timeout"] == 12.5
+    sender_factory.return_value.send.assert_called_once()
+
+
+@pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
+def test_mail_logger_passes_smtp_security_and_username(monkeypatch, channel):
+    from doc_api.tools.mail import mail_logger
+    factory = Mock()
+    monkeypatch.setattr(mail_logger, "MailLogger", factory)
+    monkeypatch.setattr(config, f"{channel}_MAIL_SECURITY", "starttls")
+    monkeypatch.setattr(config, f"{channel}_MAIL_USERNAME", "smtp-user")
+    monkeypatch.setattr(config, f"{channel}_MAIL_TIMEOUT_SECONDS", 12.5)
+    getattr(mail_logger, f"get_{channel.lower()}_mail_logger")()
+    assert factory.call_args.kwargs["security"] == "starttls"
+    assert factory.call_args.kwargs["username"] == "smtp-user"
+    assert factory.call_args.kwargs["timeout"] == 12.5
+
+
+@pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_mail_timeout_must_be_finite_positive(monkeypatch, channel, value):
+    setting = f"{channel}_MAIL_TIMEOUT_SECONDS"
+    monkeypatch.setenv(setting, value)
+    with pytest.raises(ValueError, match=setting):
+        Config()

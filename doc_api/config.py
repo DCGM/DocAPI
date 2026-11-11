@@ -3,6 +3,7 @@ import os
 import logging
 import time
 import socket
+import math
 from string import Formatter
 from pathlib import Path
 import re
@@ -222,6 +223,11 @@ class Config:
         self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
         self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
         self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
+        self.INTERNAL_MAIL_USERNAME = os.getenv("INTERNAL_MAIL_USERNAME", None)
+        self.INTERNAL_MAIL_SECURITY = os.getenv("INTERNAL_MAIL_SECURITY", "auto")
+        self.INTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("INTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
+        if not math.isfinite(self.INTERNAL_MAIL_TIMEOUT_SECONDS) or self.INTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
+            raise ValueError("INTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
         self.INTERNAL_MAIL_RECEIVER_MAILS = [
             address.strip() for address in os.getenv("INTERNAL_MAIL_RECEIVER_MAILS", "").split(",")
             if address.strip()
@@ -243,6 +249,11 @@ class Config:
         self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)
         self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
         self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
+        self.EXTERNAL_MAIL_USERNAME = os.getenv("EXTERNAL_MAIL_USERNAME", None)
+        self.EXTERNAL_MAIL_SECURITY = os.getenv("EXTERNAL_MAIL_SECURITY", "auto")
+        self.EXTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("EXTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
+        if not math.isfinite(self.EXTERNAL_MAIL_TIMEOUT_SECONDS) or self.EXTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
+            raise ValueError("EXTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
         self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
         self.USER_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
             "USER_JOB_MAIL_SUBJECT_TEMPLATE", "[{server_name}] {state_upper} job {job_id_short}")
