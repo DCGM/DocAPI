@@ -1,5 +1,6 @@
 import asyncio
 import logging.config
+from math import isfinite
 import traceback
 from contextlib import asynccontextmanager, suppress
 from typing import Optional, List, Set
@@ -277,7 +278,11 @@ async def validation_handler(_: Request, exc: RequestValidationError):
         # UploadFile/type validators can include exception objects in ctx.
         # Preserve their messages without turning a client error into a 500.
         # Errors echo the submitted input, which may hold secrets.
-        details=mask_secrets_in_struct(jsonable_encoder(exc.errors(), custom_encoder={Exception: str}))
+        details=mask_secrets_in_struct(jsonable_encoder(exc.errors(), custom_encoder={
+            Exception: str,
+            # Invalid numeric input must still produce a valid JSON error response.
+            float: lambda value: value if isfinite(value) else str(value),
+        }))
     )
     return validate_client_error_response(payload)
 

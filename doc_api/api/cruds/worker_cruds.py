@@ -84,7 +84,7 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID, worker_
             if code != AppCode.JOB_RETRIEVED:
                 return None, None, code
 
-            if db_job.state != base_objects.ProcessingState.PROCESSING:
+            if worker_key_id is not None and db_job.state != base_objects.ProcessingState.PROCESSING:
                 return None, None, AppCode.JOB_NOT_IN_PROCESSING
 
             lease_expire_at, server_time = get_new_lease()
@@ -103,7 +103,7 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Op
             if code != AppCode.JOB_RETRIEVED:
                 return code
 
-            if db_job.state != base_objects.ProcessingState.PROCESSING:
+            if worker_key_id is not None and db_job.state != base_objects.ProcessingState.PROCESSING:
                 return AppCode.JOB_NOT_IN_PROCESSING
 
             now = datetime.now(timezone.utc)
@@ -113,8 +113,8 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Op
 
             if db_job.previous_attempts == 0:
                 db_job.previous_attempts = None
-            else:
-                db_job.previous_attempts = db_job.previous_attempts - 1
+            elif db_job.previous_attempts is not None:
+                db_job.previous_attempts -= 1
 
             return AppCode.JOB_LEASE_RELEASED
 
@@ -146,9 +146,7 @@ async def update_job_progress(*, db: AsyncSession, job_id: UUID, worker_key_id: 
 
             if job_progress_update.state is None and db_job.state == base_objects.ProcessingState.PROCESSING:
                 if job_progress_update.progress is not None:
-                    p = job_progress_update.progress
-                    p = max(0.0, min(1.0, p))
-                    db_job.progress = p
+                    db_job.progress = job_progress_update.progress
 
                 lease_expire_at, server_time = get_new_lease()
                 db_job.last_change = server_time

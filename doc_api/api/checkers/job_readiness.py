@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, exc, exists, literal, or_, and_, not_, update
+from sqlalchemy import select, exc, exists, func, literal, or_, and_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.database import DBError, open_session, transaction
@@ -56,6 +56,12 @@ async def start_job(*, db: AsyncSession, job_id: UUID) -> bool:
             )
 
             images_ok = and_(
+                # Cleanup can remove image records before an admin reopens a job.
+                # Missing-input checks alone would treat deleted records as ready.
+                model.Job.image_count == (
+                    select(func.count()).select_from(model.Image)
+                    .where(model.Image.job_id == job_id).scalar_subquery()
+                ),
                 not_(img_missing),
                 or_(model.Job.alto_required.is_(False), not_(alto_missing)),
                 or_(model.Job.page_required.is_(False), not_(page_missing)),

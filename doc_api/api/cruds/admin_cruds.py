@@ -145,66 +145,6 @@ async def get_keys(*, db: AsyncSession) -> Tuple[List[model.Key], AppCode]:
         raise DBError('Failed reading keys') from e
 
 
-async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate,
-                     append_logs: bool = True) -> AppCode:
-    try:
-        async with db.begin():
-            result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id)
-                .execution_options(populate_existing=True).with_for_update()
-            )
-            db_job = result.scalar_one_or_none()
-
-            if db_job is None:
-                return AppCode.JOB_NOT_FOUND
-
-            if job_update.state is not None:
-                db_job.state = job_update.state
-
-            if job_update.progress is not None:
-                db_job.progress = job_update.progress
-
-            if job_update.previous_attempts is not None:
-                db_job.previous_attempts = job_update.previous_attempts
-
-            if job_update.meta_json_uploaded is not None:
-                db_job.meta_json_uploaded = job_update.meta_json_uploaded
-
-            if job_update.meta_json_required is not None:
-                db_job.meta_json_required = job_update.meta_json_required
-
-            if job_update.alto_required is not None:
-                db_job.alto_required = job_update.alto_required
-
-            if job_update.page_required is not None:
-                db_job.page_required = job_update.page_required
-
-            if job_update.created_date is not None:
-                db_job.created_date = job_update.created_date
-
-            if job_update.started_date is not None:
-                db_job.started_date = job_update.started_date
-
-            if job_update.last_change is not None:
-                db_job.last_change = job_update.last_change
-
-            if job_update.finished_date is not None:
-                db_job.finished_date = job_update.finished_date
-
-            for field in ("log", "log_user"):
-                message = getattr(job_update, field)
-                if message is not None:
-                    db_job.update_log(field, message, append=append_logs)
-
-            for field in ("final_log", "final_log_user"):
-                message = getattr(job_update, field)
-                if message is not None:
-                    db_job.update_log(field, message, append=False)
-
-            return AppCode.JOB_UPDATED
-
-    except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed updating job in database") from e
 
 
 async def new_engine(*, db: AsyncSession, engine_new: base_objects.EngineNew) -> Tuple[Optional[model.Engine], AppCode]:
@@ -300,7 +240,7 @@ async def update_engine(*, db: AsyncSession, engine_name: str, engine_version: s
             if engine_update.description is not None:
                 db_engine.description = engine_update.description
 
-            if engine_update.definition is not None:
+            if "definition" in engine_update.model_fields_set:
                 db_engine.definition = engine_update.definition
 
             if engine_update.default is not None:

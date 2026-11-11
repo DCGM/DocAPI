@@ -25,6 +25,7 @@ async def test_queue_ready_jobs_required_inputs(db_sessions, job_factory, missin
         db.add(engine)
         await db.flush()
         job.engine_id = engine.id
+        job.image_count = 1
         job.last_change = old
         job.alto_required = job.page_required = job.meta_json_required = True
         job.meta_json_uploaded = missing != "metadata"
@@ -45,6 +46,28 @@ async def test_queue_ready_jobs_required_inputs(db_sessions, job_factory, missin
         await job_readiness.queue_ready_jobs(db)
     async with db_sessions() as db:
         assert (await db.get(model.Job, job_id)).last_change == changed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_count,record_count", [(0, 0), (1, 0), (2, 1), (1, 2), (2, 2)])
+async def test_queue_ready_jobs_requires_matching_image_count(db_sessions, job_factory, image_count, record_count):
+    job_id = await job_factory(ProcessingState.NEW)
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.image_count = image_count
+        job.last_change = old
+        db.add_all([
+            model.Image(job_id=job_id, name=f"page-{index}.jpg", order=index, image_uploaded=True)
+            for index in range(record_count)
+        ])
+    async with db_sessions() as db:
+        await job_readiness.queue_ready_jobs(db)
+    async with db_sessions() as db:
+        job = await db.get(model.Job, job_id)
+        ready = image_count == record_count
+        assert job.state == (ProcessingState.QUEUED if ready else ProcessingState.NEW)
+        assert (job.last_change != old) == ready
 
 
 @pytest.mark.asyncio

@@ -208,7 +208,7 @@ async def get_engine_files(
 
     db_engine, code = await general_cruds.get_engine(db=db, engine_id=engine_id)
 
-    if code == AppCode.ENGINE_RETRIEVED and db_engine.files_updated is not None:
+    if code == AppCode.ENGINE_RETRIEVED and (key.role == base_objects.KeyRole.ADMIN or db_engine.files_updated is not None):
         engine_files_path = os.path.join(config.ENGINES_DIR, f"{db_engine.id}.zip")
         if not await aiofiles_os.path.exists(engine_files_path):
             raise DocAPIClientErrorException(
@@ -272,7 +272,7 @@ async def get_image(
 
     if code == AppCode.IMAGE_RETRIEVED:
         image_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.jpg")
-        if not await aiofiles_os.path.exists(image_path) or not db_image.image_uploaded:
+        if not await aiofiles_os.path.exists(image_path) or (key.role != base_objects.KeyRole.ADMIN and not db_image.image_uploaded):
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_410_GONE,
                 code=AppCode.IMAGE_GONE,
@@ -331,7 +331,7 @@ async def get_alto(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
-    if not db_job.alto_required:
+    if key.role != base_objects.KeyRole.ADMIN and not db_job.alto_required:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.ALTO_NOT_REQUIRED,
@@ -342,7 +342,7 @@ async def get_alto(
 
     if code == AppCode.IMAGE_RETRIEVED:
         alto_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.alto.xml")
-        if not await aiofiles_os.path.exists(alto_path) or not db_image.alto_uploaded:
+        if not await aiofiles_os.path.exists(alto_path) or (key.role != base_objects.KeyRole.ADMIN and not db_image.alto_uploaded):
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_410_GONE,
                 code=AppCode.ALTO_GONE,
@@ -400,7 +400,7 @@ async def get_page(
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, _ = await general_cruds.get_job(db=db, job_id=job_id)
-    if not db_job.page_required:
+    if key.role != base_objects.KeyRole.ADMIN and not db_job.page_required:
         raise DocAPIClientErrorException(
             status=fastapi.status.HTTP_409_CONFLICT,
             code=AppCode.PAGE_NOT_REQUIRED,
@@ -411,7 +411,7 @@ async def get_page(
 
     if code == AppCode.IMAGE_RETRIEVED:
         page_path = os.path.join(config.JOBS_DIR, str(db_image.job_id), f"{db_image.id}.page.xml")
-        if not await aiofiles_os.path.exists(page_path) or not db_image.page_uploaded:
+        if not await aiofiles_os.path.exists(page_path) or (key.role != base_objects.KeyRole.ADMIN and not db_image.page_uploaded):
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_410_GONE,
                 code=AppCode.PAGE_GONE,
@@ -470,7 +470,7 @@ async def get_metadata(
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
 
     if code == AppCode.JOB_RETRIEVED:
-        if not db_job.meta_json_required:
+        if key.role != base_objects.KeyRole.ADMIN and not db_job.meta_json_required:
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_409_CONFLICT,
                 code=AppCode.META_JSON_NOT_REQUIRED,
@@ -478,7 +478,7 @@ async def get_metadata(
             )
 
         meta_json_path = os.path.join(config.JOBS_DIR, str(job_id), "meta.json")
-        if not await aiofiles_os.path.exists(meta_json_path) or not db_job.meta_json_uploaded:
+        if not await aiofiles_os.path.exists(meta_json_path) or (key.role != base_objects.KeyRole.ADMIN and not db_job.meta_json_uploaded):
             raise DocAPIClientErrorException(
                 status=fastapi.status.HTTP_410_GONE,
                 code=AppCode.META_JSON_GONE,

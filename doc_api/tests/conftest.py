@@ -269,7 +269,7 @@ async def created_job(client, user_headers, payload):
     return {"created_job": job, "payload": payload}
 
 @pytest_asyncio.fixture
-async def cancelled_new_job(client, user_headers, created_job):
+async def cancelled_new_job(client, user_headers, created_job, user_role):
     job = created_job["created_job"]
     job_id = job["id"]
 
@@ -426,7 +426,7 @@ async def _lease_job(client, worker_headers, job_with_required_uploads_by_payloa
 
 
 @pytest_asyncio.fixture
-async def failed_job(client, worker_headers, job_with_required_uploads_by_payload_name, db_sessions):
+async def failed_job(client, worker_headers, job_with_required_uploads_by_payload_name, db_sessions, worker_role):
     job = job_with_required_uploads_by_payload_name["created_job"]
     job_id = job["id"]
 
@@ -471,7 +471,7 @@ async def failed_job(client, worker_headers, job_with_required_uploads_by_payloa
 
 
 @pytest_asyncio.fixture
-async def cancelled_processing_job(client, user_headers, lease_job):
+async def cancelled_processing_job(client, user_headers, lease_job, user_role):
     job = lease_job["created_job"]
     job_id = job["id"]
 
@@ -526,7 +526,7 @@ async def job_with_artifacts(client, worker_headers, lease_job):
 
 
 @pytest_asyncio.fixture
-async def job_marked_done(client, worker_headers, job_with_result):
+async def job_marked_done(client, worker_headers, job_with_result, worker_role):
     job_id = job_with_result["lease"]["id"]
 
     update_payload = {"state": base_objects.ProcessingState.DONE.value,
@@ -547,7 +547,7 @@ async def job_marked_done(client, worker_headers, job_with_result):
 
 
 @pytest_asyncio.fixture
-async def job_marked_error(client, worker_headers, lease_job):
+async def job_marked_error(client, worker_headers, lease_job, worker_role):
     job_id = lease_job["lease"]["id"]
 
     update_payload = {"state": base_objects.ProcessingState.ERROR.value,
@@ -752,6 +752,7 @@ async def input_upload_case(db_sessions, job_factory):
             job.alto_required = kind == "alto"
             job.page_required = kind == "page"
             if kind != "metadata":
+                job.image_count = 1
                 db.add(model.Image(id=image_id, job_id=job_id, name="page.jpg", order=0,
                                    image_uploaded=kind != "image"))
         batch = Path(config.JOBS_DIR) / str(job_id)

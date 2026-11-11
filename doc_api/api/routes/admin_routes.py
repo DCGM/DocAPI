@@ -338,7 +338,7 @@ async def patch_engine(
     if engine_update.name is None and \
        engine_update.version is None and \
        engine_update.description is None and \
-       engine_update.definition is None and \
+       "definition" not in engine_update.model_fields_set and \
        engine_update.default is None and \
        engine_update.active is None:
         raise DocAPIClientErrorException(
@@ -494,52 +494,3 @@ async def get_artifacts(
             media_type="application/zip",
             filename=f"{job_id}.zip",
         )
-
-
-PATCH_JOB_RESPONSES = {
-    AppCode.JOB_NOT_FOUND: GENERAL_RESPONSES[AppCode.JOB_NOT_FOUND],
-    AppCode.JOB_UPDATED: {
-        "status": fastapi.status.HTTP_200_OK,
-        "description": "Job was updated successfully.",
-        "model": DocAPIResponseOK,
-        "detail": "Job was updated successfully.",
-    }
-}
-@admin_router.patch(
-    "/jobs/{job_id}",
-    summary="Update Job",
-    response_model=DocAPIResponseOK[NoneType],
-    tags=["Admin"],
-    openapi_extra={"x-order": 308},
-    description="Force update fields of an existing job. Log messages affect only the current attempt; "
-                "append_logs=false replaces that attempt’s text and preserves earlier attempts. "
-                "Use with caution, can interfere with normal job processing, mainly for debugging purposes.",
-    responses=make_responses(PATCH_JOB_RESPONSES))
-async def patch_job(
-        request: Request,
-        job_id: UUID,
-        job_update: base_objects.JobUpdate,
-        append_logs: bool = True,
-        key: model.Key = Depends(require_admin_key),
-        db: AsyncSession = Depends(get_async_session)):
-
-    db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
-
-    if code == AppCode.JOB_RETRIEVED:
-        code = await admin_cruds.update_job(
-            db=db, job_id=job_id, job_update=job_update, append_logs=append_logs)
-        if code == AppCode.JOB_UPDATED:
-            return validate_ok_response(DocAPIResponseOK[NoneType](
-                status=fastapi.status.HTTP_200_OK,
-                code=AppCode.JOB_UPDATED,
-                detail=PATCH_JOB_RESPONSES[AppCode.JOB_UPDATED]["detail"],
-            ))
-
-    if code == AppCode.JOB_NOT_FOUND:
-        raise DocAPIClientErrorException(
-            status=fastapi.status.HTTP_404_NOT_FOUND,
-            code=AppCode.JOB_NOT_FOUND,
-            detail=PATCH_JOB_RESPONSES[AppCode.JOB_NOT_FOUND]["detail"],
-        )
-
-    raise RouteInvariantError(request=request, code=code)

@@ -206,7 +206,7 @@ async def test_api_remains_responsive_during_cleanup(client, user_headers, worke
         assert not released.is_set(), "File deletion blocked the API event loop"
         # Cleanup locks the complete selected batch, including a second job whose
         # files it has not reached yet. Its update waits without blocking the loop.
-        writer = asyncio.create_task(client.patch(f"/v1/admin/jobs/{completed[1]}", headers=admin_headers,
+        writer = asyncio.create_task(client.patch(f"/v1/jobs/{completed[1]}", headers=admin_headers,
                                                   json={"log": "Updated after cleanup"}))
 
         async def wait_for_row_lock():

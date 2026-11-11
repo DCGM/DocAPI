@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class ImageForJobDefinition(BaseModel):
     name: str = Field(description="Image filename. The server may require an extension or restrict allowed extensions.")
-    order: int
+    order: int = Field(ge=0, le=2_147_483_647, strict=True)
     image_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
     alto_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
     page_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
@@ -85,19 +85,19 @@ async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefin
 
                 logger.info(f"Found {len(db_engines)} engines matching name/version")
 
-                if active_engine or len(db_engines) > 1:
-                    active_engines = [e for e in db_engines if e.active]
-                    if not active_engines:
-                        return None, AppCode.ENGINE_INACTIVE
-                    db_engines = [active_engines[0]]
+                active_engines = [e for e in db_engines if e.active]
+                if active_engine and not active_engines:
+                    return None, AppCode.ENGINE_INACTIVE
+                # Prefer the active version when unspecified, but an admin can
+                # still select an engine whose versions are all inactive.
+                db_engines = active_engines or sorted(db_engines, key=lambda e: (e.created_date, str(e.id)), reverse=True)
 
                 db_engine_id = db_engines[0].id
             else:
-                result = await db.execute(
-                    select(model.Engine).
-                    where(model.Engine.default.is_(True)).
-                    where(model.Engine.active.is_(True))
-                )
+                query = select(model.Engine).where(model.Engine.default.is_(True))
+                if active_engine:
+                    query = query.where(model.Engine.active.is_(True))
+                result = await db.execute(query)
                 db_engine = result.scalar_one_or_none()
                 if db_engine is not None:
                     db_engine_id = db_engine.id
