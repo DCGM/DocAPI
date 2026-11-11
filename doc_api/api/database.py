@@ -1,7 +1,6 @@
-import os, asyncio
+import asyncio
 from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from doc_api.config import config
 
 global_engine = None
@@ -9,12 +8,8 @@ global_async_session_maker = None
 _init_lock = None
 
 def _engine_kwargs():
-    # loop-agnostic for tests, pytest creates event loop per test function, not currently in use
-    # testing = os.getenv("TESTING") == "1"
-    # if testing:
-    #     return dict(poolclass=NullPool, pool_pre_ping=False)
-    # prod/dev settings
-    return dict(pool_pre_ping=True, pool_size=20, max_overflow=60)
+    return dict(pool_pre_ping=True, pool_size=config.DATABASE_POOL_SIZE,
+                max_overflow=config.DATABASE_MAX_OVERFLOW, pool_timeout=config.DATABASE_POOL_TIMEOUT_SECONDS)
 
 async def _get_lock():
     global _init_lock

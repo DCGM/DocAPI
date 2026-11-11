@@ -26,6 +26,11 @@ def main():
     uvicorn.run("doc_api.api.main:app",
                 host=config.APP_HOST,
                 port=config.APP_PORT,
+                timeout_keep_alive=config.HTTP_KEEP_ALIVE_TIMEOUT_SECONDS,
+                limit_concurrency=None if config.HTTP_CONCURRENCY_LIMIT == 0 else config.HTTP_CONCURRENCY_LIMIT,
+                backlog=config.HTTP_BACKLOG,
+                timeout_graceful_shutdown=None if config.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS == 0
+                else config.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
                 reload=not config.PRODUCTION,
                 log_config=config.LOGGING_CONFIG)
 
