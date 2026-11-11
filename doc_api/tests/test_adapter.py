@@ -148,3 +148,19 @@ def test_adapter_stream_download(tmp_path, kind, outcome):
     route = "engines/engine/files" if kind == "engine" else "jobs/job/result"
     connector.get.assert_called_once_with(f"http://test/v1/{route}", stream=True)
     raw.close.assert_called_once()
+
+
+@pytest.mark.parametrize('expires_at', [None, '2026-11-10T00:05:00Z'])
+def test_adapter_progress_update_admin_and_worker_payload(expires_at):
+    lease = {'id': '00000000-0000-0000-0000-000000000001',
+             'server_time': '2026-11-10T00:00:00Z', 'lease_expire_at': expires_at}
+    connector = Mock()
+    connector.patch.return_value.status_code = 200
+    connector.patch.return_value.headers = {'Content-Type': 'application/json'}
+    connector.patch.return_value.json.return_value = {
+        'status': 200, 'code': 'JOB_UPDATED', 'detail': 'Updated', 'data': lease}
+    response = Adapter('http://test', connector).patch_job_progress_update(
+        job_id='00000000-0000-0000-0000-000000000001', progress=0.5)
+    assert response.is_success
+    assert str(response.data.id) == lease['id']
+    assert (response.data.lease_expire_at is None) == (expires_at is None)

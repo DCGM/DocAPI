@@ -73,8 +73,8 @@ its own temporary database and upload directories. Without parametrization,
 `user_role` defaults to `user` and `worker_role` to `worker`.
 
 Role-specific ownership/state denials, engine restrictions, and worker-only
-update validation retain their own cases: admins intentionally bypass some of
-these restrictions. Where a shared successful response exposes more data to an
+update validation retain their own cases: admins intentionally bypass these
+workflow restrictions. Where a shared successful response exposes more data to an
 admin, the test explicitly checks the expected fields for each role. This keeps
 admin coverage alongside the operation it exercises without duplicating tests.
 
@@ -492,7 +492,7 @@ authentication are checked independently of documentation visibility.
 - [x] **404** — job not found; `JOB_NOT_FOUND`. [`test_worker.py::test_patch_job_404_job_not_found`](test_worker.py).
 - [x] **403** — job access forbidden; `API_KEY_FORBIDDEN_FOR_JOB`. [`test_worker.py::test_patch_job_403_job_access_forbidden`](test_worker.py).
 - [x] **403** — unsupported worker state; `API_KEY_WORKER_FORBIDDEN`. [`test_worker.py::test_patch_job_403_unsupported_worker_state`](test_worker.py).
-- [x] **200** — progress clamped; `JOB_UPDATED`. [`test_worker.py::test_patch_job_200_progress_clamped`](test_worker.py).
+- [x] **200** — progress in range; `JOB_UPDATED`. [`test_worker.py::test_patch_job_200_progress_in_range`](test_worker.py).
 
 
 ### Admin and debug routes
@@ -583,12 +583,6 @@ authentication are checked independently of documentation visibility.
 
 - [x] **200** — deletion visibility; `JOB_RETRIEVED`. [`test_admin.py::test_get_job_200_deletion_visibility`](test_admin.py).
 
-#### PATCH /v1/admin/jobs/{job_id} - 200, 404, 422
-
-- [x] **200** — force update; `JOB_UPDATED`. [`test_admin.py::test_patch_job_200_force_update`](test_admin.py).
-- [x] **422** — invalid state; `REQUEST_VALIDATION_ERROR`. [`test_admin.py::test_patch_job_422_invalid_state`](test_admin.py).
-- [x] **404** — job not found; `JOB_NOT_FOUND`. [`test_admin.py::test_patch_job_404_job_not_found`](test_admin.py).
-
 #### PUT /debug/jobs/{job_id}/start - 200, 404, 409, 422
 
 - [x] **200** — ready; `JOB_STARTED`. [`test_admin.py::test_put_job_start_200_ready`](test_admin.py).
@@ -668,7 +662,7 @@ history. A quiet current attempt does not expose an earlier public message.
 - [x] worker progress/finalization logs. [`test_worker.py::test_patch_job_200_attempt_logs`](test_worker.py).
 - [x] reused attempt entries. [`test_worker.py::test_post_job_lease_200_reused_attempt_logs`](test_worker.py).
 - [x] quiet first attempt. [`test_worker.py::test_patch_job_200_quiet_first_attempt_logs`](test_worker.py).
-- [x] admin append/replace current entry. [`test_admin.py::test_patch_job_200_current_attempt_logs`](test_admin.py).
+- [x] admin append/replace current entry. [`test_user.py::test_patch_job_200_current_attempt_logs`](test_user.py).
 - [x] role-specific detail/list text. [`test_user.py::test_get_job_200_attempt_logs`](test_user.py).
 
 ### Final reports and email notifications
@@ -713,7 +707,7 @@ an SMTP attempt. All tests mock SMTP.
 - [x] post keys 201 email settings. [`test_admin.py::test_post_keys_201_email_settings`](test_admin.py).
 - [x] patch key 200 email settings. [`test_admin.py::test_patch_key_200_email_settings`](test_admin.py).
 - [x] key 422 invalid email. [`test_admin.py::test_key_422_invalid_email`](test_admin.py).
-- [x] patch job 200 final report. [`test_admin.py::test_patch_job_200_final_report`](test_admin.py).
+- [x] patch job 200 final report. [`test_user.py::test_patch_job_200_final_report`](test_user.py).
 - [x] patch job 200 final reports. [`test_worker.py::test_patch_job_200_final_reports`](test_worker.py).
 - [x] patch job 200 owner mail conditions. [`test_worker.py::test_patch_job_200_owner_mail_conditions`](test_worker.py).
 - [x] patch job 422 final report without final state. [`test_worker.py::test_patch_job_422_final_report_without_final_state`](test_worker.py).
@@ -728,7 +722,7 @@ an SMTP attempt. All tests mock SMTP.
 - [x] invalid mail configuration is logged. [`test_job_mail.py::test_invalid_mail_configuration_is_logged`](test_job_mail.py).
 
 - [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_pad_missing_attempts`](test_worker.py).
-- [x] admin append/replace writes pad missing attempt positions. [`test_admin.py::test_patch_job_200_logs_pad_missing_attempts`](test_admin.py).
+- [x] admin append/replace writes pad missing attempt positions. [`test_user.py::test_patch_job_200_logs_pad_missing_attempts`](test_user.py).
 
 - [x] configurable internal-error subjects. [`test_job_mail.py::test_internal_error_subject_template`](test_job_mail.py).
 - [x] admin subjects use the admin server name by default. [`test_job_mail.py::test_admin_subject_default_uses_admin_server_name`](test_job_mail.py).
@@ -738,7 +732,7 @@ an SMTP attempt. All tests mock SMTP.
 
 - [x] mailing defaults and settings match the environment example. [`test_job_mail.py::test_mail_configuration_matches_env_example`](test_job_mail.py).
 
-- [x] concurrent admin finalization does not duplicate mail. [`test_admin.py::test_patch_job_200_concurrent_final_state_no_duplicate_mail`](test_admin.py).
+- [x] concurrent admin finalization does not duplicate mail. [`test_user.py::test_patch_job_200_concurrent_final_state_no_duplicate_mail`](test_user.py).
 - [x] notification preparation failure preserves a successful job update. [`test_worker.py::test_patch_job_200_mail_preparation_failure`](test_worker.py).
 
 ### Periodic lease and mail checkers
@@ -1041,8 +1035,8 @@ CRUD success codes are trusted to guarantee their corresponding result; routes
 do not recheck successful payloads. Coverage includes job creation/listing/details,
 referenced engine and image lookups, lease/progress operations, input metadata updates, engine-file metadata,
 and admin key/engine/job operations. Lists and input saves check their CRUD result
-codes instead of returning success unconditionally. An unexpected cancellation
-result cannot fall through into an admin's worker-update path.
+codes instead of returning success unconditionally. Unexpected CRUD results fail explicitly instead of falling through to another
+update path.
 
 Other tests delete actual records in the isolated database after existence
 checks, before image retrieval, before updates, or after staging but before file
@@ -1074,7 +1068,7 @@ server fault are not enumerated.
 - [x] put metadata 404 disappeared before install. [`test_user.py::test_put_metadata_404_disappeared_before_install`](test_user.py).
 - [x] patch job 404 disappeared after check. [`test_user.py::test_patch_job_404_disappeared_after_check`](test_user.py).
 - [x] patch job 500 unexpected cancel result. [`test_user.py::test_patch_job_500_unexpected_cancel_result`](test_user.py).
-- [x] patch job 404 disappeared before update. [`test_user.py::test_patch_job_404_disappeared_before_update`](test_user.py).
+- [x] patch job 404 disappeared before update. [`test_user.py::test_patch_job_404_disappeared_before_update_admin`](test_user.py).
 - [x] get job result 404 disappeared after check. [`test_user.py::test_get_job_result_404_disappeared_after_check`](test_user.py).
 - [x] get engines 500 unexpected crud result. [`test_user.py::test_get_engines_500_unexpected_crud_result`](test_user.py).
 - [x] post job lease 500 unexpected crud result. [`test_worker.py::test_post_job_lease_500_unexpected_crud_result`](test_worker.py).
@@ -1101,8 +1095,8 @@ server fault are not enumerated.
 - [x] patch engine 500 unexpected crud result. [`test_admin.py::test_patch_engine_500_unexpected_crud_result`](test_admin.py).
 - [x] put engine files 404 disappeared before install. [`test_admin.py::test_put_engine_files_404_disappeared_before_install`](test_admin.py).
 - [x] put engine files 500 unexpected metadata result. [`test_admin.py::test_put_engine_files_500_unexpected_metadata_result`](test_admin.py).
-- [x] patch job 404 disappeared before update. [`test_admin.py::test_patch_job_404_disappeared_before_update`](test_admin.py).
-- [x] patch job 500 unexpected crud result. [`test_admin.py::test_patch_job_500_unexpected_crud_result`](test_admin.py).
+- [x] patch job 404 disappeared before update. [`test_user.py::test_patch_job_404_disappeared_before_update_admin`](test_user.py).
+- [x] patch job 500 unexpected crud result. [`test_user.py::test_patch_job_500_unexpected_crud_result`](test_user.py).
 - [x] put job start 500 unexpected crud result. [`test_admin.py::test_put_job_start_500_unexpected_crud_result`](test_admin.py).
 - [x] put job start 404 disappeared before update. [`test_admin.py::test_put_job_start_404_disappeared_before_update`](test_admin.py).
 - [x] put job start 409 queued during request. [`test_admin.py::test_put_job_start_409_queued_during_request`](test_admin.py).
@@ -1247,6 +1241,7 @@ These cases live in `test_startup.py` and `test_run.py`.
 - [x] queue ready jobs batches. [`test_job_readiness.py::test_queue_ready_jobs_batches`](test_job_readiness.py).
 - [x] queue ready jobs only new. [`test_job_readiness.py::test_queue_ready_jobs_only_new`](test_job_readiness.py).
 - [x] queue ready jobs required inputs. [`test_job_readiness.py::test_queue_ready_jobs_required_inputs`](test_job_readiness.py).
+- [x] Queue only when image records match the retained image count, including reopened jobs after cleanup. [`test_job_readiness.py::test_queue_ready_jobs_requires_matching_image_count`](test_job_readiness.py).
 - [x] queue ready jobs skips locked. [`test_job_readiness.py::test_queue_ready_jobs_skips_locked`](test_job_readiness.py).
 - [x] readiness interval configuration. [`test_job_readiness.py::test_readiness_interval_configuration`](test_job_readiness.py).
 - [x] readiness loop interval and retry. [`test_job_readiness.py::test_readiness_loop_interval_and_retry`](test_job_readiness.py).
@@ -1255,3 +1250,106 @@ These cases live in `test_startup.py` and `test_run.py`.
 - [x] put inputs 409 conflicting saves; staging holds no DB connection. [`test_user.py::test_put_input_409_file_save_in_progress`](test_user.py).
 - [x] put image 201 parallel input formats. [`test_user.py::test_put_image_201_parallel_input_formats`](test_user.py).
 - [x] put image 409 state changed during staging. [`test_user.py::test_put_image_409_state_changed_during_staging`](test_user.py).
+
+### Admin workflow bypasses
+
+All authenticated endpoints accept active admin keys. Admins bypass ownership,
+worker assignment, job state, input requirements, and stored upload
+flags when downloading an existing file. Valid requests/files, existing records,
+database integrity, and concurrency protection remain mandatory. The debug start
+route remains a manual invocation of the normal readiness check; use PATCH to
+force a state change.
+
+`PATCH /v1/jobs/{job_id}` replaces the removed admin job PATCH route. Admins may
+edit the full `JobUpdate` schema, including attempts, input flags, dates, progress,
+and process/final logs. State updates return the corresponding operation success
+code. Progress/log updates without a state change return `JOB_UPDATED` and renewed
+lease data for both workers and admins. Other admin edits return `JOB_UPDATED`
+without lease data. Progress must be a finite number in `[0, 1]` for every role; invalid values are rejected with 422. Final reports can be edited independently
+of state. Process logs append by default; `append_logs=false` replaces only the
+current attempt. Final logs always replace that attempt. Normal activity and
+finalization defaults apply, while explicit admin field values take precedence.
+User/worker bodies retain the narrower `JobProgressUpdate` validation, and workers
+retain their existing transition checks, return codes, and lease payloads.
+
+- [x] Every source/target state combination and final-report editing outside finalization; [`test_user.py::test_patch_job_200_admin_any_transition`](test_user.py).
+- [x] Former admin job-edit tests moved to the shared route in [`test_user.py`](test_user.py), including explicit field overrides, attempt padding, log replacement, deletion races, and notification behavior.
+- [x] Optional input uploads and existing result downloads in every state, with another owner's job; [`test_user.py`](test_user.py).
+- [x] Admin-only fields remain rejected for ordinary user/worker requests, and the old admin PATCH path is absent from routing and OpenAPI; [`test_user.py`](test_user.py).
+- [x] Inactive engine selection by name/version/default, including names with multiple inactive versions; [`test_user.py::test_post_job_201_admin_inactive_engine`](test_user.py).
+- [x] Lease operations, optional input downloads, and output uploads in every state without an assigned worker; [`test_worker.py`](test_worker.py).
+- [x] Existing engine ZIP download without an upload timestamp; [`test_worker.py::test_get_engine_files_200_admin_without_upload_timestamp`](test_worker.py).
+
+Workflow denial tests use ordinary roles only; corresponding admin bypass cases
+are tested separately. Shared successful cases still run under admin credentials
+where their behavior matches, with explicit assertions for role-specific responses.
+
+Additional individual cases for the consolidated behavior:
+
+- [x] adapter progress update admin and worker payload. [`test_adapter.py::test_adapter_progress_update_admin_and_worker_payload`](test_adapter.py).
+- [x] get job result 200 admin any state. [`test_user.py::test_get_job_result_200_admin_any_state`](test_user.py).
+- [x] patch job 200 force update. [`test_user.py::test_patch_job_200_force_update`](test_user.py).
+- [x] patch job 404 disappeared before update. [`test_user.py::test_patch_job_404_disappeared_before_update`](test_user.py).
+- [x] patch job 404 job not found admin. [`test_user.py::test_patch_job_404_job_not_found_admin`](test_user.py).
+- [x] patch job 404 removed admin route. [`test_user.py::test_patch_job_404_removed_admin_route`](test_user.py).
+- [x] patch job 422 admin fields forbidden to other roles. [`test_user.py::test_patch_job_422_admin_fields_forbidden_to_other_roles`](test_user.py).
+- [x] patch job 422 invalid state. [`test_user.py::test_patch_job_422_invalid_state`](test_user.py).
+- [x] put file 201 admin any state optional input. [`test_user.py::test_put_file_201_admin_any_state_optional_input`](test_user.py).
+- [x] delete job lease 204 admin any state. [`test_worker.py::test_delete_job_lease_204_admin_any_state`](test_worker.py).
+- [x] get engine files 410 admin missing file without timestamp. [`test_worker.py::test_get_engine_files_410_admin_missing_file_without_timestamp`](test_worker.py).
+- [x] get input 200 admin any state optional input. [`test_worker.py::test_get_input_200_admin_any_state_optional_input`](test_worker.py).
+- [x] patch job lease 200 admin any state. [`test_worker.py::test_patch_job_lease_200_admin_any_state`](test_worker.py).
+- [x] post output 201 admin any state. [`test_worker.py::test_post_output_201_admin_any_state`](test_worker.py).
+
+- [x] Admin progress updates return a lease consistent with the saved activity timestamp in every job state, with finite and infinite expiration. [`test_worker.py::test_patch_job_200_admin_progress_lease_any_state`](test_worker.py).
+- [x] Admin process-log updates return lease data and respect explicit activity timestamps. [`test_worker.py::test_patch_job_200_admin_log_lease_explicit_timestamp`](test_worker.py).
+
+### Explicit nulls in updates
+
+Omitted nullable fields stay unchanged. Admin job edits can clear the attempt
+counter, start/finish dates, and the current attempt’s four log entries using
+`null`. Clearing logs preserves other attempts; an entirely empty history remains
+SQL NULL. Worker progress logs keep their append behavior and worker final logs
+keep their finalization rules: null messages do not clear existing text.
+Engine definition and key email updates also distinguish omission from null.
+The attempt counter accepts only null or an integer in `[0, 1000]`; booleans,
+floats, strings, negative values, and values above 1000 are rejected before any writes.
+
+- [x] patch engine 200 null definition. [`test_admin.py::test_patch_engine_200_null_definition`](test_admin.py).
+- [x] patch key 200 null email and omission. [`test_admin.py::test_patch_key_200_null_email_and_omission`](test_admin.py).
+- [x] patch job 200 admin attempt counter null and integer. [`test_user.py::test_patch_job_200_admin_attempt_counter_null_and_integer`](test_user.py).
+- [x] patch job 200 admin null counter restarts first attempt. [`test_user.py::test_patch_job_200_admin_null_counter_restarts_first_attempt`](test_user.py).
+- [x] patch job 200 admin null finished date overrides default. [`test_user.py::test_patch_job_200_admin_null_finished_date_overrides_default`](test_user.py).
+- [x] patch job 200 admin null log current attempt. [`test_user.py::test_patch_job_200_admin_null_log_current_attempt`](test_user.py).
+- [x] patch job 200 admin nullable dates. [`test_user.py::test_patch_job_200_admin_nullable_dates`](test_user.py).
+- [x] patch job 422 admin invalid attempt counter. [`test_user.py::test_patch_job_422_admin_invalid_attempt_counter`](test_user.py).
+- [x] patch job 200 worker null logs do not clear. [`test_worker.py::test_patch_job_200_worker_null_logs_do_not_clear`](test_worker.py).
+
+### Numeric request validation
+
+Request schemas validate progress as a finite number in `[0, 1]`, the attempt
+counter as null or an integer in `[0, 1000]`, and image order as an integer in
+`[0, 2147483647]`. Invalid values return 422 before writes. There is no silent
+clamping. Validation errors containing NaN/infinity are rendered as valid JSON.
+Arbitrary engine settings/definitions and metadata retain their own JSON data.
+
+- [x] post job 201 image order bounds. [`test_user.py::test_post_job_201_image_order_bounds`](test_user.py).
+- [x] post job 422 image order out of range or type. [`test_user.py::test_post_job_422_image_order_out_of_range_or_type`](test_user.py).
+- [x] patch job 422 non finite progress. [`test_worker.py::test_patch_job_422_non_finite_progress`](test_worker.py).
+- [x] patch job 422 progress out of range or type. [`test_worker.py::test_patch_job_422_progress_out_of_range_or_type`](test_worker.py).
+
+### Date range validation
+
+Administrative date edits and job-listing date filters share validation and UTC
+normalization. Timezone-free dates mean UTC; explicit offsets preserve the instant.
+Dates must remain representable in UTC. Activity timestamps in edits
+must also leave room for the configured finite lease duration. Invalid dates
+return 422 before writes. Exact Python minimum/maximum dates are rejected because
+the PostgreSQL driver reserves them for infinity. Finite and infinite lease boundaries are covered.
+
+- [x] UTC conversion overflow leaves the job unchanged. [`test_user.py::test_patch_job_422_admin_date_utc_overflow`](test_user.py).
+- [x] Lease expiry overflow is rejected even for edits without progress. [`test_user.py::test_patch_job_422_admin_lease_date_overflow`](test_user.py).
+- [x] Supported finite and infinite lease date boundaries. [`test_user.py::test_patch_job_200_admin_lease_date_boundary`](test_user.py).
+- [x] Unsafe listing dates return 422 for all reader roles. [`test_user.py::test_get_jobs_422_date_range`](test_user.py).
+- [x] Listing date filters do not impose lease-duration limits. [`test_user.py::test_get_jobs_200_date_filter_independent_of_lease`](test_user.py).
+- [x] Administrative dates with offsets or without timezones are stored and returned in UTC. [`test_user.py::test_patch_job_200_admin_dates_normalized_to_utc`](test_user.py).

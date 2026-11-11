@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Tuple, Optional, List
 from uuid import UUID
 
@@ -74,24 +74,79 @@ async def get_jobs_with_engines(*, db: AsyncSession,
         raise DBError("Failed reading jobs.") from e
 
 
-async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate) -> AppCode:
+async def update_job(*, db: AsyncSession, job_id: UUID, job_update: base_objects.JobUpdate,
+                     append_logs: bool = True, apply_state_defaults: bool = False) -> AppCode:
     try:
         async with transaction(db):
             result = await db.execute(
-                select(model.Job).where(model.Job.id == job_id).with_for_update()
+                select(model.Job).where(model.Job.id == job_id)
+                .execution_options(populate_existing=True).with_for_update()
             )
             db_job = result.scalar_one_or_none()
 
             if db_job is None:
                 return AppCode.JOB_NOT_FOUND
 
+            if apply_state_defaults:
+                now = datetime.now(timezone.utc)
+                db_job.last_change = now
+                if job_update.state in {base_objects.ProcessingState.DONE, base_objects.ProcessingState.FAILED}:
+                    db_job.progress = 1.0
+                if job_update.state in {base_objects.ProcessingState.DONE, base_objects.ProcessingState.FAILED,
+                                        base_objects.ProcessingState.ERROR, base_objects.ProcessingState.CANCELLED}:
+                    db_job.finished_date = now
+
+            # Explicit values take precedence over activity/finalization defaults.
+            if job_update.state is not None:
+                db_job.state = job_update.state
+
+            if job_update.progress is not None:
+                db_job.progress = job_update.progress
+
+            if "previous_attempts" in job_update.model_fields_set:
+                db_job.previous_attempts = job_update.previous_attempts
+
             if job_update.meta_json_uploaded is not None:
                 db_job.meta_json_uploaded = job_update.meta_json_uploaded
 
-            return AppCode.JOB_UPDATED
+            if job_update.meta_json_required is not None:
+                db_job.meta_json_required = job_update.meta_json_required
+
+            if job_update.alto_required is not None:
+                db_job.alto_required = job_update.alto_required
+
+            if job_update.page_required is not None:
+                db_job.page_required = job_update.page_required
+
+            if job_update.created_date is not None:
+                db_job.created_date = job_update.created_date
+
+            if "started_date" in job_update.model_fields_set:
+                db_job.started_date = job_update.started_date
+
+            if job_update.last_change is not None:
+                db_job.last_change = job_update.last_change
+
+            if "finished_date" in job_update.model_fields_set:
+                db_job.finished_date = job_update.finished_date
+
+            for field in ("log", "log_user"):
+                if field in job_update.model_fields_set:
+                    db_job.update_log(field, getattr(job_update, field), append=append_logs)
+
+            for field in ("final_log", "final_log_user"):
+                if field in job_update.model_fields_set:
+                    db_job.update_log(field, getattr(job_update, field), append=False)
+
+            return {
+                base_objects.ProcessingState.CANCELLED: AppCode.JOB_CANCELLED,
+                base_objects.ProcessingState.DONE: AppCode.JOB_COMPLETED,
+                base_objects.ProcessingState.ERROR: AppCode.JOB_MARKED_ERROR,
+                base_objects.ProcessingState.FAILED: AppCode.JOB_MARKED_FAILED,
+            }.get(job_update.state, AppCode.JOB_UPDATED)
 
     except exc.SQLAlchemyError as e:
-        raise DBError(f"Failed updating job.") from e
+        raise DBError(f"Failed updating job in database") from e
 
 
 async def get_job_images(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[List[model.Image]], AppCode]:

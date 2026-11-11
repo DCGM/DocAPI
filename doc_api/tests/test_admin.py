@@ -53,7 +53,6 @@ async def test_get_keys_200(client, admin_headers, dummy):
 
 
 
-
 @pytest.mark.asyncio
 async def test_get_keys_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
@@ -144,7 +143,6 @@ async def test_post_keys_409_generation_failure(client, admin_headers, monkeypat
 
 
 
-
 @pytest.mark.asyncio
 async def test_post_keys_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
@@ -208,7 +206,6 @@ async def test_post_keys_secret_201_rotates_credentials(client, admin_headers, u
     new_response = await client.get("/v1/me", headers=new_headers)
     assert new_response.status_code == 200, new_response.text
     assert new_response.json()["data"]["label"] == "test-user"
-
 
 
 
@@ -369,7 +366,6 @@ async def test_patch_key_422_invalid_request(client, admin_headers):
     response = await client.request('PATCH', '/v1/admin/keys/test-user', headers=admin_headers, json={'role': 'invalid'})
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
-
 
 
 
@@ -596,7 +592,6 @@ async def test_post_engine_422_invalid_request(client, admin_headers):
 
 
 
-
 @pytest.mark.asyncio
 async def test_post_engine_500_unexpected_crud_result(client, admin_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
@@ -773,6 +768,41 @@ async def test_patch_engine_200_update_description(client, admin_headers, create
 
 
 @pytest.mark.asyncio
+async def test_patch_engine_200_null_definition(client, admin_headers, engine_factory, db_sessions):
+    engine = await engine_factory()
+    url = f'/v1/admin/engines/{engine.name}/{engine.version}'
+    response = await client.patch(url, headers=admin_headers, json={'description': 'Changed description'})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        assert (await db.get(model.Engine, engine.id)).definition == engine.definition
+    response = await client.patch(url, headers=admin_headers, json={'definition': None})
+    assert response.status_code == 200 and response.json()['code'] == AppCode.ENGINE_UPDATED.value
+    async with db_sessions() as db:
+        assert (await db.get(model.Engine, engine.id)).definition is None
+    response = await client.get('/v1/engines', headers=admin_headers,
+                                params={'name': engine.name, 'version': engine.version, 'show_definition': True})
+    assert response.status_code == 200 and response.json()['data'][0]['definition'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key_role', [role.value for role in base_objects.KeyRole], indirect=True)
+async def test_patch_key_200_null_email_and_omission(client, admin_headers, new_key, db_sessions):
+    url = f"/v1/admin/keys/{new_key['label']}"
+    response = await client.patch(url, headers=admin_headers, json={'email': 'owner@example.com'})
+    assert response.status_code == 200, response.text
+    response = await client.patch(url, headers=admin_headers, json={'email_notifications': False})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        key = (await db.scalars(select(model.Key).where(model.Key.label == new_key['label']))).one()
+        assert key.email == 'owner@example.com'
+    response = await client.patch(url, headers=admin_headers, json={'email': None})
+    assert response.status_code == 200, response.text
+    async with db_sessions() as db:
+        key = (await db.scalars(select(model.Key).where(model.Key.label == new_key['label']))).one()
+        assert key.email is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("dummy", [0], ids=[AppCode.ENGINE_UPDATE_NO_FIELDS])
 async def test_patch_engine_400_no_fields(client, admin_headers, created_engine, dummy):
     name = created_engine["name"]
@@ -840,7 +870,6 @@ async def test_patch_engine_422_invalid_request(client, admin_headers):
     response = await client.request('PATCH', '/v1/admin/engines/missing/1', headers=admin_headers, json={'active': 'invalid'})
     assert response.status_code == 422, response.text
     assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
-
 
 
 
@@ -1266,11 +1295,6 @@ async def test_put_engine_files_200_backup_cleanup_failure(client, admin_headers
 
 
 
-
-
-
-
-
 @pytest.mark.parametrize("variant", ["empty", "many_entries", "unicode", "large", "compressed"])
 @pytest.mark.asyncio
 async def test_put_engine_files_200_generated_zip(client, admin_headers, zip_upload_case, db_sessions, variant):
@@ -1421,69 +1445,6 @@ async def test_get_job_200_deletion_visibility(client, admin_headers, jobs_with_
 
 
 #
-# PATCH /v1/admin/jobs/{job_id} - 200, 404, 422
-#
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("append_logs", [True, False])
-async def test_patch_job_200_force_update(client, admin_headers, job_factory, db_sessions, append_logs):
-    job_id = await job_factory(ProcessingState.NEW)
-    now = datetime.now(timezone.utc).isoformat()
-    fields = {"state": "done", "progress": 1.0, "previous_attempts": 2,
-              "meta_json_uploaded": True, "meta_json_required": True,
-              "alto_required": True, "page_required": True,
-              "created_date": now, "started_date": now, "last_change": now, "finished_date": now,
-              "log": "admin", "log_user": "user"}
-    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers,
-                                  params={"append_logs": str(append_logs).lower()}, json=fields)
-    assert response.status_code == 200, response.text
-    assert response.json()["code"] == AppCode.JOB_UPDATED.value
-    async with db_sessions() as db:
-        job = await db.get(model.Job, job_id)
-        assert job.state == ProcessingState.DONE
-        for field in ["progress", "previous_attempts", "meta_json_uploaded", "meta_json_required", "alto_required", "page_required"]:
-            assert getattr(job, field) == fields[field]
-        for field in ["created_date", "started_date", "last_change", "finished_date"]:
-            assert getattr(job, field).isoformat() == now
-        assert job.log == ["Technical log", None, "admin"]
-        assert job.log_user == ["User log", None, "user"]
-
-
-@pytest.mark.asyncio
-async def test_patch_job_422_invalid_state(client, admin_headers, job_factory):
-    job_id = await job_factory(ProcessingState.NEW)
-    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"state": "invalid"})
-    assert response.status_code == 422, response.text
-    assert response.json()["code"] == AppCode.REQUEST_VALIDATION_ERROR.value
-
-
-@pytest.mark.asyncio
-async def test_patch_job_404_job_not_found(client, admin_headers):
-    response = await client.patch(f"/v1/admin/jobs/{uuid4()}", headers=admin_headers, json={"state": "done"})
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
-
-
-
-@pytest.mark.asyncio
-async def test_patch_job_404_disappeared_before_update(client, admin_headers, job_factory, db_sessions, monkeypatch):
-    job_id = await job_factory(ProcessingState.NEW)
-    delete_job_before_crud(monkeypatch, db_sessions, job_id, admin_cruds, "update_job")
-    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"progress": 0.5})
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == AppCode.JOB_NOT_FOUND.value
-
-
-@pytest.mark.asyncio
-async def test_patch_job_500_unexpected_crud_result(client, admin_headers, job_factory, monkeypatch, invariant_errors):
-    job_id = await job_factory(ProcessingState.NEW)
-    code = AppCode.API_KEY_VALID
-    monkeypatch.setattr(admin_cruds, "update_job", AsyncMock(return_value=code))
-    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers, json={"progress": 0.5})
-    assert_route_invariant(response, invariant_errors, code)
-
-
-#
 # PUT /debug/jobs/{job_id}/start - 200, 404, 409, 422
 #
 
@@ -1585,24 +1546,6 @@ async def test_get_engines_200_admin_filters(client, admin_headers, engine_facto
         assert engine["definition"] == {"type": "test"}
 
 
-@pytest.mark.parametrize("append_logs", [True, False])
-@pytest.mark.asyncio
-async def test_patch_job_200_current_attempt_logs(client, admin_headers, job_factory, db_sessions, append_logs):
-    job_id = await job_factory(ProcessingState.PROCESSING)
-    async with db_sessions.begin() as db:
-        job = await db.get(model.Job, job_id)
-        job.previous_attempts = 1
-        job.log = ["first technical", "second technical"]
-        job.log_user = ["first public", "second public"]
-    response = await client.patch(f"/v1/admin/jobs/{job_id}", headers=admin_headers,
-                                  params={"append_logs": str(append_logs).lower()},
-                                  json={"log": "new technical", "log_user": "new public"})
-    assert response.status_code == 200, response.text
-    async with db_sessions() as db:
-        job = await db.get(model.Job, job_id)
-        assert job.log == ["first technical", ("second technical\n" if append_logs else "") + "new technical"]
-        assert job.log_user == ["first public", ("second public\n" if append_logs else "") + "new public"]
-
 
 @pytest.mark.asyncio
 async def test_post_keys_201_email_settings(client, admin_headers):
@@ -1636,78 +1579,3 @@ async def test_key_422_invalid_email(client, admin_headers, method, url):
         payload.update(label='invalid-email', role='user')
     response = await getattr(client, method)(url, headers=admin_headers, json=payload)
     assert response.status_code == 422, response.text
-
-
-@pytest.mark.asyncio
-async def test_patch_job_200_final_report(client, admin_headers, job_factory, db_sessions, job_mail_outbox):
-    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
-    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
-        json={'state': 'done', 'final_log': 'admin final report'})
-    assert response.status_code == 200, response.text
-    async with db_sessions() as db:
-        job = await db.get(model.Job, job_id)
-        assert job.final_log == ['admin final report']
-        assert job.log == ['Technical log']
-    await check_job_notifications()
-    assert len(job_mail_outbox) == 1
-    assert job_mail_outbox[0][2].get_content().strip() == 'admin final report'
-    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
-        json={'final_log': 'corrected report'})
-    assert response.status_code == 200, response.text
-    await check_job_notifications()
-    assert len(job_mail_outbox) == 1
-
-
-@pytest.mark.parametrize('append_logs', [False, True])
-@pytest.mark.asyncio
-async def test_patch_job_200_logs_pad_missing_attempts(client, admin_headers, job_factory, db_sessions, append_logs):
-    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
-    async with db_sessions.begin() as db:
-        job = await db.get(model.Job, job_id)
-        job.previous_attempts = 2
-        job.log = job.log_user = job.final_log = job.final_log_user = None
-    response = await client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
-        params={'append_logs': str(append_logs).lower()},
-        json={'log': 'technical progress', 'log_user': 'user progress',
-              'final_log': 'technical final', 'final_log_user': 'user final'})
-    assert response.status_code == 200, response.text
-    async with db_sessions() as db:
-        job = await db.get(model.Job, job_id)
-        assert job.log == [None, None, 'technical progress']
-        assert job.log_user == [None, None, 'user progress']
-        assert job.final_log == [None, None, 'technical final']
-        assert job.final_log_user == [None, None, 'user final']
-
-
-@pytest.mark.parametrize('state', ['done', 'failed'])
-@pytest.mark.asyncio
-async def test_patch_job_200_concurrent_final_state_no_duplicate_mail(client, admin_headers, job_factory,
-                                                                     db_sessions, job_mail_outbox, monkeypatch, state):
-    from doc_api.api.cruds import admin_cruds
-    job_id = await job_factory(base_objects.ProcessingState.PROCESSING)
-    entered, release = asyncio.Event(), asyncio.Event()
-    original = admin_cruds.update_job
-
-    async def delayed(**kwargs):
-        entered.set()
-        await release.wait()
-        return await original(**kwargs)
-
-    monkeypatch.setattr(admin_cruds, 'update_job', delayed)
-    request = asyncio.create_task(client.patch(f'/v1/admin/jobs/{job_id}', headers=admin_headers,
-        json={'state': state, 'final_log': 'corrected report'}))
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        async with db_sessions.begin() as db:
-            job = await db.get(model.Job, job_id)
-            job.state = base_objects.ProcessingState(state)
-            job.final_log = ['already finalized']
-        await check_job_notifications()
-    finally:
-        release.set()
-        response = await request
-    assert response.status_code == 200, response.text
-    await check_job_notifications()
-    assert len(job_mail_outbox) == 1
-    async with db_sessions() as db:
-        assert (await db.get(model.Job, job_id)).final_log == ['corrected report']

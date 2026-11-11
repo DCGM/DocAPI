@@ -54,10 +54,17 @@ class Job(Base):
     final_log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     final_log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
-    def update_log(self, field: str, message: str, *, append: bool = True):
+    def update_log(self, field: str, message: str | None, *, append: bool = True):
         """Write to the current attempt, assigning a new list so ORM tracks it."""
         index = self.previous_attempts or 0
         entries = list(getattr(self, field) or [])
+        if message is None:
+            # Clearing an absent entry needs no padding. Keep other attempts,
+            # and retain SQL NULL when no attempt has any text left.
+            if 0 <= index < len(entries):
+                entries[index] = None
+            setattr(self, field, entries if any(entry is not None for entry in entries) else None)
+            return
         entries.extend([None] * (index + 1 - len(entries)))
         previous = entries[index]
         if append and previous:

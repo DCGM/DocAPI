@@ -196,22 +196,12 @@ async def get_jobs(
         result_available: Optional[bool] = None,
         engine_name: Optional[str] = None,
         engine_version: Optional[str] = None,
-        from_created_date: Optional[datetime] = None,
-        from_started_date: Optional[datetime] = None,
-        from_last_change: Optional[datetime] = None,
-        from_finished_date: Optional[datetime] = None,
+        from_created_date: Optional[base_objects.UTCDateTime] = None,
+        from_started_date: Optional[base_objects.UTCDateTime] = None,
+        from_last_change: Optional[base_objects.UTCDateTime] = None,
+        from_finished_date: Optional[base_objects.UTCDateTime] = None,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
-
-    # Treat naive filters as UTC; keep explicit offsets intact.
-    if from_created_date is not None and from_created_date.tzinfo is None:
-        from_created_date = from_created_date.replace(tzinfo=timezone.utc)
-    if from_started_date is not None and from_started_date.tzinfo is None:
-        from_started_date = from_started_date.replace(tzinfo=timezone.utc)
-    if from_last_change is not None and from_last_change.tzinfo is None:
-        from_last_change = from_last_change.replace(tzinfo=timezone.utc)
-    if from_finished_date is not None and from_finished_date.tzinfo is None:
-        from_finished_date = from_finished_date.replace(tzinfo=timezone.utc)
 
     if key.role == base_objects.KeyRole.ADMIN:
         db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
@@ -411,7 +401,7 @@ async def put_alto(
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, job_code, request)
-    if not db_job.alto_required:
+    if key.role != base_objects.KeyRole.ADMIN and not db_job.alto_required:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
             code=AppCode.ALTO_NOT_REQUIRED,
@@ -526,7 +516,7 @@ async def put_page(
 
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, job_code, request)
-    if not db_job.page_required:
+    if key.role != base_objects.KeyRole.ADMIN and not db_job.page_required:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
             code=AppCode.PAGE_NOT_REQUIRED,
@@ -635,7 +625,7 @@ async def put_meta_json(
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, job_code, request)
 
-    if not db_job.meta_json_required:
+    if key.role != base_objects.KeyRole.ADMIN and not db_job.meta_json_required:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
             code=AppCode.META_JSON_NOT_REQUIRED,
@@ -726,21 +716,21 @@ async def get_result(
     db_job, code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, code, route_request)
 
-    if db_job.state == base_objects.ProcessingState.CANCELLED:
+    if key.role != base_objects.KeyRole.ADMIN and db_job.state == base_objects.ProcessingState.CANCELLED:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
             code=AppCode.JOB_CANCELLED,
             detail=GET_RESULT_RESPONSES[AppCode.JOB_CANCELLED]["detail"]
         )
 
-    if db_job.state == base_objects.ProcessingState.FAILED:
+    if key.role != base_objects.KeyRole.ADMIN and db_job.state == base_objects.ProcessingState.FAILED:
         raise DocAPIClientErrorException(
             status=status.HTTP_409_CONFLICT,
             code=AppCode.JOB_FAILED,
             detail=GET_RESULT_RESPONSES[AppCode.JOB_FAILED]["detail"]
         )
 
-    if db_job.state in {base_objects.ProcessingState.NEW,
+    if key.role != base_objects.KeyRole.ADMIN and db_job.state in {base_objects.ProcessingState.NEW,
                         base_objects.ProcessingState.QUEUED,
                         base_objects.ProcessingState.PROCESSING,
                         base_objects.ProcessingState.ERROR}:
@@ -751,7 +741,7 @@ async def get_result(
             details={"state": db_job.state.value}
         )
 
-    if db_job.state == base_objects.ProcessingState.DONE:
+    if key.role == base_objects.KeyRole.ADMIN or db_job.state == base_objects.ProcessingState.DONE:
         result_file_path = os.path.join(config.RESULTS_DIR, f"{job_id}.zip")
         if not os.path.exists(result_file_path):
              raise DocAPIClientErrorException(

@@ -80,3 +80,41 @@ logs a warning. Uncommitted changes are not identified by the commit hash.
 Keep all instances sharing a DB on the same code revision: the row records the
 latest successful startup or migration that allowed commit updates. Take the
 pre-upgrade backup before starting the new image to retain the previous commit.
+
+## Admin operations
+
+An active admin key can use every authenticated endpoint and bypasses ownership,
+worker assignment, job-state restrictions, and optional-input requirements. Admin
+file downloads use the actual file even when upload flags/timestamps are absent.
+Request/file validation, record and file existence checks, database constraints,
+and concurrency protections still apply.
+
+Use `PATCH /v1/jobs/{job_id}` for admin edits; the separate
+`PATCH /v1/admin/jobs/{job_id}` endpoint has been removed. Admins can edit the full
+`JobUpdate` schema. State updates return the corresponding operation success
+code. Progress/log updates without a state change return renewed lease data for
+both workers and admins. Other admin field edits return `JOB_UPDATED`. Process logs
+append unless `append_logs=false`; final logs replace the current attempt and
+can be edited without changing state. Activity/finalization defaults still apply,
+and explicit admin field values override them. Ordinary user/worker requests keep
+their existing workflow rules and responses.
+
+`PUT /debug/jobs/{job_id}/start` manually invokes the normal readiness check. It
+still requires a NEW job and complete required inputs. Use PATCH to force a job
+state directly instead.
+
+Nullable update fields distinguish omission from an explicit `null`. Admin job
+edits can reset `previous_attempts`, clear `started_date`/`finished_date`, or clear
+the current attempt’s log entry without removing other attempts. The counter
+accepts only null or an integer from 0 to 1000. Worker log updates retain their
+append/finalization behavior and cannot clear logs with null. Engine definitions
+and key email addresses can also be cleared explicitly.
+
+Progress updates require a finite number between 0 and 1, inclusive. Image order
+on job creation must be a non-negative integer fitting a PostgreSQL integer
+(maximum 2147483647). Invalid numeric inputs return 422 instead of being clamped.
+Date edits and job-listing date filters are normalized to UTC: explicit offsets
+preserve the instant, and timezone-free inputs mean UTC. Dates must be representable
+in UTC; exact Python minimum/maximum dates reserved by the driver for infinity are
+rejected. An edited `last_change` must also leave room for the configured finite
+lease duration. Invalid dates return 422 before being used in database queries or updates.

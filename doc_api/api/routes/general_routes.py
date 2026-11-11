@@ -7,6 +7,8 @@ from typing import Optional, List
 import fastapi
 from fastapi import Depends, status, Request, Body
 from fastapi.responses import RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
 from aiofiles import os as aiofiles_os
 from natsort import natsort_keygen, natsorted
@@ -330,7 +332,7 @@ PATCH_JOB_RESPONSES = {
     AppCode.JOB_UPDATED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Job has been updated successfully and the lease has been extended (UTC time).",
-        "model": DocAPIResponseOK[base_objects.JobLease],
+        "model": DocAPIResponseOK[Optional[base_objects.JobLease]],
         "model_data": base_objects.JobLease,
         "detail": "Job has been updated successfully and the lease has been extended (UTC time).",
     },
@@ -409,7 +411,7 @@ async def patch_job(
         request: Request,
         *,
         job_id: UUID,
-        job_progress_update: base_objects.JobProgressUpdate =
+        job_progress_update: base_objects.JobUpdate =
         Body(...,
             openapi_examples={
                 "user_cancelled": {
@@ -463,7 +465,7 @@ async def patch_job(
                         "Worker updates job progress and log messages. If given, logs are appended to existing logs."
                         "\n\nAt least one of `progress|log|log_user` must be provided."
                         f"\n\nJob must be in `state: {base_objects.ProcessingState.PROCESSING}`."
-                        f"\n\n`progress` is clipped to range `[0.0, 1.0]`."
+                        f"\n\n`progress` must be in range `[0.0, 1.0]`."
                         "\n\nLease is renewed automatically when updating progress. "
                         "If you only want to renew the lease without updating progress "
                         f"use [`PATCH /v1/jobs/{{job_id}}/lease`]({config.APP_BASE_URL}/docs#/Worker/9999-patch_job_v1_jobs__job_id__patch). "
@@ -476,12 +478,50 @@ async def patch_job(
                 }
             }
         ),
+        append_logs: bool = True,
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
     db_job, code_get_job = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, code_get_job, request)
     code_update_job = None
+
+    if key.role == base_objects.KeyRole.ADMIN:
+        # Admin edits use the same endpoint, but deliberately bypass workflow
+        # transitions. The CRUD still locks the row and checks its existence.
+        progress_update = job_progress_update.state is None and (
+            job_progress_update.progress is not None
+            or bool(job_progress_update.model_fields_set & {"log", "log_user"}))
+        code = await general_cruds.update_job(
+            db=db, job_id=job_id, job_update=job_progress_update, append_logs=append_logs,
+            apply_state_defaults=True)
+        if code == AppCode.JOB_NOT_FOUND:
+            require_job_record(None, code, request)
+        if code not in {AppCode.JOB_UPDATED, AppCode.JOB_CANCELLED, AppCode.JOB_COMPLETED,
+                        AppCode.JOB_MARKED_ERROR, AppCode.JOB_MARKED_FAILED}:
+            raise RouteInvariantError(code=code, request=request)
+        if progress_update:
+            # The CRUD refreshes and updates this same ORM row under its lock.
+            # Base the lease on the saved activity time, including explicit overrides.
+            lease_expire_at, server_time = worker_cruds.get_new_lease(db_job.last_change)
+            return DocAPIResponseOK[base_objects.JobLease](
+                status=status.HTTP_200_OK, code=code,
+                detail=PATCH_JOB_RESPONSES[code]["detail"],
+                data=base_objects.JobLease(id=job_id, lease_expire_at=lease_expire_at, server_time=server_time))
+        return DocAPIResponseOK[NoneType](
+            status=status.HTTP_200_OK, code=code,
+            detail=("Job updated successfully." if code == AppCode.JOB_UPDATED
+                    else PATCH_JOB_RESPONSES[code]["detail"]))
+
+    # The shared schema exposes admin fields. Validate ordinary requests against
+    # the narrower progress schema so extra fields and final-report rules retain
+    # the same validation as before this endpoint was consolidated.
+    try:
+        job_progress_update = base_objects.JobProgressUpdate.model_validate(
+            job_progress_update.model_dump(exclude_unset=True))
+    except ValidationError as error:
+        errors = [dict(item, loc=("body", *item["loc"])) for item in error.errors()]
+        raise RequestValidationError(errors) from error
 
     # user guards
     if key.role == base_objects.KeyRole.USER:
@@ -555,7 +595,7 @@ async def patch_job(
 
     # at this point we know the request is valid
 
-    if key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.ADMIN} and \
+    if key.role == base_objects.KeyRole.USER and \
             job_progress_update.state == base_objects.ProcessingState.CANCELLED:
         code_update_job = await user_cruds.cancel_job(db, job_id)
         if code_update_job == AppCode.JOB_NOT_FOUND:
@@ -577,11 +617,11 @@ async def patch_job(
 
         raise RouteInvariantError(code=code_update_job, request=request)
 
-    if key.role in {base_objects.KeyRole.WORKER, base_objects.KeyRole.ADMIN}:
+    if key.role == base_objects.KeyRole.WORKER:
         db_job, lease_expire_at, server_time, code_update_job = await worker_cruds.update_job_progress(
             db=db,
             job_id=job_id,
-            worker_key_id=key.id if key.role == base_objects.KeyRole.WORKER else None,
+            worker_key_id=key.id,
             job_progress_update=job_progress_update,
         )
         if code_update_job in {AppCode.JOB_NOT_FOUND, AppCode.API_KEY_FORBIDDEN_FOR_JOB,

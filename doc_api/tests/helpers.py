@@ -220,7 +220,6 @@ ROUTE_CASES = [
     ("PATCH", "/v1/admin/engines/{name}/{version}", {"json": {"active": False}}, {"admin"}),
     ("PUT", "/v1/admin/engines/{name}/{version}/files", {"files": {"file": ("engine.zip", b"data")}}, {"admin"}),
     ("GET", "/v1/admin/jobs/{job_id}/artifacts", {}, {"admin"}),
-    ("PATCH", "/v1/admin/jobs/{job_id}", {"json": {}}, {"admin"}),
     ("PUT", "/debug/jobs/{job_id}/start", {}, {"admin"}),
 ]
 
@@ -255,7 +254,7 @@ OPENAPI_SECTION_OPERATIONS = {
         ("patch", "/v1/admin/keys/{label}"), ("post", "/v1/admin/keys/{label}/secret"),
         ("post", "/v1/admin/engines"), ("patch", "/v1/admin/engines/{name}/{version}"),
         ("put", "/v1/admin/engines/{name}/{version}/files"),
-        ("get", "/v1/admin/jobs/{job_id}/artifacts"), ("patch", "/v1/admin/jobs/{job_id}"),
+        ("get", "/v1/admin/jobs/{job_id}/artifacts"),
     },
 }
 

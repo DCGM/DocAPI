@@ -1,9 +1,27 @@
 import enum
-from datetime import datetime
-from typing import Optional, get_origin, Union, get_args, List, Any
+from datetime import datetime, timedelta, timezone
+from typing import Optional, get_origin, Union, get_args, List, Any, Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
+
+from doc_api.config import config
+
+
+def normalize_utc_datetime(value: datetime) -> datetime:
+    """Treat timezone-free input as UTC and reject dates unsafe for PostgreSQL."""
+    try:
+        # Applying an offset near year 1/9999 can overflow even for valid local dates.
+        value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    except OverflowError as exc:
+        raise ValueError("Timestamp must be representable in UTC.") from exc
+    # asyncpg reserves the exact Python boundaries for PostgreSQL infinity.
+    if value in (datetime.min.replace(tzinfo=timezone.utc), datetime.max.replace(tzinfo=timezone.utc)):
+        raise ValueError("Timestamp must be strictly between the minimum and maximum supported dates.")
+    return value
+
+
+UTCDateTime = Annotated[datetime, AfterValidator(normalize_utc_datetime)]
 
 
 class ProcessingState(str, enum.Enum):
@@ -272,6 +290,20 @@ class Job(JobWithEngine):
 
 
 class JobUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("last_change")
+    @classmethod
+    def validate_lease_date_range(cls, value):
+        if value is not None and config.JOB_TIMEOUT_SECONDS > 0:
+            try:
+                # Reject before saving, rather than failing to build a lease
+                # response after the administrative update has committed.
+                value + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+            except OverflowError as exc:
+                raise ValueError("Timestamp plus the configured job timeout exceeds the supported date range.") from exc
+        return value
+
     state: Optional[ProcessingState] = Field(
         None,
         description="New state of the job.",
@@ -280,8 +312,12 @@ class JobUpdate(BaseModel):
 
     progress: Optional[float] = Field(
         None,
+        allow_inf_nan=False,
+        ge=0,
+        le=1,
+        strict=True,
         description=(
-            "Current completion percentage of the job (0.0–100.0). "
+            "Current progress of the job (0.0–1.0). "
             "Omit if progress has not changed since the last update."
         ),
         examples=[0.5]
@@ -289,8 +325,12 @@ class JobUpdate(BaseModel):
 
     previous_attempts: Optional[int] = Field(
         None,
+        ge=0,
+        le=1000,
+        strict=True,
         examples=[1],
-        description="Number of previous attempts if the job was retried."
+        description="Number of previous attempts if the job was retried. "
+                    "Use an integer from 0 to 1000, null to reset, or omit to leave unchanged."
     )
 
     meta_json_uploaded: Optional[bool] = Field(
@@ -317,25 +357,25 @@ class JobUpdate(BaseModel):
         description="Whether PAGE XML file is required for this job."
     )
 
-    created_date: Optional[datetime] = Field(
+    created_date: Optional[UTCDateTime] = Field(
         None,
         examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp when the job was created."
     )
 
-    started_date: Optional[datetime] = Field(
+    started_date: Optional[UTCDateTime] = Field(
         None,
         examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp when processing started."
     )
 
-    last_change: Optional[datetime] = Field(
+    last_change: Optional[UTCDateTime] = Field(
         None,
         examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp of the last state change."
     )
 
-    finished_date: Optional[datetime] = Field(
+    finished_date: Optional[UTCDateTime] = Field(
         None,
         examples=["2025-10-18T21:30:00+00:00"],
         description="UTC timestamp when the job was finished."
@@ -380,8 +420,12 @@ class JobProgressUpdate(BaseModel):
 
     progress: Optional[float] = Field(
         None,
+        allow_inf_nan=False,
+        ge=0,
+        le=1,
+        strict=True,
         description=(
-            "Current completion percentage of the job (0.0–100.0). "
+            "Current progress of the job (0.0–1.0). "
             "Omit if progress has not changed since the last update."
         ),
         examples=[0.5]
