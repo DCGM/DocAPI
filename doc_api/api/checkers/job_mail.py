@@ -107,6 +107,9 @@ def send_final_report(mail: JobMail) -> bool | None:
             port=getattr(config, f"{mail.channel}_MAIL_PORT"),
             sender_name=getattr(config, f"{mail.channel}_MAIL_SENDER_NAME"),
             password=getattr(config, f"{mail.channel}_MAIL_PASSWORD"),
+            username=getattr(config, f"{mail.channel}_MAIL_USERNAME"),
+            security=getattr(config, f"{mail.channel}_MAIL_SECURITY"),
+            timeout=getattr(config, f"{mail.channel}_MAIL_TIMEOUT_SECONDS"),
         )
         # Workers are expected to write reports fit to send; masking is opt-in
         # per channel, SECRET_MASKING_INTERNAL_MAIL / SECRET_MASKING_EXTERNAL_MAIL.
