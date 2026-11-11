@@ -56,8 +56,7 @@ async def get_final_reports(db: AsyncSession, job: model.Job) -> list[JobMail]:
     values = dict(
         server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME,
         status=job.state.value.upper(),
-        # Preserve existing deployments with older subject templates.
-        state=job.state.value, state_upper=job.state.value.upper(), job_id=str(job.id),
+        job_id=str(job.id),
         job_id_short=str(job.id)[:8], image_count=job.image_count,
         attempt=job.previous_attempts + 1 if job.previous_attempts is not None else 0,
         engine_name=engine.name if engine else "", engine_version=engine.version if engine else "",

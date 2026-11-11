@@ -687,7 +687,6 @@ Subjects use USER_JOB_MAIL_SUBJECT_TEMPLATE and ADMIN_JOB_MAIL_SUBJECT_TEMPLATE 
 job ID, image count, attempt, engine name/version, and owner-key label placeholders.
 The user default is `[{server_name}] {status} job {job_id_short}`;
 the admin default is `[{admin_server_name}] {status} job {job_id_short} ({owner_label})`.
-Legacy `{state}` (lowercase) and `{state_upper}` placeholders remain supported.
 Server-error emails use `INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE`, defaulting to
 `[{admin_server_name}] INTERNAL SERVER ERROR`, with `{server_name}` and
 `{admin_server_name}` placeholders available.
