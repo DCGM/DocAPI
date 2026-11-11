@@ -49,43 +49,40 @@ class Job(Base):
     results_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     artifacts_deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
-    log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
-    final_log: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
-    final_log_user: Mapped[list[str | None] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    log: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    log_user: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    final_log: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    final_log_user: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
     def update_log(self, field: str, message: str | None, *, append: bool = True):
-        """Write to the current attempt, assigning a new list so ORM tracks it."""
-        index = self.previous_attempts or 0
-        entries = list(getattr(self, field) or [])
+        """Write to the current attempt, assigning a new dict so ORM tracks it."""
+        key = str(0 if self.previous_attempts is None else self.previous_attempts)
+        entries = dict(getattr(self, field) or {})
         if message is None:
-            # Clearing an absent entry needs no padding. Keep other attempts,
-            # and retain SQL NULL when no attempt has any text left.
-            if 0 <= index < len(entries):
-                entries[index] = None
-            setattr(self, field, entries if any(entry is not None for entry in entries) else None)
+            entries.pop(key, None)
+            setattr(self, field, entries or None)
             return
-        entries.extend([None] * (index + 1 - len(entries)))
-        previous = entries[index]
+        previous = entries.get(key)
         if append and previous:
             separator = "" if previous.endswith("\n") else "\n"
-            entries[index] = previous + separator + message
+            entries[key] = previous + separator + message
         else:
-            entries[index] = message
+            entries[key] = message
         setattr(self, field, entries)
 
     def reset_attempt_logs(self, started_at: datetime):
         """A released lease reuses its index; discard its old messages on leasing."""
-        index = self.previous_attempts or 0
+        index = 0 if self.previous_attempts is None else self.previous_attempts
         for field in ("log", "log_user", "final_log", "final_log_user"):
-            entries = list(getattr(self, field) or [])[:index]
-            entries.extend([None] * (index + 1 - len(entries)))
-            entries[index] = (
-                f"ATTEMPT {index + 1} STARTED AT {started_at} AFTER TIMEOUT/ERROR.\n\n"
-                if field == "log" and index > 0 else None
-            )
-            # A quiet first attempt must retain SQL NULL, not an empty JSON array.
-            setattr(self, field, entries if any(entry is not None for entry in entries) else None)
+            # Drop the reused attempt and any later attempts, retaining sparse history.
+            entries = {key: entry for key, entry in (getattr(self, field) or {}).items()
+                       if int(key) < index}
+            if field == "log" and index > 0:
+                entries[str(index)] = (
+                    f"ATTEMPT {index + 1} STARTED AT {started_at} AFTER TIMEOUT/ERROR.\n\n"
+                )
+            # A quiet first attempt must retain SQL NULL, not an empty JSON object.
+            setattr(self, field, entries or None)
 
     images: Mapped[list['Image']] = relationship(back_populates="job", foreign_keys='Image.job_id')
 

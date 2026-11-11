@@ -231,7 +231,7 @@ async def job_factory(db_sessions, worker_key, reader_owner):
         job = model.Job(id=uuid4(), owner_key_id=owner_key_id or reader_owner.id,
                         worker_key_id=worker_key.id, definition={"images": []},
                         state=state, progress=0.4, previous_attempts=0,
-                        log=["Technical log"], log_user=["User log"])
+                        log={'0': "Technical log"}, log_user={'0': "User log"})
         async with db_sessions.begin() as db:
             db.add(job)
         return job.id

@@ -142,8 +142,8 @@ async def test_upgrade_job_attempt_logs(isolated_database):
         async with engine.begin() as db:
             rows = {row.id: row for row in (await db.execute(text("SELECT id, log, log_user FROM jobs"))).all()}
             for job_id, (_, _, technical, public) in zip(jobs, cases):
-                assert rows[job_id].log == technical
-                assert rows[job_id].log_user == public
+                assert rows[job_id].log == ({str(i): entry for i, entry in enumerate(technical or []) if entry is not None} or None)
+                assert rows[job_id].log_user == ({str(i): entry for i, entry in enumerate(public or []) if entry is not None} or None)
             types = await db.run_sync(lambda conn: {c["name"]: c for c in inspect(conn).get_columns("jobs")})
             assert str(types["log"]["type"]) == "JSONB"
             assert types["log"]["nullable"] and types["log_user"]["nullable"]
@@ -169,7 +169,7 @@ async def test_upgrade_email_and_final_reports(isolated_database):
         key = (await db.execute(text('SELECT email, email_notifications FROM keys WHERE id=:id'), {'id': owner})).one()
         assert key.email is None and key.email_notifications is False
         job = (await db.execute(text('SELECT log, final_log, final_log_user FROM jobs WHERE id=:id'), {'id': job_id})).one()
-        assert job.log == ['process text']
+        assert job.log == {'0': 'process text'}
         assert job.final_log is None and job.final_log_user is None
     await migrate(engine, 'e51a7b3d902c', downgrade=True)
     async with engine.begin() as db:
@@ -274,3 +274,52 @@ async def test_upgrade_manager_role(isolated_database):
         values = await db.scalar(text("SELECT enum_range(NULL::keyrole)::text"))
         assert "MANAGER" not in values
     await migrate(engine, "head")
+
+
+@pytest.mark.asyncio
+async def test_upgrade_sparse_attempt_logs(isolated_database):
+    engine = isolated_database.engine
+    await migrate(engine, "e62f8d19a403")
+    fields = ("log", "log_user", "final_log", "final_log_user")
+    cases = [None, [], [None, None], ["first", None, "third", None],
+             [None, None, "late"], ["", "žluťoučký\nreport"], ["early"], [None] * 10 + ["eleventh"]]
+    owner = uuid4()
+    # Cross the migration's batch boundary, including rows with no logs.
+    jobs = [(uuid4(), {field: cases[(index + offset) % len(cases)]
+                       for offset, field in enumerate(fields)}) for index in range(505)]
+    jobs.append((uuid4(), dict.fromkeys(fields)))
+    async with engine.begin() as db:
+        await db.execute(text("""INSERT INTO keys
+            (id, kid, salt, key_hash, label, role, active, created_date, email_notifications)
+            VALUES (:id, 'sparse-migration', 'salt', 'hash', 'owner', 'USER', true, now(), false)
+        """), {"id": owner})
+        await db.execute(text("""INSERT INTO jobs
+            (id, owner_key_id, definition, image_count, alto_required, page_required,
+             meta_json_required, meta_json_uploaded, state, progress, previous_attempts,
+             created_date, last_change, log, log_user, final_log, final_log_user)
+            VALUES (:id, :owner, '{}', 0, false, false, false, false, 'DONE', 1, 3,
+                    now(), now(), CAST(:log AS jsonb), CAST(:log_user AS jsonb),
+                    CAST(:final_log AS jsonb), CAST(:final_log_user AS jsonb))
+        """), [{"id": job_id, "owner": owner,
+                 **{field: json.dumps(value) if value is not None else None
+                    for field, value in values.items()}} for job_id, values in jobs])
+    for _ in range(2):
+        await migrate(engine, "head")
+        async with engine.begin() as db:
+            rows = {row.id: row for row in (await db.execute(text("SELECT * FROM jobs"))).all()}
+            for job_id, values in jobs:
+                assert rows[job_id].state == "DONE" and rows[job_id].previous_attempts == 3
+                for field, entries in values.items():
+                    expected = {str(index): entry for index, entry in enumerate(entries or [])
+                                if entry is not None} or None
+                    assert getattr(rows[job_id], field) == expected
+            # Absent logs remain SQL NULL, rather than the JSON literal null.
+            assert await db.scalar(text("SELECT count(*) FROM jobs WHERE log = 'null'::jsonb")) == 0
+        await migrate(engine, "e62f8d19a403", downgrade=True)
+        async with engine.begin() as db:
+            rows = {row.id: row for row in (await db.execute(text("SELECT * FROM jobs"))).all()}
+            for job_id, values in jobs:
+                for field, entries in values.items():
+                    expected = (entries + [None] * (4 - len(entries))) if entries and any(
+                        entry is not None for entry in entries) else None
+                    assert getattr(rows[job_id], field) == expected
