@@ -16,15 +16,16 @@ from doc_api.api.schemas import base_objects
 logger = logging.getLogger(__name__)
 
 
-async def _lock_job_for_worker(db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> Tuple[Optional[model.Job], AppCode]:
+async def _lock_job_for_worker(db: AsyncSession, job_id: UUID, expected_worker_key_id: Optional[UUID]) -> Tuple[Optional[model.Job], AppCode]:
     # Route guards run before this transaction. Refresh under the lock because
     # a timeout/reassignment may have happened after those guards succeeded.
     job = await db.scalar(select(model.Job).where(model.Job.id == job_id)
                           .execution_options(populate_existing=True).with_for_update())
     if job is None:
         return None, AppCode.JOB_NOT_FOUND
-    # None is passed explicitly for admins, who can act on another worker's job.
-    if worker_key_id is not None and job.worker_key_id != worker_key_id:
+    # The route supplies an assignment precondition when the operation requires it.
+    # None means there is no assignment precondition.
+    if expected_worker_key_id is not None and job.worker_key_id != expected_worker_key_id:
         return job, AppCode.API_KEY_FORBIDDEN_FOR_JOB
     return job, AppCode.JOB_RETRIEVED
 
@@ -77,14 +78,19 @@ def get_new_lease(server_time: datetime = None) -> Tuple[Optional[datetime], dat
     return lease_expire_at, server_time
 
 
-async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> Tuple[Optional[datetime], Optional[datetime], AppCode]:
+async def update_processing_job_lease(
+        *, db: AsyncSession, job_id: UUID,
+        expected_worker_key_id: Optional[UUID],
+        expected_state: Optional[base_objects.ProcessingState],
+) -> Tuple[Optional[datetime], Optional[datetime], AppCode]:
+    """Renew the lease under a row lock; None omits the respective precondition."""
     try:
         async with db.begin():
-            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            db_job, code = await _lock_job_for_worker(db, job_id, expected_worker_key_id)
             if code != AppCode.JOB_RETRIEVED:
                 return None, None, code
 
-            if worker_key_id is not None and db_job.state != base_objects.ProcessingState.PROCESSING:
+            if expected_state is not None and db_job.state != expected_state:
                 return None, None, AppCode.JOB_NOT_IN_PROCESSING
 
             lease_expire_at, server_time = get_new_lease()
@@ -96,14 +102,19 @@ async def update_processing_job_lease(*, db: AsyncSession, job_id: UUID, worker_
         raise DBError("Failed updating job lease.") from e
 
 
-async def release_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID]) -> AppCode:
+async def release_job_lease(
+        *, db: AsyncSession, job_id: UUID,
+        expected_worker_key_id: Optional[UUID],
+        expected_state: Optional[base_objects.ProcessingState],
+) -> AppCode:
+    """Requeue and unassign the job; None omits the respective precondition."""
     try:
         async with db.begin():
-            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            db_job, code = await _lock_job_for_worker(db, job_id, expected_worker_key_id)
             if code != AppCode.JOB_RETRIEVED:
                 return code
 
-            if worker_key_id is not None and db_job.state != base_objects.ProcessingState.PROCESSING:
+            if expected_state is not None and db_job.state != expected_state:
                 return AppCode.JOB_NOT_IN_PROCESSING
 
             now = datetime.now(timezone.utc)
@@ -122,10 +133,10 @@ async def release_job_lease(*, db: AsyncSession, job_id: UUID, worker_key_id: Op
         raise DBError("Failed releasing job lease.") from e
 
 
-async def update_job_progress(*, db: AsyncSession, job_id: UUID, worker_key_id: Optional[UUID], job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
+async def update_job_progress(*, db: AsyncSession, job_id: UUID, expected_worker_key_id: Optional[UUID], job_progress_update: base_objects.JobProgressUpdate) -> Tuple[Optional[model.Job], Optional[datetime], Optional[datetime], AppCode]:
     try:
         async with db.begin():
-            db_job, code = await _lock_job_for_worker(db, job_id, worker_key_id)
+            db_job, code = await _lock_job_for_worker(db, job_id, expected_worker_key_id)
             if code != AppCode.JOB_RETRIEVED:
                 return db_job, None, None, code
 

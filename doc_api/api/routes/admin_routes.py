@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import require_admin_key
+from doc_api.api.authentication import require_management_key
 from doc_api.api.cruds import admin_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.guards.general_guards import challenge_job_exists
@@ -63,7 +63,7 @@ POST_KEY_RESPONSES = {
 async def post_key(
         request: Request,
         key_new: base_objects.KeyNew,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     secret, code = await admin_cruds.new_key(db=db, key_new=key_new)
@@ -126,7 +126,7 @@ POST_KEY_SECRET_RESPONSES = {
 async def post_key_secret(
         request: Request,
         label: str,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     secret, code = await admin_cruds.new_secret(db=db, label=label)
@@ -194,7 +194,7 @@ async def patch_key(
         request: Request,
         label: str,
         key_update: base_objects.KeyUpdate,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     if key_update.label is None and \
@@ -249,7 +249,7 @@ GET_KEYS_RESPONSES = {
     responses=make_responses(GET_KEYS_RESPONSES))
 async def get_keys(
         request: Request,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
     db_keys, code = await admin_cruds.get_keys(db=db)
     if code != AppCode.KEYS_RETRIEVED:
@@ -282,7 +282,7 @@ POST_ENGINE_RESPONSES = {
 async def post_engine(
         request: Request,
         engine_new: base_objects.EngineNew,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     db_engine, code = await admin_cruds.new_engine(db=db, engine_new=engine_new)
@@ -332,7 +332,7 @@ async def patch_engine(
         name: str,
         version: str,
         engine_update: base_objects.EngineUpdate,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     if engine_update.name is None and \
@@ -408,7 +408,7 @@ async def post_engine_files(
         name: str,
         version: str,
         file: UploadFile = File(..., description="ZIP archive containing the engine files."),
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session),
 ):
     db_engine, code = await general_cruds.get_engine_by_name_and_version(
@@ -478,7 +478,7 @@ GET_ARTIFACTS_RESPONSES = {
 async def get_artifacts(
         route_request: fastapi.Request,
         job_id: UUID,
-        key: model.Key = Depends(require_admin_key),
+        key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
 
     artifacts_file_path = os.path.join(config.ARTIFACTS_DIR, f"{job_id}.zip")

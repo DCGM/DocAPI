@@ -57,13 +57,16 @@ AUTHENTICATION_RESPONSES = {
     }
 }
 
-def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
+def require_api_key(*roles: KeyRole, allow_manager: bool = True) -> Callable[..., "model.Key"]:
     """
     Dependency enforcing API key authentication + role authorization.
-    - ADMIN is always allowed.
+    - ADMIN is always allowed. MANAGER is allowed unless explicitly excluded.
+    - Workflow checks run separately.
     """
     allowed = set(roles) if roles else set()
     allowed.add(KeyRole.ADMIN)
+    if allow_manager:
+        allowed.add(KeyRole.MANAGER)
 
     async def _dep(
         k_hdr: Optional[str] = Security(api_key_header),
@@ -112,7 +115,8 @@ def require_api_key(*roles: KeyRole) -> Callable[..., "model.Key"]:
     return _dep
 
 
-require_admin_key = require_api_key()
+require_management_key = require_api_key()
+require_admin_key = require_api_key(allow_manager=False)
 
 
 async def lookup_key(db: AsyncSession, provided_key: str) -> Optional[model.Key]:

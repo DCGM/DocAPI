@@ -74,9 +74,9 @@ class FileSaveTransaction:
             raise DocAPIClientErrorException(status=fastapi.status.HTTP_404_NOT_FOUND, code=code,
                                              detail=GENERAL_RESPONSES[code]["detail"])
         if self.entity is model.Job:
-            if self.kind == "inputs" and self.key.role == KeyRole.USER:
+            if self.kind == "inputs" and self.key.role in {KeyRole.USER, KeyRole.MANAGER}:
                 await _challenge_user_access_to_new_job(db=self.db, key=self.key, job_id=self.record_id)
-            elif self.kind != "inputs" and self.key.role == KeyRole.WORKER:
+            elif self.kind != "inputs" and self.key.role in {KeyRole.WORKER, KeyRole.MANAGER}:
                 await _challenge_worker_access_to_processing_job(db=self.db, key=self.key, job_id=self.record_id)
         if self.image_id is not None:
             self.image = await self.db.get(model.Image, self.image_id, populate_existing=True)

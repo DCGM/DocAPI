@@ -351,7 +351,7 @@ def test_job_report_mail_is_masked(job_mail_outbox):
            ("Job failed with *****", "Traceback: api_key=*****")
 
 
-@pytest.mark.parametrize("reader_role", ["user", "readonly", "worker", "admin"])
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "worker", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_job_200_engine_settings_masked_for_readers(client, reader_headers, reader_role, job_factory,
                                                               engine_factory, db_sessions):
@@ -372,9 +372,9 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
         data = response.json()["data"]
         if isinstance(data, list):
             data = next(item for item in data if item["id"] == str(job_id))
-        privileged = reader_role in {"admin", "worker"}
+        privileged = reader_role in {"admin", "manager", "worker"}
         assert data["engine_settings"] == (SETTINGS if privileged else mask_secrets_in_struct(SETTINGS))
-        if reader_role == "admin":
+        if reader_role in {"admin", "manager"}:
             assert data["log_user"] == f"old {OPENAI_KEY}\n\nusing {OPENAI_KEY}"
         else:
             assert data["log_user"] == (f"using {OPENAI_KEY}" if privileged else "using *****")
@@ -385,7 +385,7 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
         assert job.log_user == [f"old {OPENAI_KEY}", f"using {OPENAI_KEY}"]
 
 
-@pytest.mark.parametrize("reader_role", ["user", "admin"])
+@pytest.mark.parametrize("reader_role", ["user", "admin", "manager"])
 @pytest.mark.asyncio
 async def test_get_job_200_partial_keys_revealed_partly(monkeypatch, client, reader_headers, reader_role, job_factory,
                                                         engine_factory, db_sessions):
@@ -400,11 +400,11 @@ async def test_get_job_200_partial_keys_revealed_partly(monkeypatch, client, rea
     response = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    if reader_role == "admin":
+    if reader_role in {"admin", "manager"}:
         assert data["engine_settings"] == {"vlm": {"api_key": OPENAI_KEY, "token": OPENAI_KEY}}
     else:
         assert data["engine_settings"] == {"vlm": {"api_key": OPENAI_KEY_PARTLY, "token": MASK}}
-    assert data["log_user"] == f"calling api_key={OPENAI_KEY if reader_role == 'admin' else OPENAI_KEY_PARTLY}"
+    assert data["log_user"] == f"calling api_key={OPENAI_KEY if reader_role in {'admin', 'manager'} else OPENAI_KEY_PARTLY}"
 
 
 @pytest.mark.asyncio

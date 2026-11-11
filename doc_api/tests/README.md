@@ -65,9 +65,9 @@ Keep distinct HTTP outcomes in separate tests and use descriptive parameter IDs
 for variations of a case. Unit tests and cleanup tests use behavior-based names.
 
 User and worker suites stay separate. Shared behavior within each suite uses
-`@pytest.mark.parametrize("user_role", ["user", "admin"])` or
-`@pytest.mark.parametrize("worker_role", ["worker", "admin"])` to run the same
-case with both credentials. The corresponding header fixture and workflow
+`@pytest.mark.parametrize("user_role", ["user", "admin", "manager"])` or
+`@pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])` to run the same
+case under each role. The corresponding header fixture and workflow
 fixtures use that role; unrelated actors retain their normal role. Each run has
 its own temporary database and upload directories. Without parametrization,
 `user_role` defaults to `user` and `worker_role` to `worker`.
@@ -78,7 +78,7 @@ workflow restrictions. Where a shared successful response exposes more data to a
 admin, the test explicitly checks the expected fields for each role. This keeps
 admin coverage alongside the operation it exercises without duplicating tests.
 
-Read endpoints use `reader_role` with `user`, `readonly`, and `admin`, and explicit
+Read endpoints use `reader_role` with `user`, `readonly`, `admin`, and `manager`, and explicit
 `reader_headers`. Setup uploads still use the normal user/worker credentials.
 For list tests, `reader_owner` identifies the user or readonly key whose jobs are
 being queried; jobs created through the API are assigned to it in the test DB,
@@ -1353,3 +1353,23 @@ the PostgreSQL driver reserves them for infinity. Finite and infinite lease boun
 - [x] Unsafe listing dates return 422 for all reader roles. [`test_user.py::test_get_jobs_422_date_range`](test_user.py).
 - [x] Listing date filters do not impose lease-duration limits. [`test_user.py::test_get_jobs_200_date_filter_independent_of_lease`](test_user.py).
 - [x] Administrative dates with offsets or without timezones are stored and returned in UTC. [`test_user.py::test_patch_job_200_admin_dates_normalized_to_utc`](test_user.py).
+
+
+### Manager role
+
+Dedicated management route tests run under both admin and manager authentication;
+debug routes are tested as admin and reject managers.
+Shared user/worker workflow tests also run as manager where applicable. Managers
+retain cross-owner visibility and management access, while state, readiness,
+input requirement, and lease-state checks remain enforced. Managers bypass
+owner and worker assignment restrictions across all routes.
+
+- [x] Role identity, access to management routes, and denial of debug routes. [`test_authentication.py::test_get_me_200_manager`](test_authentication.py), [`test_authentication.py::test_route_manager_authorized`](test_authentication.py).
+- [x] Cross-owner job and full log visibility. [`test_user.py::test_get_jobs_200_manager_visibility`](test_user.py).
+- [x] Input uploads respect job state even for another owner’s job. [`test_user.py::test_put_image_201_manager_other_owner`](test_user.py), [`test_user.py::test_put_image_409_manager_job_not_new`](test_user.py).
+- [x] Administrative job fields remain unavailable. [`test_user.py::test_patch_job_422_manager_admin_fields`](test_user.py).
+- [x] Cross-owner cancellation respects terminal states. [`test_user.py::test_patch_job_200_manager_cancel_other_owner`](test_user.py), [`test_user.py::test_patch_job_409_manager_cancel_terminal_job`](test_user.py).
+- [x] Explicit versions still require active engines. [`test_user.py::test_post_job_201_manager_explicit_engine_version`](test_user.py), [`test_user.py::test_post_job_409_manager_inactive_engine_version`](test_user.py).
+- [x] Worker operations can manage other workers’ jobs while respecting job state. [`test_worker.py::test_patch_job_200_manager_other_worker`](test_worker.py), [`test_worker.py::test_post_job_output_201_manager_other_worker`](test_worker.py), [`test_worker.py::test_delete_job_lease_204_manager_other_worker`](test_worker.py), [`test_worker.py::test_get_input_200_manager_other_worker`](test_worker.py).
+- [x] Upgrade supports persisted manager keys; downgrade refuses until they are reassigned and then preserves keys. [`test_migrations.py::test_upgrade_manager_role`](test_migrations.py).
+- [x] Null log values do not clear stored manager progress/final reports. [`test_worker.py::test_patch_job_200_manager_null_logs_preserved`](test_worker.py).

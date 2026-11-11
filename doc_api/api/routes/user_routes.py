@@ -130,7 +130,7 @@ async def post_job(
     if key.role == base_objects.KeyRole.ADMIN:
         db_job, job_code = await user_cruds.create_job(db=db, key_id=key.id, job_definition=job_definition)
     else:
-        if job_definition.engine_version is not None:
+        if key.role != base_objects.KeyRole.MANAGER and job_definition.engine_version is not None:
             raise DocAPIClientErrorException(
                 status=status.HTTP_403_FORBIDDEN,
                 code=AppCode.API_KEY_FORBIDDEN_FOR_ENGINE_VERSION,
@@ -203,7 +203,7 @@ async def get_jobs(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    if key.role == base_objects.KeyRole.ADMIN:
+    if key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
         db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
             db=db,
             state=state,
@@ -236,12 +236,12 @@ async def get_jobs(
         if result_available is not None and availability[db_job.id] != result_available:
             continue
         job = base_objects.JobProper.model_validate(
-            db_job, context={"all_attempt_logs": key.role == base_objects.KeyRole.ADMIN}).model_dump()
+            db_job, context={"all_attempt_logs": key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}}).model_dump()
         mask_job_logs(job, key)
         job["result_available"] = availability[db_job.id]
-        if key.role != base_objects.KeyRole.ADMIN:
+        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
             job.pop("artifacts_deleted_at", None)
-        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.WORKER}:
+        if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}:
             job.pop("log", None)
             job.pop("final_log", None)
         data.append(JobWithEngine(**job,

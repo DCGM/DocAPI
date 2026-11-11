@@ -165,10 +165,10 @@ async def test_route_403_inactive_key(client, admin_headers, db_sessions, method
 @pytest.mark.parametrize("method,path,kwargs,role", [
     (method, path, kwargs, role)
     for method, path, kwargs, allowed in ROUTE_CASES
-    for role in ("readonly", "user", "worker") if role not in allowed
+    for role in ("readonly", "user", "worker", "manager") if role not in allowed
 ], ids=lambda item: str(item) if isinstance(item, str) else None)
-async def test_route_403_role_forbidden(client, method, path, kwargs, role):
-    headers = {"X-API-Key": getattr(config, f"TEST_{role.upper()}_KEY")}
+async def test_route_403_role_forbidden(client, manager_headers, method, path, kwargs, role):
+    headers = manager_headers if role == "manager" else {"X-API-Key": getattr(config, f"TEST_{role.upper()}_KEY")}
     response = await client.request(method, route_url(path), headers=headers, **kwargs)
     assert response.status_code == 403, response.text
     assert response.json()["code"] == AppCode.API_KEY_ROLE_FORBIDDEN.value
@@ -203,3 +203,20 @@ def test_registered_routes_have_test_cases():
     expected |= {(method, path) for method in ("GET", "HEAD")
                  for path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json")}
     assert registered == expected
+
+
+@pytest.mark.asyncio
+async def test_get_me_200_manager(client, manager_headers):
+    response = await client.get("/v1/me", headers=manager_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["role"] == "manager"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,path,kwargs,roles", [case for case in ROUTE_CASES if "manager" in case[3]], ids=[f"{m} {p}" for m,p,_,roles in ROUTE_CASES if "manager" in roles])
+async def test_route_manager_authorized(client, manager_headers, method, path, kwargs, roles):
+    response = await client.request(method, route_url(path), headers=manager_headers, **kwargs)
+    assert response.status_code != 500, response.text
+    assert response.json().get("code") not in {
+        AppCode.API_KEY_ROLE_FORBIDDEN.value, AppCode.API_KEY_INVALID.value, AppCode.API_KEY_MISSING.value,
+    }, response.text

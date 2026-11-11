@@ -38,6 +38,7 @@ class KeyRole(str, enum.Enum):
     READONLY = 'readonly'
     USER = 'user'
     WORKER = 'worker'
+    MANAGER = 'manager'
     ADMIN = 'admin'
 
 

@@ -248,3 +248,29 @@ async def test_upgrade_database_metadata(isolated_database, monkeypatch):
         metadata = await db.run_sync(get_migration_metadata)
         assert metadata["git_commit"] == "a" * 40
         assert metadata["migrated_at"] >= unknown["migrated_at"]
+
+
+@pytest.mark.asyncio
+async def test_upgrade_manager_role(isolated_database):
+    engine = isolated_database.engine
+    await migrate(engine, "d56b2c04f935")
+    key_id = uuid4()
+    async with engine.begin() as db:
+        await db.execute(text("""
+            INSERT INTO keys (id, kid, salt, key_hash, label, role, active, created_date, email_notifications)
+            VALUES (:id, 'manager-migration', 'salt', 'hash', 'manager-migration', 'USER', true, now(), false)
+        """), {"id": key_id})
+    await migrate(engine, "head")
+    async with engine.begin() as db:
+        await db.execute(text("UPDATE keys SET role = 'MANAGER' WHERE id = :id"), {"id": key_id})
+        assert await db.scalar(text("SELECT role::text FROM keys WHERE id = :id"), {"id": key_id}) == "MANAGER"
+    with pytest.raises(RuntimeError, match="Reassign manager keys"):
+        await migrate(engine, "d56b2c04f935", downgrade=True)
+    async with engine.begin() as db:
+        await db.execute(text("UPDATE keys SET role = 'USER' WHERE id = :id"), {"id": key_id})
+    await migrate(engine, "d56b2c04f935", downgrade=True)
+    async with engine.begin() as db:
+        assert await db.scalar(text("SELECT role::text FROM keys WHERE id = :id"), {"id": key_id}) == "USER"
+        values = await db.scalar(text("SELECT enum_range(NULL::keyrole)::text"))
+        assert "MANAGER" not in values
+    await migrate(engine, "head")
