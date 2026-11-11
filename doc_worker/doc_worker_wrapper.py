@@ -165,7 +165,7 @@ class DocWorkerWrapper(ABC):
                  mail_sender: Optional[MailSender] = None,
                  identity: Optional[str] = None,
                  hostname: Optional[str] = None,
-                 mail_subject: str = "[{identity}] {status}: {hostname}",
+                 mail_subject: str = "[{identity}] {status} ({hostname})",
                  health_config: Optional[WorkerHealthConfig] = None,
                  error_messages: Optional[Mapping[str, WorkerErrorMessage]] = None):
         """

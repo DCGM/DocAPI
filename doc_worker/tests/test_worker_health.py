@@ -11,7 +11,7 @@ def health():
     from doc_worker.doc_worker_wrapper import DocWorkerWrapper
     worker = types.SimpleNamespace(mail_sender=mock.Mock(), send_mail=mock.Mock(), current_job=None,
                                    job_history=None, identity="worker abc", hostname="host",
-                                   mail_subject="[{identity}] {status}: {hostname}")
+                                   mail_subject="[{identity}] {status} ({hostname})")
     worker._send_worker_mail = types.MethodType(DocWorkerWrapper._send_worker_mail, worker)
     return WorkerHealth(worker, WorkerHealthConfig())
 
@@ -302,6 +302,15 @@ def test_wrapper_defaults_identity_and_detects_hostname(wrapper, tmp_path):
         worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path))
     assert worker.identity == type(worker).__name__
     assert worker.hostname == "automatic-host"
+
+
+def test_default_subject_for_alive_and_failure(wrapper):
+    WorkerHealth(wrapper, WorkerHealthConfig()).send_alive()
+    wrapper._notify_worker_failure("cannot connect")
+    assert [call.args[0] for call in wrapper.mail_sender.send.call_args_list] == [
+        f"[{wrapper.identity}] ALIVE ({wrapper.hostname})",
+        f"[{wrapper.identity}] FAILURE ({wrapper.hostname})",
+    ]
 
 
 def test_all_worker_mail_uses_constructor_identity_hostname_and_subject(wrapper, tmp_path):
