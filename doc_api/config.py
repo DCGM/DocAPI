@@ -77,6 +77,26 @@ class Config:
         self.DATABASE_REQUIRE_MATCHING_COMMIT = self._env_bool("DATABASE_REQUIRE_MATCHING_COMMIT", False)
         self.DATABASE_ALLOW_COMMIT_UPDATE = self._env_bool("DATABASE_ALLOW_COMMIT_UPDATE", True)
 
+        # Connection limits apply per API process.
+        self.DATABASE_POOL_SIZE = self._env_int("DATABASE_POOL_SIZE", 10, minimum=1)
+        self.DATABASE_MAX_OVERFLOW = self._env_int("DATABASE_MAX_OVERFLOW", 10)
+        self.DATABASE_POOL_TIMEOUT_SECONDS = float(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "10"))
+        if not math.isfinite(self.DATABASE_POOL_TIMEOUT_SECONDS) or self.DATABASE_POOL_TIMEOUT_SECONDS <= 0:
+            raise ValueError("DATABASE_POOL_TIMEOUT_SECONDS must be a finite, positive number")
+
+        # =============================================================================
+        # HTTP connections
+        # =============================================================================
+
+        self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+        self.APP_PORT = int(os.getenv("APP_PORT", "9999"))
+        # Keep idle HTTP connections longer than the default worker polling interval.
+        self.HTTP_KEEP_ALIVE_TIMEOUT_SECONDS = self._env_int("HTTP_KEEP_ALIVE_TIMEOUT_SECONDS", 60)
+        # Zero disables the concurrency limit / shutdown deadline.
+        self.HTTP_CONCURRENCY_LIMIT = self._env_int("HTTP_CONCURRENCY_LIMIT", 64)
+        self.HTTP_BACKLOG = self._env_int("HTTP_BACKLOG", 64, minimum=1)
+        self.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = self._env_int("HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS", 30)
+
         # =============================================================================
         # Application
         # =============================================================================
@@ -88,8 +108,6 @@ class Config:
         self.ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", os.path.join(self.BASE_DIR, "artifacts"))
         self.ENGINES_DIR = os.getenv("ENGINES_DIR", os.path.join(self.BASE_DIR, "engines"))
 
-        self.APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
-        self.APP_PORT = int(os.getenv("APP_PORT", "9999"))
         self.PRODUCTION = self._env_bool("PRODUCTION", False)
         # URL prefix, e.g. /subpath; empty for the root URL.
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
@@ -469,6 +487,16 @@ class Config:
         self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
         self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
         self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
+
+    @staticmethod
+    def _env_int(key: str, default: int, *, minimum: int = 0) -> int:
+        try:
+            value = int(os.getenv(key, str(default)))
+        except ValueError as error:
+            raise ValueError(f"{key} must be an integer >= {minimum}") from error
+        if value < minimum:
+            raise ValueError(f"{key} must be an integer >= {minimum}")
+        return value
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)

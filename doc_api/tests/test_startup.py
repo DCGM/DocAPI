@@ -289,3 +289,31 @@ async def test_readiness_recovers_jobs_at_startup(monkeypatch, startup_sessions)
             await asyncio.sleep(0.01)
     async with main.lifespan(main.app):
         await asyncio.wait_for(wait_for_queue(), timeout=5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overflow", [0, 1])
+async def test_database_pool_limits_and_recovers_after_exhaustion(isolated_database, monkeypatch, overflow):
+    from sqlalchemy import text
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from doc_api.api import database
+
+    monkeypatch.setattr(config, "DATABASE_POOL_SIZE", 1)
+    monkeypatch.setattr(config, "DATABASE_MAX_OVERFLOW", overflow)
+    monkeypatch.setattr(config, "DATABASE_POOL_TIMEOUT_SECONDS", 0.05)
+    engine = create_async_engine(isolated_database.engine.url, **database._engine_kwargs())
+    connections = []
+    try:
+        for _ in range(1 + overflow):
+            connections.append(await engine.connect())
+        with pytest.raises(PoolTimeoutError):
+            async with engine.connect():
+                pytest.fail("An exhausted pool must wait and time out")
+        await connections.pop().close()
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT 1")) == 1
+    finally:
+        for connection in connections:
+            await connection.close()
+        await engine.dispose()

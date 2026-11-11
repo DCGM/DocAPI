@@ -1307,8 +1307,13 @@ concurrency regression check, not a disk-load or API throughput benchmark.
 Startup tests cover production/development credential settings, admin-key
 creation and rotation, preserved/disabled existing keys, partial and malformed
 credentials, and database read/commit failures. Task lifecycle tests verify
-cleanup cancellation; launcher tests cover reload and database setup failures.
+cleanup cancellation; launcher tests cover reload, resource settings and database setup failures.
 These cases live in `test_startup.py` and `test_run.py`.
+
+Resource defaults allow parallel transfers on a shared host: 64 concurrent HTTP connections/tasks,
+64 pending connections, 60-second HTTP keep-alive, 30-second graceful shutdown,
+and a database pool of 10 plus 10 overflow connections with a 10-second wait.
+Deployers expecting higher load should configure these values accordingly.
 
 - [x] partial development credentials create only missing keys. [`test_startup.py::test_startup_creates_only_missing_test_credentials`](test_startup.py).
 - [x] real uniqueness conflicts roll back credential inserts and prevent serving. [`test_startup.py::test_startup_key_conflict_rolls_back`](test_startup.py).
@@ -1322,6 +1327,9 @@ These cases live in `test_startup.py` and `test_run.py`.
 - [x] production configuration. [`test_run.py::test_production_configuration`](test_run.py).
 - [x] runner reload and database setup. [`test_run.py::test_runner_reload_and_database_setup`](test_run.py).
 - [x] runner database failure prevents serving. [`test_run.py::test_runner_database_failure_prevents_serving`](test_run.py).
+- [x] HTTP keep-alive timeout defaults to 60 seconds, accepts nonnegative integer overrides, rejects invalid values and is passed to Uvicorn. [`test_run.py`](test_run.py).
+- [x] HTTP concurrency/backlog/shutdown and database pool configuration defaults, overrides and validation; HTTP settings reach Uvicorn. [`test_run.py`](test_run.py).
+- [x] Database pool size/overflow limits, waiting timeout and recovery after releasing a connection, using disposable PostgreSQL databases. [`test_startup.py::test_database_pool_limits_and_recovers_after_exhaustion`](test_startup.py).
 
 
 ### Job readiness and concurrent input saves
