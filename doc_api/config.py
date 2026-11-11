@@ -47,7 +47,7 @@ TRUE_VALUES = {"true", "1"}
 MAIL_SERVER_SUBJECT_EXAMPLES = {"server_name": "DocAPI", "admin_server_name": "DocAPI admin"}
 
 JOB_MAIL_SUBJECT_EXAMPLES = {
-    **MAIL_SERVER_SUBJECT_EXAMPLES, "state": "done", "state_upper": "DONE", "job_id": "00000000-0000-0000-0000-000000000001",
+    **MAIL_SERVER_SUBJECT_EXAMPLES, "status": "DONE", "state": "done", "state_upper": "DONE", "job_id": "00000000-0000-0000-0000-000000000001",
     "job_id_short": "00000000", "image_count": 10, "attempt": 1,
     "engine_name": "ocr", "engine_version": "1.0", "owner_label": "user",
 }
@@ -228,9 +228,10 @@ class Config:
 
         # Shared subject placeholders -------------------------------------------------
 
-        # Job subjects: server_name, admin_server_name, state, state_upper, job_id,
+        # Job subjects: server_name, admin_server_name, status (DONE/FAILED), job_id,
         # job_id_short, image_count, attempt, engine_name, engine_version, owner_label.
         # Use {field} or Python format specs; omit unused fields.
+        # Legacy state (lowercase) and state_upper placeholders remain supported.
         # Server-error subjects accept only server_name and admin_server_name.
 
         # Internal: server errors and admin job reports -------------------------------
@@ -256,7 +257,7 @@ class Config:
         validate_mail_subject(self.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE, "INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE",
                               MAIL_SERVER_SUBJECT_EXAMPLES)
         self.ADMIN_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
-            "ADMIN_JOB_MAIL_SUBJECT_TEMPLATE", "[{admin_server_name}] {state_upper} job {job_id_short} ({owner_label})")
+            "ADMIN_JOB_MAIL_SUBJECT_TEMPLATE", "[{admin_server_name}] {status} job {job_id_short} ({owner_label})")
         validate_mail_subject(self.ADMIN_JOB_MAIL_SUBJECT_TEMPLATE, "ADMIN_JOB_MAIL_SUBJECT_TEMPLATE", JOB_MAIL_SUBJECT_EXAMPLES)
 
         # External: user job reports ---------------------------------------------------
@@ -274,7 +275,7 @@ class Config:
             raise ValueError("EXTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
         self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
         self.USER_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
-            "USER_JOB_MAIL_SUBJECT_TEMPLATE", "[{server_name}] {state_upper} job {job_id_short}")
+            "USER_JOB_MAIL_SUBJECT_TEMPLATE", "[{server_name}] {status} job {job_id_short}")
         validate_mail_subject(self.USER_JOB_MAIL_SUBJECT_TEMPLATE, "USER_JOB_MAIL_SUBJECT_TEMPLATE", JOB_MAIL_SUBJECT_EXAMPLES)
 
         # Job notification policy (user and admin reports) -----------------------------

@@ -54,6 +54,7 @@ def mail_database(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('template,expected,needs_engine', [
+    ('[{server_name}] {status} job {job_id_short}', '[Server] DONE job 12345678', False),
     ('[{server_name}] {state} job {job_id}', '[Server] done job 12345678-0000-0000-0000-000000000001', False),
     ('{server_name}|{state}|{job_id_short}|{image_count}|{attempt}|{engine_name}|{engine_version}|{owner_label}',
      'Server|done|12345678|12|2|OCR|1.7|owner', True),
@@ -76,6 +77,28 @@ async def test_subject_template(job_mail_outbox, mail_database, monkeypatch, tem
     reports = await job_mail.get_final_reports(db, job)
     assert [report.subject for report in reports] == [expected, 'Admin: ' + expected]
     assert db.get.await_count == (2 if needs_engine else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', [ProcessingState.DONE, ProcessingState.FAILED])
+async def test_default_subjects(job_mail_outbox, mail_database, monkeypatch, state):
+    for setting in ('USER_JOB_MAIL_SUBJECT_TEMPLATE', 'ADMIN_JOB_MAIL_SUBJECT_TEMPLATE'):
+        monkeypatch.delenv(setting, raising=False)
+    defaults = Config()
+    monkeypatch.setattr(config, 'USER_JOB_MAIL_SUBJECT_TEMPLATE', defaults.USER_JOB_MAIL_SUBJECT_TEMPLATE)
+    monkeypatch.setattr(config, 'ADMIN_JOB_MAIL_SUBJECT_TEMPLATE', defaults.ADMIN_JOB_MAIL_SUBJECT_TEMPLATE)
+    monkeypatch.setattr(config, 'SERVER_NAME', 'Server')
+    monkeypatch.setattr(config, 'ADMIN_SERVER_NAME', 'Admin Server')
+    owner = SimpleNamespace(label='owner', email='owner@example.com', email_notifications=True)
+    db = mail_database(owner)
+    job = SimpleNamespace(id=UUID(int=1), owner_key_id='owner-id', engine_id=None, image_count=1,
+                          previous_attempts=0, state=state,
+                          final_log={'0': 'technical report'}, final_log_user={'0': 'user report'})
+    reports = await job_mail.get_final_reports(db, job)
+    assert [report.subject for report in reports] == [
+        f'[Server] {state.value.upper()} job 00000000',
+        f'[Admin Server] {state.value.upper()} job 00000000 (owner)',
+    ]
 
 
 @pytest.mark.asyncio

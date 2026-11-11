@@ -683,10 +683,11 @@ Keys have an optional validated email address and an `email_notifications` flag,
 disabled by default. On a transition to DONE or FAILED, non-empty final user
 reports go to opted-in owners through EXTERNAL_MAIL settings; final technical
 reports go to INTERNAL_MAIL_RECEIVER_MAILS through INTERNAL_MAIL settings.
-Subjects use USER_JOB_MAIL_SUBJECT_TEMPLATE and ADMIN_JOB_MAIL_SUBJECT_TEMPLATE with optional public/admin server names, lowercase/uppercase state, full/short
+Subjects use USER_JOB_MAIL_SUBJECT_TEMPLATE and ADMIN_JOB_MAIL_SUBJECT_TEMPLATE with optional public/admin server names, uppercase `{status}` (DONE/FAILED), full/short
 job ID, image count, attempt, engine name/version, and owner-key label placeholders.
-The user default is `[{server_name}] {state_upper} job {job_id_short}`;
-the admin default is `[{admin_server_name}] {state_upper} job {job_id_short} ({owner_label})`.
+The user default is `[{server_name}] {status} job {job_id_short}`;
+the admin default is `[{admin_server_name}] {status} job {job_id_short} ({owner_label})`.
+Legacy `{state}` (lowercase) and `{state_upper}` placeholders remain supported.
 Server-error emails use `INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE`, defaulting to
 `[{admin_server_name}] INTERNAL SERVER ERROR`, with `{server_name}` and
 `{admin_server_name}` placeholders available.
@@ -946,7 +947,7 @@ downloads, and failed source requests.
 The wrapper accepts `health_config=WorkerHealthConfig(...)` from
 `doc_worker.doc_worker_wrapper`, together with a `mail_sender`. Constructor arguments `identity` (class name by default), `hostname` (automatic
 by default), and `mail_subject` apply to both alive and failure emails. The subject
-default is `[{identity}] {status}: {hostname}`; supported placeholders are
+default is `[{identity}] {status} ({hostname})`; supported placeholders are
 `identity`, `hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
 Startup uses the same
 alive report as periodic checks. Configuring health without a mail sender logs
