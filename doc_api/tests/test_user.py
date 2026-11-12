@@ -3944,7 +3944,7 @@ from doc_api.api.main import app
 from doc_api.config import config
 from doc_api.tests.helpers import OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES
 disabled = sys.argv[1]
-sections = {"User", "Worker", "Admin"} if not disabled else (set() if disabled == "all" else {"Worker", "Admin"})
+sections = {"User", "Worker", "Admin", "Monitor"} if not disabled else (set() if disabled == "all" else {"Worker", "Admin"})
 assert config.SHOW_SECTIONS - {""} == sections
 hidden = set()
 for flag, method, path in OPENAPI_VISIBILITY_ROUTES:

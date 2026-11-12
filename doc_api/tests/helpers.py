@@ -193,6 +193,8 @@ def _ename(name: str) -> str:
 # Explicit contract inventory: adding a route requires assigning its test cases.
 # ADMIN is permitted on every protected route.
 ROUTE_CASES = [
+    *[("GET", "/v1/monitor/" + name, {}, {"admin", "manager"})
+      for name in ("info", "stats", "jobs", "workers", "principals", "database", "engines", "recent-jobs")],
     ("GET", "/v1/me", {}, {"readonly", "user", "worker", "admin", "manager"}),
     ("GET", "/v1/engines", {}, {"readonly", "user", "worker", "admin", "manager"}),
     ("POST", "/v1/jobs", {"json": {"images": []}}, {"user", "admin", "manager"}),
@@ -234,6 +236,7 @@ def route_url(path, **values):
 
 # Swagger section membership is independent of the roles allowed to call a route.
 OPENAPI_SECTION_OPERATIONS = {
+    "Monitor": {("get", "/v1/monitor/" + name) for name in ("info", "stats", "jobs", "workers", "principals", "database", "engines", "recent-jobs")},
     "User": {
         ("get", "/v1/me"), ("get", "/v1/engines"),
         ("get", "/v1/jobs"), ("post", "/v1/jobs"),
