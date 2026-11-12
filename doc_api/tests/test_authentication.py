@@ -199,7 +199,7 @@ async def test_get_me_401_header_takes_precedence(client, user_headers):
 def test_registered_routes_have_test_cases():
     registered = {(method, route.path) for route in app.routes if isinstance(route, Route)
                   for method in route.methods}
-    expected = {(method, path) for method, path, _, _ in ROUTE_CASES} | {("GET", "/")}
+    expected = {(method, path) for method, path, _, _ in ROUTE_CASES} | {("GET", path) for path in ("/", "/monitor", "/monitor/monitor.css", "/monitor/monitor.js")}
     expected |= {(method, path) for method in ("GET", "HEAD")
                  for path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json")}
     assert registered == expected

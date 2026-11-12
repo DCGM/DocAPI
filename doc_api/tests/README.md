@@ -1471,3 +1471,131 @@ owner and worker assignment restrictions across all routes.
 - [x] Worker operations can manage other workers’ jobs while respecting job state. [`test_worker.py::test_patch_job_200_manager_other_worker`](test_worker.py), [`test_worker.py::test_post_job_output_201_manager_other_worker`](test_worker.py), [`test_worker.py::test_delete_job_lease_204_manager_other_worker`](test_worker.py), [`test_worker.py::test_get_input_200_manager_other_worker`](test_worker.py).
 - [x] Upgrade supports persisted manager keys; downgrade refuses until they are reassigned and then preserves keys. [`test_migrations.py::test_upgrade_manager_role`](test_migrations.py).
 - [x] Null log values do not clear stored manager progress/final reports. [`test_worker.py::test_patch_job_200_manager_null_logs_preserved`](test_worker.py).
+
+## Lightweight monitoring
+
+`/monitor` serves a plain HTML/CSS/JavaScript login shell. Monitoring data requires
+an active admin or manager key sent in `X-API-Key`; the page remembers it in browser
+local storage until sign-out or authentication rejection.
+No frontend build, CDN, additional Python dependency or database migration is
+required. The responsive layout supports automatic, desktop and mobile modes.
+
+The Monitor Swagger section contains `/v1/monitor/info`, `/stats`, `/jobs`,
+`/recent-jobs`, `/workers`, `/principals`, `/engines` and `/database`. Routes authenticate and validate inputs;
+`monitor_cruds.py` performs read-only queries without authentication decisions.
+Summary queries exclude job definitions, logs and credentials. Processing shows all
+PROCESSING jobs followed by all QUEUED jobs, oldest creation first in each group,
+then the newest other jobs (five by default; selectable up to twenty). Jobs supports
+server-side pagination and timestamp sorting, with total counts in response headers.
+Processing, Statistics and Jobs each have independent owner, worker, engine and
+version filters. Worker keys are excluded from owner options.
+
+The default section order is Server, Processing, Workers, Statistics, Jobs,
+Database, Settings. Every section supports moving and collapsing; browser local
+storage retains its position and collapsed state. Collapsed headers retain useful
+summaries. Jobs has no header summary and skips automatic requests while collapsed.
+Settings contains the layout selector. Mobile uses a header drawer for links and
+sign-out, while the global collapse/expand control stays in the header.
+
+Job UUIDs show eight characters with the full value on hover. Opening a row's log
+icon separately requests the existing job-details endpoint, then refreshes that
+viewer's logs while open and visible. Closing it or removing its job from the table
+stops those requests. Four tabs show User processing, Processing, User final and
+Final; Final is the initial default and the browser remembers subsequent tab choices.
+Empty, loading and failure messages are separate from actual log content. Dates
+use year/month/day and 24-hour time.
+
+The separate Monitoring configuration section defines:
+
+- `MONITOR_REFRESH_INTERVAL_SECONDS=5`: browser refresh period; hidden tabs pause.
+- `MONITOR_WORKER_OFFLINE_AFTER_SECONDS=60`: with no PROCESSING job, a recent
+  `last_used` means idle, otherwise off. A PROCESSING assignment always means active,
+  including disabled keys; key enablement is displayed separately. Multiple worker
+  processes sharing a key appear as one worker. Both settings require positive integers.
+- `MONITOR_HOSTNAME=`: optional display-only hostname override.
+- `MONITOR_IP_ADDRESSES=`: optional comma-separated IPv4/IPv6 display addresses.
+  Empty or unset overrides retain automatic process detection independently.
+  An overridden hostname is not resolved to derive the addresses. In Docker,
+  the deployer must explicitly supply and maintain outer host information if
+  desired. These settings do not affect networking, binding, or public URLs.
+
+Statistics use rolling 24-hour, 7-day, 30-day or all-time windows. DONE/FAILED/ERROR
+jobs use `finished_date`; other states use `last_change`. DONE/FAILED totals count
+jobs, retained `image_count` and elapsed first-start-to-finish time, including retry
+waits. Missing or reversed timestamps do not contribute runtime. Attempts count all
+outcomes and in-progress attempts, excluding released leases; image estimates
+multiply the job's image count by attempts. No per-attempt runtime or historical
+worker attribution is available. Worker filtering uses the latest recorded assignment.
+By default, hostname, addresses and uptime refer to the serving API process/environment,
+including the container when deployed with Docker. Only hostname and addresses can
+be overridden through the monitoring settings above; uptime remains process uptime.
+
+The Database section reads PostgreSQL's existing statistics in one SQL
+statement per refresh: database size, client connection counts by state, longest
+active query duration, connections waiting on locks, and deadlocks with their
+statistics reset time. Only the application database is included, and the statistics
+request's own connection is excluded. Idle-in-transaction counts include aborted
+transactions. An absent active query displays as None; an unknown reset time as
+Unavailable. No query text or connection identities are returned. Activity visibility
+depends on PostgreSQL permissions and tracking settings; cross-role activity details
+require a monitoring role such as `pg_read_all_stats`. No extension or migration is needed.
+
+`test_monitor.py` covers rendering/static assets, admin/manager responses,
+PostgreSQL statistics and filters, recent-job ordering/refresh, worker activity
+thresholds and processing precedence, schema validation, configuration alignment,
+and Monitor Swagger documentation. The shared authentication matrix also covers
+all eight JSON endpoints. Database checks include an actual lock wait and idle
+transaction in a disposable database. Browser verification checks login rejection/success,
+filters, desktop/mobile layouts without horizontal overflow, and clearing data
+on sign-out.
+
+Automated monitoring and presentation checks:
+
+- [x] [`test_monitor.py::test_get_monitor_200`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_info_200`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_info_200_identity_overrides`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_database_200_idle`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_database_200_lock_wait`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_filters`](test_monitor.py).
+- [x] [`test_monitor.py::test_monitor_attempts_exclude_released_leases`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_engine_filters`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_jobs_200_limit_and_refresh`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_jobs_priority`](test_monitor.py).
+- [x] [`test_monitor.py::test_jobs_pagination`](test_monitor.py).
+- [x] [`test_monitor.py::test_recent_activity_includes_all_pending`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_jobs_timestamp_order`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_jobs_owner_worker_filters`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_workers_200_activity`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_workers_excludes_management_assignments`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_workers_200_processing_always_active`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_422`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_page_200`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_openapi_200`](test_monitor.py).
+- [x] [`test_monitor.py::test_monitor_configuration_invalid`](test_monitor.py).
+- [x] [`test_monitor.py::test_monitor_configuration_matches_env`](test_monitor.py).
+- [x] [`test_monitor.py::test_monitor_identity_configuration`](test_monitor.py).
+- [x] [`test_monitor.py::test_monitor_ip_configuration_invalid`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_month_window`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_unavailable_runtime`](test_monitor.py).
+- [x] [`test_presentation.py::test_monitor_commit_badge`](test_presentation.py).
+- [x] [`test_presentation.py::test_monitor_version_release_link`](test_presentation.py).
+- [x] [`test_presentation.py::test_swagger_root_path_and_version`](test_presentation.py).
+- [x] [`test_presentation.py::test_native_swagger_description`](test_presentation.py).
+- [x] [`test_presentation.py::test_native_swagger_contact`](test_presentation.py).
+
+Additional existing configuration checks:
+
+- [x] [`test_job_mail.py::test_default_subjects`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_job_mail_passes_smtp_security_and_username`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_mail_logger_passes_smtp_security_and_username`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_mail_timeout_must_be_finite_positive`](test_job_mail.py).
+- [x] [`test_run.py::test_http_keep_alive_timeout_configuration`](test_run.py).
+- [x] [`test_run.py::test_http_keep_alive_timeout_rejects_invalid_values`](test_run.py).
+- [x] [`test_run.py::test_integer_resource_settings_reject_fractions`](test_run.py).
+- [x] [`test_run.py::test_positive_resource_settings_reject_zero`](test_run.py).
+- [x] [`test_run.py::test_resource_setting_defaults_and_overrides`](test_run.py).
+- [x] [`test_run.py::test_resource_settings_accept_explicit_zero`](test_run.py).
+- [x] [`test_run.py::test_resource_settings_reject_invalid_values`](test_run.py).
+- [x] [`test_run.py::test_runner_passes_http_keep_alive_timeout`](test_run.py).
+- [x] [`test_run.py::test_runner_passes_resource_limits`](test_run.py).

@@ -2,6 +2,8 @@ import asyncio
 import logging.config
 from math import isfinite
 import traceback
+from datetime import datetime, timezone
+from time import monotonic
 from contextlib import asynccontextmanager, suppress
 from typing import Optional, List, Set
 
@@ -24,11 +26,12 @@ from doc_api.api.guards.user_guards import USER_ACCESS_TO_NEW_JOB_GUARD_RESPONSE
 from doc_api.api.guards.worker_guards import WORKER_ACCESS_TO_JOB_GUARD_RESPONSES, WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES
 from doc_api.api.schemas.base_objects import KeyRole
 from doc_api.api.database import open_session
+from doc_api.api.presentation import api_contact, api_description
 from doc_api.api.checkers.cleanup import run_cleanup
 from doc_api.api.checkers.job_readiness import run_job_readiness_checks
 from doc_api.api.checkers.job_leases import run_job_lease_checks
 from doc_api.api.checkers.job_mail import run_job_mail_checks
-from doc_api.api.routes import admin_router, debug_router, root_router
+from doc_api.api.routes import admin_router, debug_router, root_router, monitor_router, monitor_page_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
@@ -64,6 +67,7 @@ tags_metadata = [
         "name": "Admin",
         "description": "",
     },
+    {"name": "Monitor", "description": "Server, job and worker monitoring."},
     {
         "name": "Debug",
         "description": "",
@@ -73,6 +77,8 @@ tags_metadata = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.monitor_started_at = datetime.now(timezone.utc)
+    app.state.monitor_started_monotonic = monotonic()
     if getattr(config, "ADMIN_KEY", None):
         kid, secret = parse_api_key(config.ADMIN_KEY)
         async with open_session() as db:
@@ -222,10 +228,14 @@ app = FastAPI(openapi_tags=tags_metadata,
               title=config.SERVER_NAME,
               version=config.APP_VERSION,
               root_path=config.APP_URL_ROOT,
+              description=api_description(),
+              contact=api_contact(),
               lifespan=lifespan)
 
 
 app.include_router(root_router)
+app.include_router(monitor_router, prefix="/v1/monitor")
+app.include_router(monitor_page_router)
 app.include_router(admin_router, prefix="/v1/admin")
 app.include_router(debug_router, prefix="/debug")
 
@@ -333,6 +343,7 @@ def custom_openapi():
         title=app.title,
         version=app.version,
         description=app.description,
+        contact=app.contact,
         routes=routes_sorted
     )
 

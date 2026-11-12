@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{SERVER_NAME}}</title>
+  <link rel="stylesheet" href="monitor/monitor.css?v=2">
+  <script src="monitor/monitor.js?v=2" defer></script>
+</head>
+<body data-layout="auto">
+  <header class="page-header"><h1><span class="server-title" title="{{SERVER_NAME}}">{{SERVER_NAME}}</span> {{VERSION_BADGE}} {{COMMIT_BADGE}}</h1><div class="controls header-actions">
+    <button id="sections-toggle" class="icon-button" type="button" aria-label="Collapse all" title="Collapse all" hidden><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 4 6 5 6-5M6 20l6-5 6 5"/></svg></button>
+    <div id="header-links" class="header-links">
+    <a class="icon-button" href="https://github.com/DCGM/DocAPI" target="_blank" rel="noopener noreferrer" aria-label="DocAPI on GitHub" title="DocAPI on GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      <span class="header-action-label">GitHub</span>
+    </a>
+    <a class="icon-button" href="https://github.com/DCGM/DocAPI/issues/new" target="_blank" rel="noopener noreferrer" aria-label="Report a problem or suggest a change" title="Report a problem or suggest a change">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 14a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z"/><path d="M12 7v6m-3-3h6"/></svg>
+      <span class="header-action-label">Report a problem</span>
+    </a>
+    <button id="logout" class="icon-button" type="button" aria-label="Sign out" title="Sign out" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4m6-12 4 4-4 4m-8-4h12"/></svg>
+      <span class="header-action-label">Sign out</span>
+    </button>
+    </div>
+    <button id="drawer-open" class="icon-button" type="button" aria-label="Open menu" title="Open menu" aria-controls="mobile-drawer" aria-expanded="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+  </div></header>
+  <dialog id="mobile-drawer" aria-labelledby="drawer-title">
+    <div class="drawer-heading"><h2 id="drawer-title">Menu</h2><button id="drawer-close" class="icon-button" type="button" aria-label="Close menu" title="Close menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M6 18 18 6"/></svg></button></div>
+    <nav id="drawer-actions" aria-label="Monitor actions"></nav>
+  </dialog>
+  <form id="login"><h2>Sign in</h2><p>Use an admin or manager API key. The key is saved in this browser so you stay signed in after refreshing or reopening the page. Sign out to remove it.</p>
+    <label>API key <input id="api-key" type="password" autocomplete="off" required></label><button type="submit">Connect</button>
+  </form>
+  <p id="message" role="status" aria-live="polite"></p>
+  <main id="dashboard" hidden>
+    <p id="updated" class="muted"></p>
+    <section data-section="server"><h2>Server</h2><dl id="info"></dl><p class="muted">Hostname and IP addresses are detected in the API process environment (the container in Docker), unless explicitly overridden in monitoring settings.</p></section>
+    <section data-section="recent-jobs"><h2>Processing</h2>
+      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Created</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="recent-jobs"></tbody></table></div>
+      <div class="controls job-controls"><label>Recent history <select id="recent-limit"><option selected>5</option><option>10</option><option>20</option></select></label>
+        <label class="principal-filter">Owner <select id="recent-owner"><option value="">All owners</option></select></label>
+        <label class="principal-filter">Worker <select id="recent-worker"><option value="">All workers</option></select></label>
+        <label>Engine <select id="recent-engine"><option value="">All engines</option></select></label>
+        <label>Version <select id="recent-engine-version"><option value="">All versions</option></select></label>
+      </div>
+      <p class="muted">All processing jobs first, then all queued jobs: oldest creation first. Recent history limits only the other jobs, shown newest creation first. Filters apply to the table and header counts.</p>
+    </section>
+    <section data-section="workers"><h2>Workers</h2>
+      <div class="table-wrap"><table><thead><tr><th>Worker key</th><th>Activity</th><th>Processing jobs</th><th>Last seen</th><th>Key enabled</th></tr></thead><tbody id="workers"></tbody></table></div>
+      <p id="worker-note" class="muted"></p>
+    </section>
+    <section data-section="job-statistics"><h2>Statistics</h2><div id="stats" class="stats"></div><div class="controls stats-filters">
+      <label>Period <select id="period"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="1m">30 days</option><option value="all">All time</option></select></label>
+      <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
+      <label class="principal-filter">Owner <select id="owner"><option value="">All owners</option></select></label>
+      <label class="principal-filter">Worker <select id="worker"><option value="">All workers</option></select></label>
+      <label>Engine <select id="engine"><option value="">All engines</option></select></label>
+      <label>Version <select id="engine-version"><option value="">All versions</option></select></label>
+    </div>
+    <p class="muted">Attempts include all outcomes and in-progress work; released leases do not count. Images count per attempt. Period uses completion/error time, or latest activity for other states, and includes all attempts of each matching job. Runtime is first start to finish, including retry waits; per-attempt runtime is unavailable. Worker filters use the latest assignment.</p></section>
+    <section data-section="jobs"><h2>Jobs</h2>
+      <div class="table-wrap"><table><thead><tr><th>Job</th><th id="job-date-heading">Created</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
+      <div class="controls job-controls">
+        <nav class="job-pagination" aria-label="Jobs pages">
+          <button id="jobs-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
+          <span id="jobs-page" aria-live="polite" aria-label="Page 1 of 1">1/1</span>
+          <button id="jobs-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
+        </nav>
+        <label>Show <select id="limit"><option>5</option><option selected>10</option><option>20</option></select></label>
+        <label>Mode <select id="job-mode"><option value="created_date">Created</option><option value="started_date">Started</option><option value="finished_date">Finished</option><option value="last_change">Last changed</option></select></label>
+        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label job-order-note" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
+        <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
+        <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
+        <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
+        <label>Version <select id="job-engine-version"><option value="">All versions</option></select></label>
+      </div>
+      <p id="job-order-note" class="muted">Descending by created time. Missing timestamps appear last.</p>
+    </section>
+    <section data-section="database"><h2>Database</h2><dl id="database"></dl>
+      <p class="muted">Application database only. Client connections exclude this statistics request. Active queries include time waiting on locks. Idle in transaction includes aborted transactions. Deadlocks are counted since the statistics reset; the reset time may be unavailable. Activity details depend on PostgreSQL permissions and tracking settings.</p>
+    </section>
+  <section id="section-settings" data-section="settings">
+    <h2>Settings</h2>
+    <div class="controls"><label>Layout <select id="layout"><option value="auto">Automatic</option><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label></div>
+  </section>
+  </main>
+</body>
+</html>

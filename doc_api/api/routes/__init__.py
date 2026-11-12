@@ -6,5 +6,7 @@ logger = logging.getLogger(__name__)
 root_router = APIRouter()
 admin_router = APIRouter()
 debug_router = APIRouter()
+monitor_router = APIRouter()
+monitor_page_router = APIRouter()
 
-from . import general_routes, user_routes, worker_routes, admin_routes, debug_routes
+from . import general_routes, user_routes, worker_routes, admin_routes, debug_routes, monitor_routes

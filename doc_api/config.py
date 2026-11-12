@@ -1,4 +1,5 @@
 import json
+from ipaddress import ip_address
 import os
 import logging
 import time
@@ -128,8 +129,29 @@ class Config:
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
         self.APP_VERSION = os.getenv("APP_VERSION", "custom")
+        # Optional repositories shown in the API documentation.
+        self.API_REPOSITORY_URL = os.getenv("API_REPOSITORY_URL", "").strip().rstrip("/")
+        self.WORKER_REPOSITORY_URL = os.getenv("WORKER_REPOSITORY_URL", "").strip().rstrip("/")
         # Build metadata in Docker; resolved from this checkout for local Python runs.
         self.APP_GIT_COMMIT = resolve_git_commit()
+
+        # =============================================================================
+        # Monitoring
+        # =============================================================================
+
+        self.MONITOR_REFRESH_INTERVAL_SECONDS = self._env_int("MONITOR_REFRESH_INTERVAL_SECONDS", 5, minimum=1)
+        # PROCESSING assignments always mean active; this threshold applies without a job.
+        self.MONITOR_WORKER_OFFLINE_AFTER_SECONDS = self._env_int("MONITOR_WORKER_OFFLINE_AFTER_SECONDS", 60, minimum=1)
+        # Display-only deployment identity; empty values retain process detection.
+        self.MONITOR_HOSTNAME = os.getenv("MONITOR_HOSTNAME", "").strip()
+        self.MONITOR_IP_ADDRESSES = [
+            address.strip() for address in os.getenv("MONITOR_IP_ADDRESSES", "").split(",") if address.strip()
+        ]
+        for address in self.MONITOR_IP_ADDRESSES:
+            try:
+                ip_address(address)
+            except ValueError as error:
+                raise ValueError("MONITOR_IP_ADDRESSES must contain comma-separated IPv4 or IPv6 addresses") from error
 
         # =============================================================================
         # Job processing
@@ -393,7 +415,7 @@ class Config:
         # =============================================================================
 
         # Visibility only; endpoint access is unchanged.
-        self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, Admin").split(',')])
+        self.SHOW_SECTIONS = set([x.strip() for x in os.getenv("SHOW_SECTIONS", "User, Worker, Admin, Monitor").split(',')])
 
         self.SHOW_GET_ENGINES = self._env_bool("SHOW_GET_ENGINES", True)
         self.SHOW_PUT_IMAGE = self._env_bool("SHOW_PUT_IMAGE", True)

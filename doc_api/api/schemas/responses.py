@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 # Naming convention for AppCode: CATEGORY_ACTION
 class AppCode(str, enum.Enum):
+    MONITOR_RETRIEVED = 'MONITOR_RETRIEVED'
+
     API_KEY_VALID = 'API_KEY_VALID'
 
     # User-related
