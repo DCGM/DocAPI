@@ -18,8 +18,10 @@ function saveSelects() {
   savedSelects = Object.fromEntries([...document.querySelectorAll('select[id]')].map(select => [select.id, select.value]));
   try { localStorage.setItem(selectStorage, JSON.stringify(savedSelects)); } catch {}
 }
-let key = '', timer, controller, generation = 0, interval = 5000, stats;
+let key = '', timer, controller, generation = 0, interval = Number(byId('dashboard').dataset.refreshSeconds) * 1000, stats;
 let engines = [];
+let management = false, updateSectionButtons = () => {};
+const availableLogTabs = () => management ? logTabs : logTabs.filter(([field]) => field.endsWith('_user'));
 let jobOrder = 'desc', jobPage = 0, jobsHasMore = false;
 let processingPage = 0, processingHasMore = false;
 const logTabs = [['log_user', 'User processing'], ['log', 'Processing'],
@@ -93,8 +95,11 @@ function logButton(tableId, jobId) {
     if (openLogs.has(id)) closeLogs(id);
     else {
       const row = node('tr', undefined, 'job-log-row'), cell = node('td');
-      cell.colSpan = button.closest('table').tHead.rows[0].cells.length;
-      const viewer = {row, jobId, controller: new AbortController(), tab: rememberedLogs.get(id) || selectedLogTab};
+      cell.colSpan = [...button.closest('table').tHead.rows[0].cells].filter(cell => !cell.hidden).length;
+      const tabsForRole = availableLogTabs();
+      const preferredTab = rememberedLogs.get(id) || selectedLogTab;
+      const viewer = {row, jobId, controller: new AbortController(),
+        tab: tabsForRole.some(([field]) => field === preferredTab) ? preferredTab : 'final_log_user'};
       openLogs.set(id, viewer);
       rememberedLogs.set(id, viewer.tab);
       saveView();
@@ -137,17 +142,17 @@ function logButton(tableId, jobId) {
         }
       }
       viewer.select = select;
-      for (const [field, label] of logTabs) {
+      for (const [field, label] of tabsForRole) {
         const tab = node('button', label);
         tab.type = 'button'; tab.dataset.field = field; tab.id = `${id}-tab-${field}`;
         tab.setAttribute('role', 'tab');
         tab.setAttribute('aria-controls', panel.id);
         tab.addEventListener('click', () => select(field, true));
         tab.addEventListener('keydown', event => {
-          const index = logTabs.findIndex(([name]) => name === viewer.tab);
-          const next = {ArrowRight: (index + 1) % 4, ArrowLeft: (index + 3) % 4, Home: 0, End: 3}[event.key];
+          const index = tabsForRole.findIndex(([name]) => name === viewer.tab), count = tabsForRole.length;
+          const next = {ArrowRight: (index + 1) % count, ArrowLeft: (index + count - 1) % count, Home: 0, End: count - 1}[event.key];
           if (next === undefined) return;
-          event.preventDefault(); select(logTabs[next][0], true); tabs.children[next].focus();
+          event.preventDefault(); select(tabsForRole[next][0], true); tabs.children[next].focus();
         });
         tabs.append(tab);
       }
@@ -271,11 +276,12 @@ function setupSectionOrder() {
   const order = [...new Set([...savedOrder, ...known.keys()])];
   dashboard.append(...order.map(id => known.get(id)));
   const collapsed = new Set(savedList(hiddenStorage));
-  const currentSections = () => [...dashboard.querySelectorAll(':scope > section[data-section]')];
+  const allSections = () => [...dashboard.querySelectorAll(':scope > section[data-section]')];
+  const currentSections = () => allSections().filter(section => !section.hidden);
   function save() {
     try {
-      localStorage.setItem(sectionOrderStorage, JSON.stringify(currentSections().map(section => section.dataset.section)));
-      localStorage.setItem(hiddenStorage, JSON.stringify(currentSections().filter(section => section.querySelector('.section-body').hidden).map(section => section.dataset.section)));
+      localStorage.setItem(sectionOrderStorage, JSON.stringify(allSections().map(section => section.dataset.section)));
+      localStorage.setItem(hiddenStorage, JSON.stringify(allSections().filter(section => section.querySelector('.section-body').hidden).map(section => section.dataset.section)));
     } catch { /* Preferences still work for this page when storage is blocked. */ }
   }
   const eye = 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm13 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0';
@@ -344,6 +350,7 @@ function setupSectionOrder() {
     }
     section.prepend(actions);
   }
+  updateSectionButtons = updateButtons;
   byId('sections-toggle').setAttribute('aria-controls', sections.map(section => section.querySelector('.section-body').id).join(' '));
   byId('sections-toggle').addEventListener('click', () => {
     const collapse = !currentSections().every(section => section.querySelector('.section-body').hidden);
@@ -379,6 +386,7 @@ function engineVersions(prefix = '') {
 function addFilters(query, prefix = '') {
   for (const [id, parameter] of [['owner', 'owner_id'], ['worker', 'worker_id'],
     ['engine', 'engine_name'], ['engine-version', 'engine_version']]) {
+    if (!management && ['owner', 'worker'].includes(id)) continue;
     const value = byId(`${prefix}${id}`).value;
     if (value) {
       const useLabel = prefix === 'job-' && ['owner', 'worker'].includes(id);
@@ -478,9 +486,9 @@ function renderJobTable(id, jobs, field, label) {
     const jobId = node('span', job.id.slice(0, 8));
     jobId.title = job.id;
     return [jobId, date(job[field]), jobRuntime(job), node('span', job.state.toUpperCase(), `badge job-${job.state}`), `${Math.round(job.progress * 100)}%`,
-      job.image_count, job.owner_label, job.worker_label, job.engine_name, job.engine_version, logButton(id, job.id)];
+      job.image_count, ...(management ? [job.owner_label, job.worker_label] : []), job.engine_name, job.engine_version, logButton(id, job.id)];
   }),
-    ['Job', label, 'Runtime', 'State', 'Progress', 'Images', 'Owner', 'Worker', 'Engine', 'Version', 'Logs']);
+    ['Job', label, 'Runtime', 'State', 'Progress', 'Images', ...(management ? ['Owner', 'Worker'] : []), 'Engine', 'Version', 'Logs']);
   [...byId(id).children].forEach((row, index) => {
     const viewer = openLogs.get(`${id}-${jobs[index]?.id}`);
     if (viewer) row.after(viewer.row);
@@ -489,40 +497,45 @@ function renderJobTable(id, jobs, field, label) {
 }
 function render(info, totals, jobs, workers, database, recentJobs) {
   stats = totals;
-  summary('server', [info.hostname, `Uptime ${duration(info.uptime_seconds)}`]);
-  summary('workers', ['active', 'idle', 'off'].map(status => node('span',
-    `${workers.filter(worker => worker.status === status).length} ${status === 'off' ? 'GONE' : status.toUpperCase()}`, `badge ${status}`)));
-  summary('database', [node('span', info.database_connected ? 'Connected' : 'Unavailable',
-    `badge ${info.database_connected ? 'active' : 'unavailable'}`), bytes(database.size_bytes), `${database.connections} connections`]);
-  const fields = [
-    ['Hostname', info.hostname], ['IP addresses', info.ip_addresses.join(', ') || 'Unavailable'],
-    ['Started', date(info.started_at)],
-    ['Uptime', duration(info.uptime_seconds)],
-    ['Server time', date(info.server_time)],
-  ];
-  byId('info').replaceChildren(...fields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
-  const dbFields = [
-    ['Database', database.database_name], ['Size', bytes(database.size_bytes)],
-    ['Connections', database.connections], ['Active', database.active_connections], ['Idle', database.idle_connections],
-    ['Idle in transaction', database.idle_in_transaction_connections],
-    ['Waiting on locks', database.lock_waiting_connections],
-    ['Longest active query', database.longest_active_query_seconds === null ? 'None' : duration(database.longest_active_query_seconds)],
-    ['Deadlocks', database.deadlocks], ['Statistics reset', database.stats_reset ? date(database.stats_reset) : 'Unavailable'],
-  ];
-  byId('database').replaceChildren(...dbFields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
-  const databaseStatus = node('dd');
-  databaseStatus.append(node('span', info.database_connected ? 'Connected' : 'Unavailable',
-    `badge ${info.database_connected ? 'active' : 'unavailable'}`));
-  byId('database').prepend(node('dt', 'Status'), databaseStatus);
+  if (management) {
+    summary('server', [info.hostname, `Uptime ${duration(info.uptime_seconds)}`]);
+    summary('workers', ['active', 'idle', 'off'].map(status => node('span',
+      `${workers.filter(worker => worker.status === status).length} ${status === 'off' ? 'GONE' : status.toUpperCase()}`, `badge ${status}`)));
+    summary('database', [node('span', info.database_connected ? 'Connected' : 'Unavailable',
+      `badge ${info.database_connected ? 'active' : 'unavailable'}`), bytes(database.size_bytes), `${database.connections} connections`]);
+    const fields = [
+      ['Hostname', info.hostname], ['IP addresses', info.ip_addresses.join(', ') || 'Unavailable'],
+      ['Started', date(info.started_at)],
+      ['Uptime', duration(info.uptime_seconds)],
+      ['Server time', date(info.server_time)],
+    ];
+    byId('info').replaceChildren(...fields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
+    const dbFields = [
+      ['Database', database.database_name], ['Size', bytes(database.size_bytes)],
+      ['Connections', database.connections], ['Active', database.active_connections], ['Idle', database.idle_connections],
+      ['Idle in transaction', database.idle_in_transaction_connections],
+      ['Waiting on locks', database.lock_waiting_connections],
+      ['Longest active query', database.longest_active_query_seconds === null ? 'None' : duration(database.longest_active_query_seconds)],
+      ['Deadlocks', database.deadlocks], ['Statistics reset', database.stats_reset ? date(database.stats_reset) : 'Unavailable'],
+    ];
+    byId('database').replaceChildren(...dbFields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
+    const databaseStatus = node('dd');
+    databaseStatus.append(node('span', info.database_connected ? 'Connected' : 'Unavailable',
+      `badge ${info.database_connected ? 'active' : 'unavailable'}`));
+    byId('database').prepend(node('dt', 'Status'), databaseStatus);
+  }
   renderStats();
   if (jobs && !byId('section-job-statistics-body').hidden) renderJobs(jobs);
   renderRecentJobs(recentJobs);
-  table('workers', workers.map(worker => [worker.label, node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
-    worker.processing_jobs, date(worker.last_used)]),
-    ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen']);
-  byId('worker-note').textContent = `PROCESSING job → ACTIVE. Otherwise, seen within ${info.worker_offline_after_seconds}s → IDLE; older or never seen → GONE.`;
-  byId('updated').textContent = `Updated ${new Date().toLocaleTimeString(undefined, {hourCycle: 'h23'})} · refresh ${info.refresh_interval_seconds}s · pauses while this tab is hidden`;
-  interval = info.refresh_interval_seconds * 1000;
+  if (management) {
+    table('workers', workers.map(worker => [worker.label, node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
+      worker.processing_jobs, date(worker.last_used)]),
+      ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen']);
+    byId('worker-note').textContent = `PROCESSING job → ACTIVE. Otherwise, seen within ${info.worker_offline_after_seconds}s → IDLE; older or never seen → GONE.`;
+  }
+  const refreshSeconds = info?.refresh_interval_seconds ?? interval / 1000;
+  byId('updated').textContent = `Updated ${new Date().toLocaleTimeString(undefined, {hourCycle: 'h23'})} · refresh ${refreshSeconds}s · pauses while this tab is hidden`;
+  interval = refreshSeconds * 1000;
   byId('dashboard').hidden = false;
   byId('sections-toggle').hidden = false;
 }
@@ -566,8 +579,8 @@ async function refresh() {
   byId('processing-previous').disabled = true;
   byId('processing-next').disabled = true;
   try {
-    const values = await Promise.all([get('info', signal), get(`jobs/statistics?${statsQuery}`, signal),
-      byId('section-job-statistics-body').hidden ? null : get(`../jobs?${jobQuery}`, signal, true), get('workers', signal), get('database', signal), get(`jobs/processing?${recentQuery}`, signal, true)]);
+    const values = await Promise.all([management ? get('info', signal) : null, get(`jobs/statistics?${statsQuery}`, signal),
+      byId('section-job-statistics-body').hidden ? null : get(`../jobs?${jobQuery}`, signal, true), management ? get('workers', signal) : null, management ? get('database', signal) : null, get(`jobs/processing?${recentQuery}`, signal, true)]);
     if (current !== generation) return;
     render(...values);
     byId('message').textContent = '';
@@ -596,15 +609,33 @@ async function connect(value) {
   const current = ++generation;
   controller?.abort(); controller = new AbortController();
   try {
-    const [principals, engineOptions] = await Promise.all([
-      get('../admin/keys', controller.signal), get('../engines', controller.signal)]);
+    const identity = await get('../me', controller.signal);
+    if (current !== generation) return;
+    if (!['admin', 'manager', 'user', 'readonly'].includes(identity.role))
+      throw Object.assign(new Error('This API key role cannot access monitoring.'), {status: 403});
+    management = ['admin', 'manager'].includes(identity.role);
+    const [principals, engineOptions] = management ? await Promise.all([
+      get('../admin/keys', controller.signal), get('../engines', controller.signal)]) :
+      [[], (await get('jobs/statistics?top=0', controller.signal)).engine_versions.filter(engine => engine.name !== null)];
     if (current !== generation) return;
     engines = engineOptions;
+    for (const section of document.querySelectorAll('#dashboard > section[data-section]'))
+      section.hidden = !management && !['recent-jobs', 'job-statistics', 'settings'].includes(section.dataset.section);
+    for (const label of document.querySelectorAll('.principal-filter')) label.hidden = !management;
+    for (const id of ['jobs', 'recent-jobs']) {
+      const headers = byId(id).closest('table').tHead.rows[0].cells;
+      headers[6].hidden = !management; headers[7].hidden = !management;
+    }
+    for (const group of ['owners', 'workers']) byId(`stats-tab-${group}`).hidden = !management;
+    if (!management && ['owners', 'workers'].includes(statsGroup)) statsGroup = 'hidden';
+    updateSectionButtons();
+    renderStatsGroups();
     for (const prefix of ['job-', 'recent-']) {
       options(`${prefix}owner`, principals.filter(principal => ['user', 'manager', 'admin'].includes(principal.role)), 'All owners');
       options(`${prefix}worker`, principals.filter(principal => principal.role === 'worker'), 'All workers');
       options(`${prefix}engine`, [...new Set(engines.map(engine => engine.name))].map(name => ({id: name, label: name})), 'All engines');
-      for (const field of ['owner', 'worker', 'engine']) restoreSelect(`${prefix}${field}`);
+      for (const field of ['owner', 'worker', 'engine'])
+        if (management || field === 'engine') restoreSelect(`${prefix}${field}`);
       engineVersions(prefix);
       restoreSelect(`${prefix}engine-version`);
     }
@@ -656,11 +687,12 @@ for (const tab of byId('stats-tabs').children) {
   function select() { statsGroup = tab.dataset.group; saveView(); renderStatsGroups(); }
   tab.addEventListener('click', select);
   tab.addEventListener('keydown', event => {
-    const index = statsGroups.indexOf(statsGroup), count = statsGroups.length;
+    const tabs = [...byId('stats-tabs').children].filter(item => !item.hidden);
+    const index = tabs.findIndex(item => item.dataset.group === statsGroup), count = tabs.length;
     const next = {ArrowRight: (index + 1) % count, ArrowLeft: (index + count - 1) % count, Home: 0, End: count - 1}[event.key];
     if (next === undefined) return;
     event.preventDefault();
-    const target = byId('stats-tabs').children[next];
+    const target = tabs[next];
     target.click(); target.focus();
   });
 }

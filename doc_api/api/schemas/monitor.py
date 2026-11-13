@@ -83,7 +83,7 @@ class MonitorJob(BaseModel):
     started_date: datetime | None
     finished_date: datetime | None
     last_change: datetime
-    owner_label: str
+    owner_label: str | None
     worker_label: str | None
     engine_name: str | None
     engine_version: str | None

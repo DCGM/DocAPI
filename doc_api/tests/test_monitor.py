@@ -743,3 +743,88 @@ async def test_get_monitor_stats_200_group_ranking(client, admin_headers, job_fa
 async def test_get_monitor_stats_422_group_options(client, admin_headers, params):
     response = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers, params=params)
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize('reader_role', ['user', 'readonly'])
+@pytest.mark.asyncio
+async def test_monitor_owner_scope(client, reader_headers, reader_owner, job_factory, db_sessions, worker_key, reader_role):
+    """Totals, pagination, grouped identities and filters cannot cross ownership."""
+    own_done = await job_factory(ProcessingState.DONE)
+    own_pending = await job_factory(ProcessingState.PROCESSING)
+    other_done = await job_factory(ProcessingState.DONE, owner_key_id=worker_key.id)
+    other_pending = await job_factory(ProcessingState.PROCESSING, owner_key_id=worker_key.id)
+    async with db_sessions.begin() as db:
+        for job_id in (own_done, other_done):
+            job = await db.get(model.Job, job_id)
+            job.finished_date = datetime.now(timezone.utc)
+        for job_id, name in [(own_done, 'own-engine'), (other_done, 'other-engine')]:
+            engine = model.Engine(name=name, version='1', description=name)
+            db.add(engine)
+            await db.flush()
+            (await db.get(model.Job, job_id)).engine_id = engine.id
+        own = await db.get(model.Job, own_done)
+        own.final_log_user = {'0': 'User final message'}
+        own.final_log = {'0': 'Private final message'}
+
+    stats = await client.get('/v1/monitor/jobs/statistics?top=0&state=done', headers=reader_headers)
+    assert stats.status_code == 200, stats.text
+    data = stats.json()['data']
+    assert data['done']['job_count'] == 1
+    assert data['owners'] == data['workers'] == []
+    assert [group['name'] for group in data['engines']] == ['own-engine']
+    assert [group['name'] for group in data['engine_versions']] == ['own-engine']
+    assert sum(group['total']['job_count'] for group in data['engines']) == 1
+    for extra, count in [('', 2), ('&state=processing', 1), ('&engine_name=missing', 0), ('&offset=10', 2)]:
+        response = await client.get('/v1/monitor/jobs/processing?limit=1' + extra, headers=reader_headers)
+        assert response.status_code == 200, response.text
+        assert response.headers['X-Total-Count'] == str(count)
+        assert response.json()['data']['totals']['processing'] == (0 if 'missing' in extra else 1)
+        for job in response.json()['data']['jobs']:
+            assert job['id'] in {str(own_done), str(own_pending)}
+            assert job['owner_label'] is None and job['worker_label'] is None
+        if 'offset' in extra:
+            assert response.json()['data']['jobs'] == []
+            assert response.headers['X-Has-More'] == 'false'
+    for path in [f'jobs/processing?owner_id={worker_key.id}', f'jobs/processing?worker_id={worker_key.id}',
+                 'jobs/statistics?owner_label=other', 'jobs/statistics?worker_label=other',
+                 'info', 'workers', 'database']:
+        response = await client.get('/v1/monitor/' + path, headers=reader_headers)
+        assert response.status_code == 403, (path, response.text)
+    response = await client.get('/v1/jobs?state=done&limit=1', headers=reader_headers)
+    assert response.status_code == 200, response.text
+    assert response.headers['X-Total-Count'] == '1'
+    assert [job['id'] for job in response.json()['data']] == [str(own_done)]
+    response = await client.get(f'/v1/jobs/{own_done}', headers=reader_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    assert data['log_user'] == 'User log'
+    assert data['final_log_user'] == 'User final message'
+    assert not data.get('log') and not data.get('final_log')
+    for job_id in (other_done, other_pending):
+        # Read-only detail access is intentionally broader in the existing API.
+        assert (await client.get(f'/v1/jobs/{job_id}', headers=reader_headers)).status_code == (
+            403 if reader_role == 'user' else 200)
+
+
+@pytest.mark.parametrize('reader_role', ['user', 'readonly'])
+@pytest.mark.asyncio
+async def test_monitor_user_empty(client, reader_headers):
+    response = await client.get('/v1/monitor/jobs/statistics?top=0', headers=reader_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    assert data['done']['job_count'] == data['failed']['job_count'] == 0
+    assert all(data[group] == [] for group in ('owners', 'workers', 'engines', 'engine_versions'))
+    response = await client.get('/v1/monitor/jobs/processing?limit=5&offset=20', headers=reader_headers)
+    assert response.status_code == 200, response.text
+    assert response.headers['X-Total-Count'] == '0'
+    assert response.headers['X-Has-More'] == 'false'
+    assert response.json()['data']['jobs'] == []
+
+
+@pytest.mark.parametrize('role', ['worker'])
+@pytest.mark.parametrize('endpoint', ['jobs/statistics', 'jobs/processing'])
+@pytest.mark.asyncio
+async def test_monitor_job_role_forbidden(client, role, endpoint):
+    response = await client.get('/v1/monitor/' + endpoint,
+                                headers={'X-API-Key': getattr(config, f'TEST_{role.upper()}_KEY')})
+    assert response.status_code == 403, response.text

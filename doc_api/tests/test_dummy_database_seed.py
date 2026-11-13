@@ -69,7 +69,7 @@ async def test_seed_dummy_database_credentials(client, isolated_database, db_ses
         assert response.json()['data']['id'] == str(key.id)
         assert response.json()['data']['role'] == key.role.value
         response = await client.get('/v1/monitor/jobs/statistics', headers=headers)
-        assert response.status_code == 403
+        assert response.status_code == (200 if key.role.value == 'user' else 403)
         if key.role.value == 'user':
             response = await client.get('/v1/jobs', headers=headers)
             assert response.status_code == 200, response.text

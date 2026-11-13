@@ -12,15 +12,26 @@ from fastapi import Depends, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_api.api.authentication import require_management_key
+from doc_api.api.authentication import require_management_key, require_api_key, AUTHENTICATION_RESPONSES
 from doc_api.api.cruds import monitor_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.presentation import commit_badge_html, version_badge_html
 from doc_api.api.routes import monitor_router, monitor_page_router
 from doc_api.api.schemas import monitor as schemas, base_objects
-from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, make_responses, validate_ok_response
+from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, DocAPIClientErrorException, make_responses, validate_ok_response
 from doc_api.config import config
 from doc_api.db import model
+
+require_monitor_key = require_api_key(base_objects.KeyRole.USER, base_objects.KeyRole.READONLY)
+MANAGEMENT_ROLES = {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}
+
+
+def _check_identity_filters(key, *filters):
+    if key.role not in MANAGEMENT_ROLES and any(value is not None for value in filters):
+        raise DocAPIClientErrorException(
+            status=403, code=AppCode.API_KEY_ROLE_FORBIDDEN,
+            detail=AUTHENTICATION_RESPONSES[AppCode.API_KEY_ROLE_FORBIDDEN]['detail'])
+
 
 STATIC_DIR = Path(__file__).parents[1] / 'static' / 'monitor'
 
@@ -48,11 +59,12 @@ def _ok(data, responses):
 @monitor_page_router.get('/monitor', include_in_schema=False)
 async def monitor_page():
     # Only the login shell is public, like Swagger. All data requests below use
-    # management-key authentication; the browser remembers the key until sign-out.
+    # role and ownership checks; the browser remembers the key until sign-out.
     page = await asyncio.to_thread((STATIC_DIR / 'index.html').read_text, encoding='utf-8')
     return HTMLResponse(page.replace('{{VERSION_BADGE}}', version_badge_html())
                         .replace('{{COMMIT_BADGE}}', commit_badge_html())
-                        .replace('{{SERVER_NAME}}', escape(config.SERVER_NAME)),
+                        .replace('{{SERVER_NAME}}', escape(config.SERVER_NAME))
+                        .replace('{{REFRESH_SECONDS}}', str(config.MONITOR_REFRESH_INTERVAL_SECONDS)),
                         headers={'Cache-Control': 'no-store'})
 
 
@@ -107,7 +119,8 @@ async def get_database(key: model.Key = Depends(require_management_key),
 
 @monitor_router.get('/jobs/statistics', summary='Get Job Statistics', tags=['Monitor'],
                     openapi_extra={'x-order': 401},
-                    description='Aggregate every job matching the job-list filters except result availability, before pagination. '
+                    description='Users and read-only keys see only their own jobs, without key identities; identity filters require management access. '
+                                'Aggregate every job matching the job-list filters except result availability, before pagination. '
                                 'Overall totals are unlimited. Grouped owners, workers, engines and engine versions are ranked separately. '
                                 'top defaults to 10 per group type; use 0 for all entries. top_by ranks descending across all matching states, '
                                 'with identity as a deterministic tie-breaker. Null identities represent unassigned jobs. '
@@ -124,9 +137,11 @@ async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries
                     from_started_date: base_objects.UTCDateTime | None = None,
                     from_finished_date: base_objects.UTCDateTime | None = None,
                     from_last_change: base_objects.UTCDateTime | None = None,
-                    key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
+                    key: model.Key = Depends(require_monitor_key), db: AsyncSession = Depends(get_async_session)):
+    _check_identity_filters(key, owner_label, worker_label)
     rows = await monitor_cruds.get_stats(
-        db=db, top=top, top_by=top_by, owner_label=owner_label, worker_label=worker_label, state=state,
+        db=db, key_id=key.id if key.role not in MANAGEMENT_ROLES else None,
+        top=top, top_by=top_by, owner_label=owner_label, worker_label=worker_label, state=state,
         engine_name=engine_name, engine_version=engine_version,
         from_created_date=from_created_date, from_started_date=from_started_date,
         from_finished_date=from_finished_date, from_last_change=from_last_change)
@@ -148,6 +163,8 @@ async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries
         if row['category'] == 'overall':
             overall = values
             continue
+        if key.role not in MANAGEMENT_ROLES and row['category'] in ('owners', 'workers'):
+            continue
         values['total'] = schemas.MonitorTotals(
             job_count=row['job_count'], image_count=row['image_count'], runtime_seconds=row['runtime_seconds'])
         if row['category'] in ('owners', 'workers'):
@@ -164,7 +181,8 @@ async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries
 
 @monitor_router.get('/jobs/processing', summary='Get Processing Activity', tags=['Monitor'],
                     openapi_extra={'x-order': 407},
-                    description='List PROCESSING and QUEUED jobs oldest first within each group, followed by NEW and '
+                    description='Users and read-only keys see only their own jobs, without key labels; identity filters require management access. '
+                                'List PROCESSING and QUEUED jobs oldest first within each group, followed by NEW and '
                                 'recent DONE, FAILED and ERROR jobs newest creation first. '
                                 'limit and offset apply to the whole list; omit limit for all matches. '
                                 'X-Total-Count and X-Has-More describe pagination. Body totals count all matching '
@@ -179,12 +197,17 @@ async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
                           state: Literal['processing', 'queued', 'new'] | None = None,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
                           engine_name: str | None = None, engine_version: str | None = None,
-                          key: model.Key = Depends(require_management_key),
+                          key: model.Key = Depends(require_monitor_key),
                           db: AsyncSession = Depends(get_async_session)):
+    _check_identity_filters(key, owner_id, worker_id)
+    if key.role not in MANAGEMENT_ROLES:
+        owner_id = key.id
     rows, total, totals, image_totals = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset,
                                               finished_within_seconds=finished_within_seconds, state=state,
                                               owner_id=owner_id, worker_id=worker_id,
                                               engine_name=engine_name, engine_version=engine_version)
+    if key.role not in MANAGEMENT_ROLES:
+        rows = [dict(row, owner_label=None, worker_label=None) for row in rows]
     response = _ok(schemas.MonitorProcessing(jobs=[schemas.MonitorJob(**row) for row in rows],
                                             totals=schemas.MonitorProcessingTotals(**totals),
                                             image_totals=schemas.MonitorProcessingTotals(**image_totals)), JOBS_RESPONSES)

@@ -194,7 +194,9 @@ def _ename(name: str) -> str:
 # ADMIN is permitted on every protected route.
 ROUTE_CASES = [
     *[("GET", "/v1/monitor/" + name, {}, {"admin", "manager"})
-      for name in ("info", "jobs/statistics", "workers", "database", "jobs/processing")],
+      for name in ("info", "workers", "database")],
+    *[("GET", "/v1/monitor/" + name, {}, {"readonly", "user", "admin", "manager"})
+      for name in ("jobs/statistics", "jobs/processing")],
     ("GET", "/v1/me", {}, {"readonly", "user", "worker", "admin", "manager"}),
     ("GET", "/v1/engines", {}, {"readonly", "user", "worker", "admin", "manager"}),
     ("POST", "/v1/jobs", {"json": {"images": []}}, {"user", "admin", "manager"}),
