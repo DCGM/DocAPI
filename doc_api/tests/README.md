@@ -1512,14 +1512,22 @@ owner and worker assignment restrictions across all routes.
 ## Lightweight monitoring
 
 `/monitor` serves a plain HTML/CSS/JavaScript login shell. Monitoring data requires
-an active admin or manager key sent in `X-API-Key`; the page remembers it in browser
-local storage until sign-out or authentication rejection.
+an active API key sent in `X-API-Key`; the page remembers it in browser
+local storage until sign-out or authentication rejection. User and read-only keys see only
+Processing, Finished and Settings, fixed to their own jobs. Admin and manager keys
+retain full monitoring. Worker keys remain unsupported. Ownership is enforced before aggregation and pagination;
+identity filters require management access. User responses omit key identities, and
+only User processing and User final log tabs are available. Saved browser section
+and log preferences cannot restore restricted content when switching accounts.
 No frontend build, CDN, additional Python dependency or database migration is
 required. The responsive layout supports automatic, desktop and mobile modes.
 
 The Monitor Swagger section contains `/v1/monitor/info`, `/jobs/statistics`,
 `/jobs/processing`, `/workers` and `/database`. Filter options reuse the existing
 `/v1/admin/keys` and `/v1/engines` endpoints, including inactive keys and engines for management keys.
+User and read-only engine/version options instead come from their unfiltered, owner-scoped
+statistics, so engines referenced only by other users never appear. Refresh timing
+is embedded in the public page shell, avoiding access to server information.
 Routes authenticate and validate inputs;
 `monitor_cruds.py` performs read-only queries without authentication decisions.
 Summary queries exclude job definitions, logs and credentials. Processing shows all
@@ -1588,7 +1596,8 @@ require a monitoring role such as `pg_read_all_stats`. No extension or migration
 `test_monitor.py` covers rendering/static assets, admin/manager responses,
 PostgreSQL statistics and filters, recent-job ordering/refresh, worker activity
 thresholds and processing precedence, schema validation, configuration alignment,
-and Monitor Swagger documentation. The shared authentication matrix also covers
+and Monitor Swagger documentation. Owner-scope tests also cover empty data,
+filters, totals, grouped identities, pagination and job-log access. The shared authentication matrix also covers
 all eight JSON endpoints. Database checks include an actual lock wait and idle
 transaction in a disposable database. Browser verification checks login rejection/success,
 filters, desktop/mobile layouts without horizontal overflow, and clearing data

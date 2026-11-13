@@ -31,6 +31,10 @@ body.mobile-header .header-actions { flex-wrap: nowrap; gap: .4rem; flex-shrink:
 body.mobile-header .header-actions .icon-button { width: 36px; height: 36px; min-height: 36px; }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; padding: 0; border: 1px solid var(--line); border-radius: .3rem; background: var(--panel); color: var(--text); text-decoration: none; }
 .icon-button svg { width: 20px; height: 20px; }
+.login-controls { display: flex; align-items: end; gap: .8rem; max-width: 474px; }
+.login-controls label { flex: 1; min-width: 0; }
+.login-controls input { width: 100%; }
+.login-controls .icon-button { flex-shrink: 0; }
 section[data-section] { position: relative; --section-padding: 1.2rem; }
 .section-header { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1.3rem; min-height: 32px; padding-right: 110px; margin-bottom: .8rem; }
 .section-header h2 { margin: 0; flex-shrink: 0; }
