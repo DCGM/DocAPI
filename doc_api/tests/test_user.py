@@ -234,7 +234,7 @@ async def test_post_job_500_unexpected_crud_result(client, user_headers, engine_
     if stage == "create":
         monkeypatch.setattr(user_routes.user_cruds, "create_job", AsyncMock(return_value=(None, code)))
     elif stage == "images":
-        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], 0, code)))
+        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], code)))
     else:
         engine = await engine_factory(active=True)
         payload["engine_name"] = engine.name
@@ -1058,7 +1058,7 @@ async def test_get_job_500_unexpected_crud_result(client, reader_headers, job_fa
             return job, code
         monkeypatch.setattr(general_routes.general_cruds, "get_job", unexpected)
     elif stage == "images":
-        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], 0, code)))
+        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], code)))
     else:
         engine = await engine_factory()
         async with db_sessions.begin() as db:
@@ -4060,7 +4060,7 @@ async def test_get_engines_422_invalid_filter(client, user_headers):
 @pytest.mark.asyncio
 async def test_get_engines_500_unexpected_crud_result(client, reader_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
-    monkeypatch.setattr(general_routes.general_cruds, "get_engines", AsyncMock(return_value=([], 0, code)))
+    monkeypatch.setattr(general_routes.general_cruds, "get_engines", AsyncMock(return_value=([], code)))
     response = await client.get("/v1/engines", headers=reader_headers)
     assert_route_invariant(response, invariant_errors, code)
 
