@@ -1645,3 +1645,8 @@ Additional existing configuration checks:
 - [x] [`test_run.py::test_resource_settings_reject_invalid_values`](test_run.py).
 - [x] [`test_run.py::test_runner_passes_http_keep_alive_timeout`](test_run.py).
 - [x] [`test_run.py::test_runner_passes_resource_limits`](test_run.py).
+
+Processing provides Jobs/Images measures and an optional PROCESSING, QUEUED or NEW state filter.
+The default All relevant selection includes the usual pending jobs and recently finished jobs.
+Both job and image totals cover all filtered matches before pagination. Finished also labels its
+default DONE/FAILED selection All relevant. These controls persist across browser refresh.

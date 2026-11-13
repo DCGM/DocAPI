@@ -73,6 +73,7 @@ class MonitorProcessingTotals(BaseModel):
 class MonitorProcessing(BaseModel):
     jobs: list[MonitorJob]
     totals: MonitorProcessingTotals
+    image_totals: MonitorProcessingTotals
 
 
 class MonitorWorker(BaseModel):

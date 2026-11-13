@@ -356,7 +356,9 @@ async def test_recent_activity_includes_all_pending(client, monitor_headers, job
         job_id = await job_factory(state)
         ids.append(str(job_id))
         async with db_sessions.begin() as db:
-            (await db.get(model.Job, job_id)).created_date = now - timedelta(minutes=index)
+            job = await db.get(model.Job, job_id)
+            job.created_date = now - timedelta(minutes=index)
+            job.image_count = index + 1
     expected = [ids[i] for i in [5, 2, 4, 1, 3, 9, 10]]
     for limit in [None, 1, 2, 20, 21]:
         for offset in [0, 1, 4, 7, 100]:
@@ -369,8 +371,24 @@ async def test_recent_activity_includes_all_pending(client, monitor_headers, job
             rows = data['jobs']
             assert [row['id'] for row in rows] == expected[offset:None if limit is None else offset + limit]
             assert data['totals'] == {'processing': 2, 'queued': 2, 'new': 3}
+            assert data['image_totals'] == {'processing': 9, 'queued': 7, 'new': 25}
             assert response.headers['X-Total-Count'] == '7'
             assert response.headers['X-Has-More'] == str(offset + len(rows) < 7).lower()
+
+    for state, indices in [('processing', [5, 2]), ('queued', [4, 1]), ('new', [3, 9, 10])]:
+        response = await client.get('/v1/monitor/jobs/processing', headers=monitor_headers,
+                                    params={'state': state, 'limit': 1, 'offset': 1})
+        assert response.status_code == 200, response.text
+        data = response.json()['data']
+        assert [job['id'] for job in data['jobs']] == [ids[indices[1]]]
+        assert response.headers['X-Total-Count'] == str(len(indices))
+        assert data['totals'] == {name: len(indices) if name == state else 0
+                                  for name in ['processing', 'queued', 'new']}
+        assert data['image_totals'] == {name: sum(i + 1 for i in indices) if name == state else 0
+                                        for name in ['processing', 'queued', 'new']}
+    for state in ['done', 'failed', 'error', 'cancelled', 'invalid']:
+        response = await client.get('/v1/monitor/jobs/processing', headers=monitor_headers, params={'state': state})
+        assert response.status_code == 422, response.text
 
     identity = await client.get('/v1/me', headers=admin_headers)
     async with db_sessions.begin() as db:
@@ -417,7 +435,8 @@ async def test_processing_finished_grace_period(client, monitor_headers, job_fac
         assert str(cancelled) not in {row['id'] for row in rows}
     response = await client.get('/v1/monitor/jobs/processing',
                                 params={'owner_id': str(UUID(int=0))}, headers=monitor_headers)
-    assert response.json()['data'] == {'jobs': [], 'totals': {'processing': 0, 'queued': 0, 'new': 0}}
+    assert response.json()['data'] == {'jobs': [], 'totals': {'processing': 0, 'queued': 0, 'new': 0},
+                                         'image_totals': {'processing': 0, 'queued': 0, 'new': 0}}
     assert response.headers['X-Total-Count'] == '0'
     for seconds in [-1, 86401, 'invalid']:
         response = await client.get('/v1/monitor/jobs/processing',
