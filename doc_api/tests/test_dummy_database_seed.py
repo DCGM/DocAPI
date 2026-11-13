@@ -1,4 +1,6 @@
 """Exercise the dummy database filler against a disposable PostgreSQL database."""
+from uuid import UUID
+
 from sqlalchemy import select, func
 import pytest
 
@@ -48,3 +50,35 @@ async def test_seed_dummy_database_finished_dataset(client, admin_headers, isola
         assert await db.get(model.Key, jobs[0].owner_key_id) is None
     assert await clear_database(isolated_database.engine.url.render_as_string(hide_password=False)) == {
         'jobs': 0, 'keys': 0, 'engines': 0}
+
+
+@pytest.mark.asyncio
+async def test_seed_dummy_database_credentials(client, isolated_database, db_sessions):
+    database_url = isolated_database.engine.url.render_as_string(hide_password=False)
+    await seed_database(database_url, jobs=30, owners=2, workers=1, engines=1, versions=1,
+                        prefix='dummy-login', usable_keys=True)
+    async with db_sessions() as db:
+        keys = (await db.scalars(select(model.Key).where(
+            model.Key.label.like('dummy-login-%')))).all()
+    assert len(keys) == 3
+    for key in keys:
+        assert key.kid == key.label
+        headers = {'X-API-Key': f'doc-api.{key.label}.{key.label}'}
+        response = await client.get('/v1/me', headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()['data']['id'] == str(key.id)
+        assert response.json()['data']['role'] == key.role.value
+        response = await client.get('/v1/monitor/jobs/statistics', headers=headers)
+        assert response.status_code == 403
+        if key.role.value == 'user':
+            response = await client.get('/v1/jobs', headers=headers)
+            assert response.status_code == 200, response.text
+            assert response.json()['data']
+            async with db_sessions() as db:
+                expected = set(await db.scalars(select(model.Job.id).where(
+                    model.Job.owner_key_id == key.id)))
+            assert {UUID(job['id']) for job in response.json()['data']} == expected
+    for prefix in ('invalid prefix', 'too-long-' * 5):
+        with pytest.raises(ValueError):
+            await seed_database(database_url, jobs=5, owners=1, workers=1, engines=1, versions=1,
+                                prefix=prefix, usable_keys=True)

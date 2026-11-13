@@ -4,13 +4,14 @@ Run from the repository root with server dependencies installed:
     python -m scripts.seed_dummy_database postgresql://postgres:postgres@localhost:5433/doc_api_db
 
 Only DONE/FAILED jobs are inserted. No files, notifications or runnable work are
-created. Dummy engines are inactive, key secrets are unusable, and deleted-file
-timestamps reflect that the synthetic files do not exist. Each run has its own
+created. Dummy engines are inactive and key secrets are unusable by default.
+Deleted-file timestamps reflect that the synthetic files do not exist. Each run has its own
 label prefix and adds records without modifying existing data. All synthetic job,
 key and engine UUIDs begin with d00df00d-. Use --clear to remove these records.
 """
 import argparse
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 import random
 import secrets
@@ -63,10 +64,15 @@ def positive(value):
 
 
 async def seed_database(database_url, *, jobs=10000, owners=40, workers=20, engines=8,
-                        versions=3, days=30, seed=42, prefix=None):
-    engine = database_engine(database_url)
+                        versions=3, days=30, seed=42, prefix=None, usable_keys=False):
     rng = random.Random(seed)
     prefix = prefix or f'dummy-db-{uuid4().hex[:8]}'
+    if usable_keys and not re.fullmatch(r'[A-Za-z0-9_-]+', prefix):
+        raise ValueError('Usable dummy credentials require a URL-safe label prefix.')
+    if usable_keys and max(len(f'{prefix}-{role}-{count:02}') for role, count in [('user', owners), ('worker', workers)]) > 32:
+        raise ValueError('Usable dummy key names must fit the 32-character key ID limit; choose a shorter prefix.')
+    if usable_keys:
+        from doc_api.api.authentication import salted_hmac_sha256_hex
     now = datetime.now(timezone.utc)
     owner_ids = [dummy_uuid() for _ in range(owners)]
     worker_ids = [dummy_uuid() for _ in range(workers)]
@@ -79,11 +85,16 @@ async def seed_database(database_url, *, jobs=10000, owners=40, workers=20, engi
                              active=True, email_notifications=False,
                              created_date=now - timedelta(days=days + 1),
                              last_used=now - timedelta(seconds=rng.randint(5, 3600))))
+            if usable_keys:
+                key = keys[-1]
+                key['kid'] = key['label']
+                key['key_hash'] = salted_hmac_sha256_hex(key['label'], key['salt'])
     engine_rows = [dict(id=engine_id, name=f'{prefix}-engine-{index // versions + 1:02}',
                         version=f'{index % versions + 1}.0', description='Synthetic test engine.',
                         definition=None, active=False, default=False)
                    for index, engine_id in enumerate(engine_ids)]
     done = failed = 0
+    engine = database_engine(database_url)
     try:
         # All inserts commit together; a failure leaves no partial filler dataset.
         async with engine.begin() as connection:
@@ -135,9 +146,14 @@ def main():
     parser.add_argument('--clear', action='store_true', help='Remove all d00df00d- UUID records instead of inserting.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducible distributions.')
     parser.add_argument('--prefix', help='Unique label prefix; defaults to dummy-db-<random suffix>.')
+    parser.add_argument('--usable-keys', action='store_true', help='Use dummy key names as both key IDs and secrets (PREFIX.name.name); requires the server HMAC_SECRET environment setting.')
     args = parser.parse_args()
     if args.prefix is not None and (not args.prefix.strip() or len(args.prefix) > 220):
         parser.error('--prefix must be nonempty and at most 220 characters.')
+    if args.clear and args.usable_keys:
+        parser.error('--usable-keys cannot be combined with --clear.')
+    if args.usable_keys and args.prefix is not None and not re.fullmatch(r'[A-Za-z0-9_-]+', args.prefix):
+        parser.error('--usable-keys requires a prefix containing only letters, digits, underscores or hyphens.')
     try:
         clear = vars(args).pop('clear')
         if clear:

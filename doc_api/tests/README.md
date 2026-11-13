@@ -1627,6 +1627,7 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_get_monitor_stats_200_group_ranking`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_422_group_options`](test_monitor.py).
 - [x] [`test_dummy_database_seed.py::test_seed_dummy_database_finished_dataset`](test_dummy_database_seed.py).
+- [x] [`test_dummy_database_seed.py::test_seed_dummy_database_credentials`](test_dummy_database_seed.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_finished_date_filter`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_unavailable_runtime`](test_monitor.py).
 - [x] [`test_presentation.py::test_monitor_commit_badge`](test_presentation.py).
