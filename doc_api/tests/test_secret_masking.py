@@ -97,12 +97,12 @@ def test_mask_secrets_in_text_patterns(text, expected):
     assert mask_secrets_in_struct(text) == expected
 
 
-@pytest.mark.parametrize("prefix", ["doc-api", "metakat"])
+@pytest.mark.parametrize("prefix", ["doc-api", "myapp"])
 def test_dotted_names_with_key_prefix_are_not_masked(monkeypatch, prefix):
     monkeypatch.setattr(config, "KEY_PREFIX", prefix)
     # A key prefix that is also a package or host name leaves those names alone.
-    for text in ("metakat.page_number.engines.bind INFO : Loaded",
-                 "https://metakat.smart.lib.cas.cz/v1/jobs",
+    for text in (f"{prefix}.engines.loader.bind INFO : Loaded",
+                 f"https://{prefix}.api.example.org/v1/jobs",
                  "doc-api.tools.secrets imported"):
         assert mask_secrets_in_text(text) == text
     # Labelled keys stay masked whatever the prefix.

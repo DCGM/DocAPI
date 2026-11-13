@@ -51,7 +51,7 @@ def _listdir(path):
 
 
 def _write_result(result_dir):
-    open(os.path.join(result_dir, 'metakat.json'), 'w').close()
+    open(os.path.join(result_dir, 'result.json'), 'w').close()
     return WorkerResponse.ok()
 
 
@@ -63,7 +63,7 @@ def test_a_processed_job_is_finished_ok_before_its_directory_is_cleaned_up(tmp_p
     [finished] = worker.finished
     assert finished['response'].status == WorkerResponseStatus.OK
     assert finished['job'].id == 'job-1'
-    assert finished['results'] == ['metakat.json']
+    assert finished['results'] == ['result.json']
     assert finished['handler'] is not None and finished['duration_s'] >= 0
     assert not os.path.exists(finished['job_dir'])
 
