@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import io
 import logging
@@ -241,6 +242,7 @@ async def test_unhandled_error_masks_url_and_mail(monkeypatch):
             response = await main.unhandled(request, exc)
     finally:
         main.exception_logger.removeHandler(handler)
+    await asyncio.gather(*main.error_mail_tasks)
     assert response.status_code == 500
     mail = mail_logger.critical.call_args.args[0]
     assert OPENAI_KEY not in mail
@@ -269,6 +271,7 @@ async def test_unhandled_error_mail_unmasked_when_internal_mail_masking_off(monk
             await main.unhandled(request, exc)
     finally:
         main.exception_logger.removeHandler(handler)
+    await asyncio.gather(*main.error_mail_tasks)
     assert f"URL: http://test/v1/jobs?token={OPENAI_KEY}" in mail_logger.critical.call_args.args[0]
     # The server log is masked regardless of the mail setting.
     assert "URL: http://test/v1/jobs?token=*****" in stream.getvalue()
