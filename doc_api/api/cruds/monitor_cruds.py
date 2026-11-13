@@ -74,7 +74,8 @@ async def get_stats(*, db: AsyncSession, **filters):
 
 async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset: int = 0, finished_within_seconds: int = 60,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
-                          engine_name: str | None = None, engine_version: str | None = None):
+                          engine_name: str | None = None, engine_version: str | None = None,
+                          state: ProcessingState | None = None):
     owner, worker = aliased(model.Key), aliased(model.Key)
     job = model.Job
     pending = job.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
@@ -103,6 +104,8 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset:
             job.state.in_([ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR]),
             job.finished_date >= datetime.now(timezone.utc) - timedelta(seconds=finished_within_seconds),
         ))
+    if state is not None:
+        query = query.where(job.state == state)
     matching = query.where(or_(*included)).cte('matching_processing_jobs')
     columns = matching.c
     pending = columns.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
@@ -118,6 +121,9 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset:
     page = page.subquery('processing_page')
     totals = select(func.count().label('total'), *[
         func.count().filter(columns.state == state).label(state.value)
+        for state in [ProcessingState.PROCESSING, ProcessingState.QUEUED, ProcessingState.NEW]
+    ], *[
+        func.coalesce(func.sum(columns.image_count).filter(columns.state == state), 0).label(f'{state.value}_images')
         for state in [ProcessingState.PROCESSING, ProcessingState.QUEUED, ProcessingState.NEW]
     ]).select_from(matching).subquery('processing_totals')
     # A single snapshot supplies totals even when the requested page is empty.
@@ -136,7 +142,8 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset:
             total = rows[0]['total']
             counts = {state: rows[0][state] for state in ['processing', 'queued', 'new']}
             jobs = [{name: row[name] for name in page.c.keys()} for row in rows if row['id'] is not None]
-            return jobs, total, counts
+            image_counts = {state: rows[0][f'{state}_images'] for state in ['processing', 'queued', 'new']}
+            return jobs, total, counts, image_counts
     except exc.SQLAlchemyError as error:
         raise DBError('Failed reading recent monitoring jobs.') from error
 

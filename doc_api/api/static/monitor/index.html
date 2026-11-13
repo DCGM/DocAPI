@@ -40,6 +40,8 @@
     <section data-section="recent-jobs"><h2>Processing</h2>
       <div id="processing-stats" class="stats"></div>
       <div class="controls job-controls">
+        <label>Measure <select id="recent-metric"><option value="job_count">Jobs</option><option value="image_count">Images</option></select></label>
+        <label>State <select id="recent-state"><option value="">All relevant</option><option value="processing">PROCESSING</option><option value="queued">QUEUED</option><option value="new">NEW</option></select></label>
         <label>Keep finished <select id="recent-finished-seconds"><option value="0">Off</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
         <label class="principal-filter">Owner <select id="recent-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="recent-worker"><option value="">All workers</option></select></label>
@@ -66,7 +68,7 @@
       <div class="controls job-controls">
         <label>Period <select id="job-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
         <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
-        <label>State <select id="job-state"><option value="">DONE or FAILED</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
+        <label>State <select id="job-state"><option value="">All relevant</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
         <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label job-order-note" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
         <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>

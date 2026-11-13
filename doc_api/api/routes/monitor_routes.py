@@ -5,7 +5,7 @@ from html import escape
 from pathlib import Path
 import socket
 from time import monotonic
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends, Query, Request
@@ -143,23 +143,26 @@ async def get_stats(owner_label: str | None = None, worker_label: str | None = N
                                 'recent DONE, FAILED and ERROR jobs newest creation first. '
                                 'limit and offset apply to the whole list; omit limit for all matches. '
                                 'X-Total-Count and X-Has-More describe pagination. Body totals count all matching '
-                                'PROCESSING, QUEUED and NEW jobs before pagination. '
+                                'PROCESSING, QUEUED and NEW jobs and images before pagination. '
+                                'Optional state restricts results to PROCESSING, QUEUED or NEW. '
                                 'finished_within_seconds defaults to 60; zero disables finished-job retention. '
                                 'Owner, latest worker, engine and version filters apply before totals and pagination.',
                     response_model=DocAPIResponseOK[schemas.MonitorProcessing], responses=make_responses(JOBS_RESPONSES))
 async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
                           offset: Annotated[int, Query(ge=0)] = 0,
                           finished_within_seconds: Annotated[int, Query(ge=0, le=86400)] = 60,
+                          state: Literal['processing', 'queued', 'new'] | None = None,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
                           engine_name: str | None = None, engine_version: str | None = None,
                           key: model.Key = Depends(require_management_key),
                           db: AsyncSession = Depends(get_async_session)):
-    rows, total, totals = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset,
-                                              finished_within_seconds=finished_within_seconds,
+    rows, total, totals, image_totals = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset,
+                                              finished_within_seconds=finished_within_seconds, state=state,
                                               owner_id=owner_id, worker_id=worker_id,
                                               engine_name=engine_name, engine_version=engine_version)
     response = _ok(schemas.MonitorProcessing(jobs=[schemas.MonitorJob(**row) for row in rows],
-                                            totals=schemas.MonitorProcessingTotals(**totals)), JOBS_RESPONSES)
+                                            totals=schemas.MonitorProcessingTotals(**totals),
+                                            image_totals=schemas.MonitorProcessingTotals(**image_totals)), JOBS_RESPONSES)
     response.headers['X-Total-Count'] = str(total)
     response.headers['X-Has-More'] = str(offset + len(rows) < total).lower()
     return response

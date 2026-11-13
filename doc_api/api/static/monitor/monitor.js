@@ -245,7 +245,7 @@ async function get(path, signal, paginated = false) {
   const response = await fetch(new URL(path, apiBase), {headers: {'X-API-Key': key}, signal, cache: 'no-store'});
   const payload = await response.json();
   if (!response.ok) throw Object.assign(new Error(payload.detail || `Request failed: HTTP ${response.status}`), {status: response.status});
-  return paginated ? {items: payload.data.jobs ?? payload.data, totals: payload.data.totals, total: Number(response.headers.get('X-Total-Count')), hasMore: response.headers.get('X-Has-More') === 'true'} : payload.data;
+  return paginated ? {items: payload.data.jobs ?? payload.data, totals: payload.data.totals, imageTotals: payload.data.image_totals, total: Number(response.headers.get('X-Total-Count')), hasMore: response.headers.get('X-Has-More') === 'true'} : payload.data;
 }
 function options(id, rows, all) {
   const select = byId(id), selected = select.value;
@@ -403,7 +403,8 @@ function renderStats() {
     node('span', `FAILED ${value('failed')}`, 'badge job-failed')]);
 }
 function renderRecentJobs(result) {
-  const {items: jobs, totals} = result;
+  const {items: jobs} = result;
+  const totals = byId('recent-metric').value === 'image_count' ? result.imageTotals : result.totals;
   const pages = Math.max(1, Math.ceil(result.total / Number(byId('recent-limit').value)));
   if (processingPage >= pages) { processingPage = pages - 1; refresh(); return; }
   byId('processing-page').textContent = `${processingPage + 1}/${pages}`;
@@ -417,7 +418,7 @@ function renderRecentJobs(result) {
       node('strong', totals[state].toLocaleString()));
     return card;
   }));
-  summary('recent-jobs', [
+  summary('recent-jobs', [byId('recent-metric').selectedOptions[0].text,
     node('span', `${totals.processing} PROCESSING`, 'badge job-processing'),
     node('span', `${totals.queued} QUEUED`, 'badge job-queued'),
     node('span', `${totals.new} NEW`, 'badge job-new')]);
@@ -525,6 +526,7 @@ async function refresh() {
   jobQuery.set('sort_order', jobOrder);
   const recentQuery = new URLSearchParams({limit: byId('recent-limit').value, offset: processingPage * Number(byId('recent-limit').value), finished_within_seconds: byId('recent-finished-seconds').value});
   addFilters(recentQuery, 'recent-');
+  if (byId('recent-state').value) recentQuery.set('state', byId('recent-state').value);
   byId('jobs-previous').disabled = true;
   byId('jobs-next').disabled = true;
   byId('processing-previous').disabled = true;
@@ -605,7 +607,7 @@ function signOut() {
 }
 byId('logout').addEventListener('click', signOut);
 byId('layout').addEventListener('change', () => { document.body.dataset.layout = byId('layout').value; });
-for (const id of ['recent-limit', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
+for (const id of ['recent-limit', 'recent-metric', 'recent-state', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
 for (const prefix of ['job-', 'recent-']) byId(`${prefix}engine`).addEventListener('change', () => {
   byId(`${prefix}engine-version`).value = '';
   engineVersions(prefix);
