@@ -810,7 +810,9 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 ### Secret masking
 
 `doc_api.tools.secrets` masks values under secret-looking keys at any depth and
-known secret patterns in free text. User/readonly responses show masked engine
+known secret patterns in free text. It is a standalone tool: its settings are a
+`MaskingSettings` value, and it reads no server config. The server builds its
+settings from the variables below with `Config.secret_masking()`. User/readonly responses show masked engine
 settings and job logs; admin and worker responses keep the real values, for jobs
 and debugging. Logged exceptions and access-log query strings are masked too. Masking happens in the server
 routes and checkers, not the shared schemas. Stored data is never changed.
@@ -833,12 +835,13 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] partial keys apply with masking turned off. [`test_secret_masking.py::test_partial_keys_apply_with_masking_disabled`](test_secret_masking.py).
 - [x] configurable mask. [`test_secret_masking.py::test_custom_mask`](test_secret_masking.py).
 - [x] optional high-entropy switch. [`test_secret_masking.py::test_mask_secrets_in_text_high_entropy_switch`](test_secret_masking.py).
-- [x] server log handlers carry the masking filter. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
+- [x] server log handlers carry the masking filter with the server's settings in force. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
 - [x] only exception records are masked, traceback included. [`test_secret_masking.py::test_logging_masks_only_exceptions`](test_secret_masking.py).
 - [x] access log query strings are masked; other access paths are not scanned. [`test_secret_masking.py::test_access_log_masks_query_string_keys`](test_secret_masking.py).
 - [x] unhandled errors mask the logged URL and the error mail. [`test_secret_masking.py::test_unhandled_error_masks_url_and_mail`](test_secret_masking.py).
 - [x] masking can be disabled. [`test_secret_masking.py::test_masking_can_be_disabled`](test_secret_masking.py).
-- [x] settings from the environment. [`test_secret_masking.py::test_masking_configuration`](test_secret_masking.py).
+- [x] settings from the environment, and the server's defaults equal the tool's. [`test_secret_masking.py::test_masking_configuration`](test_secret_masking.py).
+- [x] the tool without settings uses its defaults; explicit settings apply. [`test_secret_masking.py::test_masking_tool_without_settings_uses_defaults`](test_secret_masking.py).
 - [x] job report mail masking by default: internal on, external off. [`test_secret_masking.py::test_job_report_mail_masking_defaults_per_channel`](test_secret_masking.py).
 - [x] job report mail masking switches per channel. [`test_secret_masking.py::test_job_report_mail_masking_per_channel_switch`](test_secret_masking.py).
 - [x] server error mail unmasked with internal mail masking off; the log stays masked. [`test_secret_masking.py::test_unhandled_error_mail_unmasked_when_internal_mail_masking_off`](test_secret_masking.py).
@@ -846,7 +849,8 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] engine settings and job logs by role; storage intact. [`test_secret_masking.py::test_get_job_200_engine_settings_masked_for_readers`](test_secret_masking.py).
 - [x] engine settings and job logs with partial keys by role. [`test_secret_masking.py::test_get_job_200_partial_keys_revealed_partly`](test_secret_masking.py).
 - [x] validation errors echoing input. [`test_secret_masking.py::test_post_job_422_masks_echoed_input`](test_secret_masking.py).
-- [x] clients never load masking; workers mask only their own health and failure mail. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
+- [x] clients and workers never load masking; worker mail is sent as written. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
+- [x] tools, schemas, adapter, workers and clients never load the server config. [`test_secret_masking.py::test_tools_workers_and_clients_do_not_load_server_config`](test_secret_masking.py).
 - [x] the database password is never logged. [`test_secret_masking.py::test_database_password_is_never_logged`](test_secret_masking.py).
 
 ### Alembic migrations
@@ -995,7 +999,7 @@ alive mail; an alive interval of zero disables
 periodic mail. Alive messages report process uptime and the last pipeline
 return, rather than guaranteeing that processing is progressing.
 
-- [x] Startup, periodic alive mail, disabling mail, masking, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+- [x] Startup, periodic alive mail, disabling mail, mail sent as written or filtered by a `MailSender` subclass, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 - [x] Wrapper lifecycle integration, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 - [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 

@@ -1,11 +1,10 @@
 import enum
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional, get_origin, Union, get_args, List, Any, Annotated, Literal
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
 
-from doc_api.config import config
 
 JobSort = Literal['created_date', 'started_date', 'finished_date', 'last_change']
 SortOrder = Literal['asc', 'desc']
@@ -305,18 +304,8 @@ class Job(JobWithEngine):
 
 class JobUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    @field_validator("last_change")
-    @classmethod
-    def validate_lease_date_range(cls, value):
-        if value is not None and config.JOB_TIMEOUT_SECONDS > 0:
-            try:
-                # Reject before saving, rather than failing to build a lease
-                # response after the administrative update has committed.
-                value + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
-            except OverflowError as exc:
-                raise ValueError("Timestamp plus the configured job timeout exceeds the supported date range.") from exc
-        return value
+    # The server checks last_change against its job timeout before saving
+    # (general_routes.require_lease_date_in_range); schemas read no server config.
 
     state: Optional[ProcessingState] = Field(
         None,

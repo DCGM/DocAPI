@@ -117,7 +117,8 @@ def send_final_report(mail: JobMail) -> bool | None:
         # per channel, SECRET_MASKING_INTERNAL_MAIL / SECRET_MASKING_EXTERNAL_MAIL.
         subject, body = mail.subject, mail.body
         if getattr(config, f"SECRET_MASKING_{mail.channel}_MAIL"):
-            subject, body = mask_secrets_in_text(subject), mask_secrets_in_text(body)
+            masking = config.secret_masking()
+            subject, body = mask_secrets_in_text(subject, masking), mask_secrets_in_text(body, masking)
         return sender.send(subject, body, recipients)
     except Exception:
         logger.exception("Failed preparing job notification %r", mail.subject)
