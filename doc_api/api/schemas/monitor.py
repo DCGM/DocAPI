@@ -5,11 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from doc_api.api.schemas.base_objects import ProcessingState, KeyRole
+from doc_api.api.schemas.base_objects import ProcessingState
 
-MonitorPeriod = Literal['24h', '7d', '1m', 'all']
-MonitorJobSort = Literal['priority', 'created_date', 'started_date', 'finished_date', 'last_change']
-MonitorSortOrder = Literal['desc', 'asc']
 
 
 class MonitorInfo(BaseModel):
@@ -46,7 +43,6 @@ class MonitorTotals(BaseModel):
 
 
 class MonitorStats(BaseModel):
-    period: MonitorPeriod
     done: MonitorTotals
     failed: MonitorTotals
     attempts: MonitorTotals
@@ -68,6 +64,17 @@ class MonitorJob(BaseModel):
     engine_version: str | None
 
 
+class MonitorProcessingTotals(BaseModel):
+    processing: int
+    queued: int
+    new: int
+
+
+class MonitorProcessing(BaseModel):
+    jobs: list[MonitorJob]
+    totals: MonitorProcessingTotals
+
+
 class MonitorWorker(BaseModel):
     id: UUID
     label: str
@@ -75,14 +82,3 @@ class MonitorWorker(BaseModel):
     last_used: datetime | None
     status: Literal['active', 'idle', 'off']
     processing_jobs: int
-
-
-class MonitorPrincipal(BaseModel):
-    id: UUID
-    label: str
-    role: KeyRole
-
-
-class MonitorEngine(BaseModel):
-    name: str
-    version: str

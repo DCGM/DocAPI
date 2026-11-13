@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 from typing import Tuple, Optional, List
 from uuid import UUID
 
-from sqlalchemy import select, exc, Row
+from sqlalchemy import select, exc, Row, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased, defer
 
 from doc_api.api.database import DBError, transaction
 from doc_api.api.schemas import base_objects
@@ -34,41 +35,89 @@ async def get_job(*, db: AsyncSession, job_id: UUID) -> Tuple[Optional[model.Job
         raise DBError(f"Failed reading job.") from e
 
 
+def jobs_query(*, key_id: Optional[UUID] = None, owner_label: Optional[str] = None,
+               worker_label: Optional[str] = None, state: Optional[list[base_objects.ProcessingState]] = None,
+               engine_name: Optional[str] = None, engine_version: Optional[str] = None,
+               from_created_date: Optional[datetime] = None, from_started_date: Optional[datetime] = None,
+               from_last_change: Optional[datetime] = None, from_finished_date: Optional[datetime] = None):
+    """Common job-list selection used by listing and matching statistics."""
+    owner = aliased(model.Key)
+    worker = aliased(model.Key)
+    query = select(model.Job, model.Engine.name, model.Engine.version, owner.label, worker.label).outerjoin(
+        model.Engine, model.Engine.id == model.Job.engine_id).join(
+        owner, owner.id == model.Job.owner_key_id).outerjoin(
+        worker, worker.id == model.Job.worker_key_id)
+    if key_id is not None:
+        query = query.where(model.Job.owner_key_id == key_id)
+    if owner_label is not None:
+        query = query.where(owner.label == owner_label)
+    if worker_label is not None:
+        query = query.where(worker.label == worker_label)
+    if state is not None:
+        query = query.where(model.Job.state.in_(state))
+    if engine_name is not None:
+        query = query.where(model.Engine.name == engine_name)
+    if engine_version is not None:
+        query = query.where(model.Engine.version == engine_version)
+    if from_created_date is not None:
+        query = query.where(model.Job.created_date >= from_created_date)
+    if from_started_date is not None:
+        query = query.where(model.Job.started_date >= from_started_date)
+    if from_last_change is not None:
+        query = query.where(model.Job.last_change >= from_last_change)
+    if from_finished_date is not None:
+        query = query.where(model.Job.finished_date >= from_finished_date)
+
+    return query
+
+
 async def get_jobs_with_engines(*, db: AsyncSession,
                                 key_id: Optional[UUID] = None,
-                                state: Optional[base_objects.ProcessingState] = None,
+                                owner_label: Optional[str] = None,
+                                worker_label: Optional[str] = None,
+                                limit: Optional[int] = None,
+                                offset: int = 0,
+                                sort_by: base_objects.JobSort = 'created_date',
+                                sort_order: base_objects.SortOrder = 'desc',
+                                state: Optional[list[base_objects.ProcessingState]] = None,
                                 engine_name: Optional[str] = None,
                                 engine_version: Optional[str] = None,
+                                result_available: Optional[bool] = None,
                                 from_created_date: Optional[datetime] = None,
                                 from_started_date: Optional[datetime] = None,
                                 from_last_change: Optional[datetime] = None,
-                                from_finished_date: Optional[datetime] = None) -> Tuple[List[Tuple[model.Job, Optional[model.Engine]]], AppCode]:
+                                from_finished_date: Optional[datetime] = None,
+                                include_logs: bool = True,
+                                include_engine_settings: bool = True) -> Tuple[List[Tuple[model.Job, Optional[str], Optional[str], str, Optional[str]]], int, AppCode]:
     try:
         async with db.begin():
-            query = select(model.Job, model.Engine).outerjoin(model.Engine)
+            query = jobs_query(
+                key_id=key_id, owner_label=owner_label, worker_label=worker_label, state=state,
+                engine_name=engine_name, engine_version=engine_version,
+                from_created_date=from_created_date, from_started_date=from_started_date,
+                from_last_change=from_last_change, from_finished_date=from_finished_date)
+            if result_available is not None:
+                available = ((model.Job.state == base_objects.ProcessingState.DONE)
+                             & model.Job.results_deleted_at.is_(None))
+                query = query.where(available if result_available else ~available)
+            if not include_logs:
+                query = query.options(*(defer(getattr(model.Job, field), raiseload=True)
+                                        for field in base_objects.JOB_LOG_FIELDS))
+            if not include_engine_settings:
+                query = query.options(defer(model.Job.definition, raiseload=True))
 
-            if key_id is not None:
-                query = query.where(model.Job.owner_key_id == key_id)
-            if state is not None:
-                query = query.where(model.Job.state == state)
-            if engine_name is not None:
-                query = query.where(model.Engine.name == engine_name)
-            if engine_version is not None:
-                query = query.where(model.Engine.version == engine_version)
-            if from_created_date is not None:
-                query = query.where(model.Job.created_date >= from_created_date)
-            if from_started_date is not None:
-                query = query.where(model.Job.started_date >= from_started_date)
-            if from_last_change is not None:
-                query = query.where(model.Job.last_change >= from_last_change)
-            if from_finished_date is not None:
-                query = query.where(model.Job.finished_date >= from_finished_date)
-
-            query = query.order_by(model.Job.created_date.desc())
+            total = await db.scalar(select(func.count()).select_from(
+                query.with_only_columns(model.Job.id).subquery()))
+            timestamp = getattr(model.Job, sort_by)
+            ordering = timestamp.asc() if sort_order == 'asc' else timestamp.desc()
+            tie_breaker = model.Job.id.asc() if sort_order == 'asc' else model.Job.id.desc()
+            query = query.order_by(ordering.nulls_last(), tie_breaker).offset(offset)
+            if limit is not None:
+                query = query.limit(limit)
 
             result = await db.execute(query)
             rows = list(result.all())
-            return rows, AppCode.JOBS_RETRIEVED
+            return rows, total, AppCode.JOBS_RETRIEVED
 
     except exc.SQLAlchemyError as e:
         raise DBError("Failed reading jobs.") from e

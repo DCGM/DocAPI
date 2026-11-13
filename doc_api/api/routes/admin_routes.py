@@ -245,13 +245,14 @@ GET_KEYS_RESPONSES = {
     response_model=DocAPIResponseOK[List[base_objects.Key]],
     tags=["Admin"],
     openapi_extra={"x-order": 303},
-    description="Retrieve a list of all API keys in the system.",
+    description="Retrieve API keys, optionally filtered by role. Omit role to return all keys.",
     responses=make_responses(GET_KEYS_RESPONSES))
 async def get_keys(
         request: Request,
+        role: base_objects.KeyRole | None = None,
         key: model.Key = Depends(require_management_key),
         db: AsyncSession = Depends(get_async_session)):
-    db_keys, code = await admin_cruds.get_keys(db=db)
+    db_keys, code = await admin_cruds.get_keys(db=db, role=role)
     if code != AppCode.KEYS_RETRIEVED:
         raise RouteInvariantError(code=code, request=request)
     return DocAPIResponseOK[List[base_objects.Key]](

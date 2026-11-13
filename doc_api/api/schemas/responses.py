@@ -224,7 +224,8 @@ class DocAPIResponseServerError(DocAPIResponseBase):
 
 NO_BODY_STATUSES = {fastapi.status.HTTP_204_NO_CONTENT, fastapi.status.HTTP_205_RESET_CONTENT}
 
-def validate_ok_response(payload: DocAPIResponseOK[T], exclude_none: bool = False) -> Response:
+def validate_ok_response(payload: DocAPIResponseOK[T], exclude_none: bool = False,
+                         exclude: Optional[dict] = None) -> Response:
     """
     Render a 2xx response, for 200 strictly prefer returning Pydantic model
     directly from route and use FastAPI response_model for validation.
@@ -235,7 +236,8 @@ def validate_ok_response(payload: DocAPIResponseOK[T], exclude_none: bool = Fals
     if payload.status in NO_BODY_STATUSES:
         return Response(status_code=payload.status)
 
-    return JSONResponse(status_code=payload.status, content=payload.model_dump(mode="json", exclude_none=exclude_none))
+    return JSONResponse(status_code=payload.status, content=payload.model_dump(
+        mode="json", exclude_none=exclude_none, exclude=exclude))
 
 
 def validate_client_error_response(payload: DocAPIResponseClientError, headers: Optional[Mapping[str, str]] = None) -> JSONResponse:

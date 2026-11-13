@@ -1,12 +1,13 @@
 """Read-only monitoring queries independent of authentication roles."""
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select, func, case, and_, or_, exc, text
+from sqlalchemy import select, func, case, and_, or_, exc, text, true
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.database import DBError
+from doc_api.api.cruds.general_cruds import jobs_query
 from doc_api.api.schemas.base_objects import ProcessingState, KeyRole
 from doc_api.db import model
 
@@ -50,9 +51,7 @@ async def get_database_stats(*, db: AsyncSession):
         raise DBError('Failed reading monitoring database statistics.') from error
 
 
-async def get_stats(*, db: AsyncSession, since: datetime | None,
-                    owner_id: UUID | None, worker_id: UUID | None,
-                    engine_name: str | None = None, engine_version: str | None = None):
+async def get_stats(*, db: AsyncSession, **filters):
     # Attempt counters exclude released leases. Individual attempt timestamps
     # and historical worker assignments are not stored.
     job = model.Job
@@ -60,52 +59,25 @@ async def get_stats(*, db: AsyncSession, since: datetime | None,
     valid_dates = and_(job.started_date.is_not(None), job.finished_date.is_not(None),
                        job.finished_date >= job.started_date)
     elapsed = case((valid_dates, func.extract('epoch', job.finished_date - job.started_date)), else_=None)
-    query = select(
-        job.state, func.count().label('job_count'), func.sum(job.image_count).label('image_count'),
-        func.sum(elapsed).label('runtime_seconds'), func.sum(attempts).label('attempt_count'),
-        func.sum(attempts * job.image_count).label('attempt_image_count'),
-    )
-    if since is not None:
-        activity_time = case((job.state.in_([ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR]),
-                              job.finished_date), else_=job.last_change)
-        query = query.where(activity_time >= since)
-    if owner_id is not None:
-        query = query.where(job.owner_key_id == owner_id)
-    if worker_id is not None:
-        query = query.where(job.worker_key_id == worker_id)
-    if engine_name is not None or engine_version is not None:
-        query = query.join(model.Engine, model.Engine.id == job.engine_id)
-        if engine_name is not None:
-            query = query.where(model.Engine.name == engine_name)
-        if engine_version is not None:
-            query = query.where(model.Engine.version == engine_version)
+    query = jobs_query(**filters)
     try:
         async with db.begin():
-            return (await db.execute(query.group_by(job.state))).mappings().all()
+            aggregate = query.with_only_columns(
+                job.state, func.count().label('job_count'), func.sum(job.image_count).label('image_count'),
+                func.sum(elapsed).label('runtime_seconds'), func.sum(attempts).label('attempt_count'),
+                func.sum(attempts * job.image_count).label('attempt_image_count'),
+            ).group_by(job.state)
+            return (await db.execute(aggregate)).mappings().all()
     except exc.SQLAlchemyError as error:
         raise DBError('Failed reading monitoring job statistics.') from error
 
 
-async def get_recent_jobs(*, db: AsyncSession, limit: int, mode: str = 'priority', order: str = 'desc',
+async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset: int = 0, finished_within_seconds: int = 60,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
-                          engine_name: str | None = None, engine_version: str | None = None,
-                          include_all_pending: bool = False, offset: int = 0, with_total: bool = False):
+                          engine_name: str | None = None, engine_version: str | None = None):
     owner, worker = aliased(model.Key), aliased(model.Key)
     job = model.Job
-    if mode == 'priority':
-        pending = job.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
-        ordering = [
-            case((job.state == ProcessingState.PROCESSING, 0),
-                 (job.state == ProcessingState.QUEUED, 1), else_=2),
-            case((pending, job.created_date), else_=None).asc().nulls_last(),
-            case((~pending, job.created_date), else_=None).desc().nulls_last(),
-            job.id.asc(),
-        ]
-    else:
-        timestamp = {'created_date': job.created_date, 'started_date': job.started_date,
-                     'finished_date': job.finished_date, 'last_change': job.last_change}[mode]
-        ordering = [(timestamp.asc() if order == 'asc' else timestamp.desc()).nulls_last(),
-                    job.id.asc() if order == 'asc' else job.id.desc()]
+    pending = job.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
     # Select only the table's small summary columns, never the potentially large
     # definitions/logs or the image records (which cleanup may have removed).
     query = select(
@@ -125,19 +97,46 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int, mode: str = 'priority
         query = query.where(model.Engine.name == engine_name)
     if engine_version is not None:
         query = query.where(model.Engine.version == engine_version)
-    count_query = select(func.count()).select_from(query.subquery()) if with_total else None
-    if include_all_pending:
-        # One statement gives complete pending counts and a bounded recent history.
-        recent = query.with_only_columns(job.id).where(~pending).order_by(
-            job.created_date.desc(), job.id.asc()).limit(limit).correlate(None)
-        query = query.where(or_(pending, job.id.in_(recent))).order_by(*ordering)
-    else:
-        query = query.order_by(*ordering).offset(offset).limit(limit)
+    included = [pending, job.state == ProcessingState.NEW]
+    if finished_within_seconds:
+        included.append(and_(
+            job.state.in_([ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR]),
+            job.finished_date >= datetime.now(timezone.utc) - timedelta(seconds=finished_within_seconds),
+        ))
+    matching = query.where(or_(*included)).cte('matching_processing_jobs')
+    columns = matching.c
+    pending = columns.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
+    page = select(matching).order_by(
+        case((columns.state == ProcessingState.PROCESSING, 0),
+             (columns.state == ProcessingState.QUEUED, 1), else_=2),
+        case((pending, columns.created_date), else_=None).asc().nulls_last(),
+        case((~pending, columns.created_date), else_=None).desc().nulls_last(),
+        columns.id.asc(),
+    ).offset(offset)
+    if limit is not None:
+        page = page.limit(limit)
+    page = page.subquery('processing_page')
+    totals = select(func.count().label('total'), *[
+        func.count().filter(columns.state == state).label(state.value)
+        for state in [ProcessingState.PROCESSING, ProcessingState.QUEUED, ProcessingState.NEW]
+    ]).select_from(matching).subquery('processing_totals')
+    # A single snapshot supplies totals even when the requested page is empty.
+    statement = select(totals, page).select_from(totals.outerjoin(page, true()))
+    # Preserve the page ordering after the outer join.
+    pending_page = page.c.state.in_([ProcessingState.PROCESSING, ProcessingState.QUEUED])
+    statement = statement.order_by(
+        case((page.c.state == ProcessingState.PROCESSING, 0),
+             (page.c.state == ProcessingState.QUEUED, 1), else_=2),
+        case((pending_page, page.c.created_date), else_=None).asc().nulls_last(),
+        case((~pending_page, page.c.created_date), else_=None).desc().nulls_last(), page.c.id.asc(),
+    )
     try:
         async with db.begin():
-            total = (await db.execute(count_query)).scalar_one() if with_total else None
-            rows = (await db.execute(query)).mappings().all()
-            return (rows, total) if with_total else rows
+            rows = (await db.execute(statement)).mappings().all()
+            total = rows[0]['total']
+            counts = {state: rows[0][state] for state in ['processing', 'queued', 'new']}
+            jobs = [{name: row[name] for name in page.c.keys()} for row in rows if row['id'] is not None]
+            return jobs, total, counts
     except exc.SQLAlchemyError as error:
         raise DBError('Failed reading recent monitoring jobs.') from error
 
@@ -154,21 +153,3 @@ async def get_workers(*, db: AsyncSession):
             return (await db.execute(query)).mappings().all()
     except exc.SQLAlchemyError as error:
         raise DBError('Failed reading worker activity.') from error
-
-
-async def get_principals(*, db: AsyncSession):
-    try:
-        async with db.begin():
-            return (await db.execute(select(model.Key.id, model.Key.label, model.Key.role).order_by(
-                model.Key.label))).mappings().all()
-    except exc.SQLAlchemyError as error:
-        raise DBError('Failed reading monitoring filter options.') from error
-
-
-async def get_engines(*, db: AsyncSession):
-    try:
-        async with db.begin():
-            return (await db.execute(select(model.Engine.name, model.Engine.version).order_by(
-                model.Engine.name, model.Engine.version))).mappings().all()
-    except exc.SQLAlchemyError as error:
-        raise DBError('Failed reading monitoring engine options.') from error

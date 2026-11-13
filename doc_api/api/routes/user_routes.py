@@ -10,7 +10,7 @@ import fastapi
 
 import cv2
 import numpy as np
-from fastapi import Depends, UploadFile, status, Request, Body
+from fastapi import Depends, UploadFile, status, Request, Body, Query
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_api.api.guards.general_guards import challenge_job_exists, require_job_record
 from doc_api.api.routes import root_router
-from doc_api.api.routes.general_routes import prepare_job_data, result_availability, displayed_engine_settings, \
+from doc_api.api.routes.general_routes import prepare_job_data, displayed_engine_settings, \
     mask_job_logs
 from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.file_saving import file_save_transaction
@@ -28,7 +28,6 @@ from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.schemas import base_objects
-from doc_api.api.schemas.base_objects import JobWithEngine
 from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, DocAPIResponseOK, make_responses, \
     validate_ok_response, DocAPIClientErrorException, GENERAL_RESPONSES
 from doc_api.api.validators.alto_validator import validate_alto_basic
@@ -174,26 +173,41 @@ async def post_job(
 
 
 GET_JOBS_RESPONSES = {
+    AppCode.API_KEY_FORBIDDEN_FOR_JOB: GENERAL_RESPONSES[AppCode.API_KEY_FORBIDDEN_FOR_JOB],
     AppCode.JOBS_RETRIEVED: {
         "status": fastapi.status.HTTP_200_OK,
         "description": "Jobs retrieved successfully.",
-        "model": DocAPIResponseOK[List[base_objects.JobWithEngine]],
-        "model_data": List[base_objects.JobWithEngine],
+        "model": DocAPIResponseOK[List[base_objects.JobListItem]],
+        "model_data": List[base_objects.JobListItem],
         "detail": "Jobs retrieved successfully.",
     }
 }
 @root_router.get(
     "/v1/jobs",
     summary="Get Jobs",
-    response_model=DocAPIResponseOK[List[base_objects.JobWithEngine]],
+    response_model=DocAPIResponseOK[List[base_objects.JobListItem]],
     tags=["User"],
     openapi_extra={"x-order": 102},
-    description="Retrieve all jobs associated with the authenticated API key.",
+    description="Retrieve all jobs associated with the authenticated API key. Logs and engine settings are omitted "
+                "by default; set include_logs=true and/or include_engine_settings=true to include them, "
+                "subject to role and masking rules. Owner and worker labels are returned only to admins and managers. "
+                "Individual job detail responses retain logs and engine settings. "
+                "Filters combine before pagination. owner_label is admin/manager only; other roles always see their own jobs. "
+                "Missing timestamps sort last, with job UUID breaking ties. Omit limit for all matching jobs. "
+                "X-Total-Count is the filtered total; X-Has-More indicates further results.",
     responses=make_responses(GET_JOBS_RESPONSES))
 async def get_jobs(
         request: Request,
-        state: Optional[base_objects.ProcessingState] = None,
+        owner_label: Optional[str] = Query(None, description="Admin/manager only: filter by exact owner API key label."),
+        worker_label: Optional[str] = Query(None, description="Filter by exact assigned worker API key label."),
+        limit: Optional[int] = Query(None, ge=1, description="Maximum returned jobs; omitted means unrestricted."),
+        offset: int = Query(0, ge=0, description="Number of matching jobs to skip."),
+        sort_by: base_objects.JobSort = 'created_date',
+        sort_order: base_objects.SortOrder = 'desc',
+        state: Optional[list[base_objects.ProcessingState]] = Query(None, description="Filter by one or more states; repeat state for multiple values."),
         result_available: Optional[bool] = None,
+        include_logs: bool = Query(False, description="Include processing and final logs, subject to role and masking rules."),
+        include_engine_settings: bool = Query(False, description="Include engine settings, subject to existing masking rules."),
         engine_name: Optional[str] = None,
         engine_version: Optional[str] = None,
         from_created_date: Optional[base_objects.UTCDateTime] = None,
@@ -203,58 +217,68 @@ async def get_jobs(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.READONLY, base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
-    if key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
-        db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
-            db=db,
-            state=state,
-            engine_name=engine_name,
-            engine_version=engine_version,
-            from_created_date=from_created_date,
-            from_started_date=from_started_date,
-            from_last_change=from_last_change,
-            from_finished_date=from_finished_date
+    management = key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}
+    if owner_label is not None and not management:
+        raise DocAPIClientErrorException(
+            status=status.HTTP_403_FORBIDDEN,
+            code=AppCode.API_KEY_FORBIDDEN_FOR_JOB,
+            detail="Only admins and managers may filter by owner_label.",
         )
-    else:
-        db_jobs_with_engines, code = await general_cruds.get_jobs_with_engines(
-            db=db,
-            key_id=key.id,
-            state=state,
-            engine_name=engine_name,
-            engine_version=engine_version,
-            from_created_date=from_created_date,
-            from_started_date=from_started_date,
-            from_last_change=from_last_change,
-            from_finished_date=from_finished_date
-        )
+    db_jobs_with_engines, total, code = await general_cruds.get_jobs_with_engines(
+        db=db, key_id=None if management else key.id,
+        owner_label=owner_label, worker_label=worker_label,
+        limit=limit, offset=offset, result_available=result_available,
+        sort_by=sort_by, sort_order=sort_order,
+        include_logs=include_logs, include_engine_settings=include_engine_settings,
+        state=state, engine_name=engine_name, engine_version=engine_version,
+        from_created_date=from_created_date, from_started_date=from_started_date,
+        from_last_change=from_last_change, from_finished_date=from_finished_date,
+    )
 
     if code != AppCode.JOBS_RETRIEVED:
         raise RouteInvariantError(code=code, request=request)
 
-    availability = await result_availability([job for job, _ in db_jobs_with_engines])
+    excluded_fields = set()
+    if not include_logs:
+        excluded_fields.update(base_objects.JOB_LOG_FIELDS)
+    if not include_engine_settings:
+        excluded_fields.add('engine_settings')
+    if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
+        excluded_fields.update({"owner_label", "worker_label"})
     data = []
-    for db_job, db_engine in db_jobs_with_engines:
-        if result_available is not None and availability[db_job.id] != result_available:
-            continue
+    for db_job, engine_name, engine_version, owner_label, worker_label in db_jobs_with_engines:
+        # Avoid accessing deferred log columns when logs were not requested.
+        source = db_job if include_logs else {
+            name: getattr(db_job, name) for name in base_objects.JobProper.model_fields
+            if name not in base_objects.JOB_LOG_FIELDS and hasattr(model.Job, name)
+        }
         job = base_objects.JobProper.model_validate(
-            db_job, context={"all_attempt_logs": key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}}).model_dump()
+            source, context={"all_attempt_logs": key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}}).model_dump()
         mask_job_logs(job, key)
-        job["result_available"] = availability[db_job.id]
+        job["result_available"] = (db_job.state == base_objects.ProcessingState.DONE
+                                   and db_job.results_deleted_at is None)
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
             job.pop("artifacts_deleted_at", None)
         if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}:
             job.pop("log", None)
             job.pop("final_log", None)
-        data.append(JobWithEngine(**job,
-                                  engine_name=db_engine.name if db_engine else None,
-                                  engine_version=db_engine.version if db_engine else None,
-                                  engine_settings=displayed_engine_settings(db_job, key)))
+        data.append(base_objects.JobListItem(**job,
+                                  owner_label=owner_label,
+                                  worker_label=worker_label,
+                                  engine_name=engine_name,
+                                  engine_version=engine_version,
+                                  engine_settings=displayed_engine_settings(db_job, key) if include_engine_settings else None))
 
-    return validate_ok_response(DocAPIResponseOK[List[base_objects.JobWithEngine]](
+    response = validate_ok_response(DocAPIResponseOK[List[base_objects.JobListItem]](
         status=status.HTTP_200_OK,
         code=AppCode.JOBS_RETRIEVED,
         detail=GET_JOBS_RESPONSES[AppCode.JOBS_RETRIEVED]["detail"],
         data=data
-    ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
+    ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY},
+        exclude={"data": {"__all__": excluded_fields}} if excluded_fields else None)
+    response.headers['X-Total-Count'] = str(total)
+    response.headers['X-Has-More'] = str(offset + len(data) < total).lower()
+    return response
 
 
 PUT_IMAGE_RESPONSES = {

@@ -135,10 +135,13 @@ async def update_key(*, db: AsyncSession, label: str, key_update: base_objects.K
         raise DBError("Failed updating key") from e
 
 
-async def get_keys(*, db: AsyncSession) -> Tuple[List[model.Key], AppCode]:
+async def get_keys(*, db: AsyncSession, role: Optional[base_objects.KeyRole] = None) -> Tuple[List[model.Key], AppCode]:
     try:
         async with db.begin():
-            result = await db.scalars(select(model.Key).order_by(model.Key.label))
+            query = select(model.Key).order_by(model.Key.label)
+            if role is not None:
+                query = query.where(model.Key.role == role)
+            result = await db.scalars(query)
             return list(result.all()), AppCode.KEYS_RETRIEVED
 
     except exc.SQLAlchemyError as e:

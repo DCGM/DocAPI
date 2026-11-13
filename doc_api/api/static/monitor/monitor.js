@@ -3,9 +3,25 @@ const byId = id => document.getElementById(id);
 const apiBase = new URL('./v1/monitor/', window.location.href);
 const keyStorage = 'docapi.monitor.apiKey';
 const sectionOrderStorage = 'docapi.monitor.sectionOrder';
+const selectStorage = 'docapi.monitor.selects';
+let savedSelects = {};
+try {
+  const saved = JSON.parse(localStorage.getItem(selectStorage) || '{}');
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) savedSelects = saved;
+} catch {}
+function restoreSelect(id) {
+  const select = byId(id), value = savedSelects[id];
+  if (typeof value === 'string' && [...select.options].some(option => option.value === value))
+    select.value = value;
+}
+function saveSelects() {
+  savedSelects = Object.fromEntries([...document.querySelectorAll('select[id]')].map(select => [select.id, select.value]));
+  try { localStorage.setItem(selectStorage, JSON.stringify(savedSelects)); } catch {}
+}
 let key = '', timer, controller, generation = 0, interval = 5000, stats;
 let engines = [];
 let jobOrder = 'desc', jobPage = 0, jobsHasMore = false;
+let processingPage = 0, processingHasMore = false;
 const logTabs = [['log_user', 'User processing'], ['log', 'Processing'],
   ['final_log_user', 'User final'], ['final_log', 'Final']];
 const logTabStorage = 'docapi.monitor.logTab';
@@ -15,12 +31,31 @@ try {
   if (logTabs.some(([field]) => field === saved)) selectedLogTab = saved;
 } catch {}
 const openLogs = new Map();
+const viewStorage = 'docapi.monitor.view';
+const rememberedLogs = new Map();
+try {
+  const saved = JSON.parse(localStorage.getItem(viewStorage) || '{}');
+  if (saved?.order === 'asc') jobOrder = 'asc';
+  if (Number.isSafeInteger(saved?.page) && saved.page >= 0) jobPage = saved.page;
+  if (Number.isSafeInteger(saved?.processingPage) && saved.processingPage >= 0) processingPage = saved.processingPage;
+  if (Array.isArray(saved?.logs)) for (const entry of saved.logs) {
+    if (Array.isArray(entry) && /^(jobs|recent-jobs)-[0-9a-f-]{36}$/.test(entry[0]) &&
+        logTabs.some(([field]) => field === entry[1])) rememberedLogs.set(entry[0], entry[1]);
+  }
+} catch {}
+function saveView() {
+  try {
+    localStorage.setItem(viewStorage, JSON.stringify({order: jobOrder, page: jobPage, processingPage, logs: [...rememberedLogs]}));
+  } catch {}
+}
 
 function closeLogs(id) {
   const viewer = openLogs.get(id);
   viewer?.controller.abort();
   viewer?.row.remove();
   openLogs.delete(id);
+  rememberedLogs.delete(id);
+  saveView();
 }
 async function refreshLogs(id, viewer) {
   if (viewer.loading || openLogs.get(id) !== viewer) return;
@@ -55,9 +90,11 @@ function logButton(tableId, jobId) {
     if (openLogs.has(id)) closeLogs(id);
     else {
       const row = node('tr', undefined, 'job-log-row'), cell = node('td');
-      cell.colSpan = 10;
-      const viewer = {row, jobId, controller: new AbortController(), tab: selectedLogTab};
+      cell.colSpan = button.closest('table').tHead.rows[0].cells.length;
+      const viewer = {row, jobId, controller: new AbortController(), tab: rememberedLogs.get(id) || selectedLogTab};
       openLogs.set(id, viewer);
+      rememberedLogs.set(id, viewer.tab);
+      saveView();
       const tabs = node('div', undefined, 'log-tabs'), content = node('pre', '', 'log-content');
       const panel = node('div'), empty = node('div', 'Loading logs…', 'muted');
       content.hidden = true;
@@ -91,6 +128,8 @@ function logButton(tableId, jobId) {
         }
         if (remember) {
           selectedLogTab = field;
+          rememberedLogs.set(id, field);
+          saveView();
           try { localStorage.setItem(logTabStorage, field); } catch {}
         }
       }
@@ -131,7 +170,7 @@ function updateJobOrder() {
   button.setAttribute('aria-label',
     `${label} order; switch to ${jobOrder === 'desc' ? 'ascending' : 'descending'}`);
   byId('job-order-note').textContent =
-    `${label} by ${byId('job-mode').selectedOptions[0].text.toLowerCase()} time. Missing timestamps appear last.`;
+    `${label} by finish time. Missing timestamps appear last.`;
 }
 function savedKey() {
   try { return localStorage.getItem(keyStorage) || ''; }
@@ -206,7 +245,7 @@ async function get(path, signal, paginated = false) {
   const response = await fetch(new URL(path, apiBase), {headers: {'X-API-Key': key}, signal, cache: 'no-store'});
   const payload = await response.json();
   if (!response.ok) throw Object.assign(new Error(payload.detail || `Request failed: HTTP ${response.status}`), {status: response.status});
-  return paginated ? {items: payload.data, total: Number(response.headers.get('X-Total-Count')), hasMore: response.headers.get('X-Has-More') === 'true'} : payload.data;
+  return paginated ? {items: payload.data.jobs ?? payload.data, totals: payload.data.totals, total: Number(response.headers.get('X-Total-Count')), hasMore: response.headers.get('X-Has-More') === 'true'} : payload.data;
 }
 function options(id, rows, all) {
   const select = byId(id), selected = select.value;
@@ -225,16 +264,10 @@ function setupSectionOrder() {
     } catch { return []; }
   }
   const savedOrder = [...new Set(savedList(sectionOrderStorage))];
-  // Upgrade the previous default while preserving custom arrangements.
-  if (savedOrder.join(',') === 'server,workers,recent-jobs,jobs,job-statistics,database') {
-    savedOrder.splice(savedOrder.indexOf('jobs'), 1);
-    savedOrder.splice(savedOrder.indexOf('job-statistics') + 1, 0, 'jobs');
-  }
-  if (savedOrder.includes('job-statistics') && !savedOrder.includes('jobs'))
-    savedOrder.splice(savedOrder.indexOf('job-statistics') + 1, 0, 'jobs');
-  if (savedOrder.join(',') === 'server,workers,recent-jobs,job-statistics,jobs,database') {
+  // Unknown section IDs (including the former Jobs section) are discarded.
+  if (['server,workers,recent-jobs,job-statistics,database',
+    'server,workers,recent-jobs,job-statistics,database,settings'].includes(savedOrder.join(',')))
     savedOrder.splice(1, 2, 'recent-jobs', 'workers');
-  }
   const order = [...new Set([...savedOrder, ...known.keys()])];
   dashboard.append(...order.map(id => known.get(id)));
   const collapsed = new Set(savedList(hiddenStorage));
@@ -295,7 +328,7 @@ function setupSectionOrder() {
         if (action === 'hide') {
           body.hidden = !body.hidden;
           updateButtons(); save();
-          if (section.dataset.section === 'jobs') refresh();
+          if (section.dataset.section === 'job-statistics') refresh();
           return;
         }
         const target = current[index + (action === 'up' ? -1 : 1)];
@@ -347,7 +380,11 @@ function addFilters(query, prefix = '') {
   for (const [id, parameter] of [['owner', 'owner_id'], ['worker', 'worker_id'],
     ['engine', 'engine_name'], ['engine-version', 'engine_version']]) {
     const value = byId(`${prefix}${id}`).value;
-    if (value) query.set(parameter, value);
+    if (value) {
+      const useLabel = prefix === 'job-' && ['owner', 'worker'].includes(id);
+      query.set(useLabel ? `${id}_label` : parameter,
+        useLabel ? byId(`${prefix}${id}`).selectedOptions[0].textContent : value);
+    }
   }
 }
 function renderStats() {
@@ -360,51 +397,70 @@ function renderStats() {
       node('strong', value(state)));
     return card;
   }));
-  const period = {'24h': '24 hours', '7d': '7 days', '1m': '30 days', all: 'All time'}[stats.period];
-  summary('job-statistics', [period, byId('metric').selectedOptions[0].text,
-    node('span', `Done ${value('done')}`, 'badge job-done'),
-    node('span', `Failed ${value('failed')}`, 'badge job-failed')]);
+  summary('job-statistics', [byId('job-period').selectedOptions[0].text,
+    byId('metric').selectedOptions[0].text,
+    node('span', `DONE ${value('done')}`, 'badge job-done'),
+    node('span', `FAILED ${value('failed')}`, 'badge job-failed')]);
 }
-function renderRecentJobs(jobs) {
+function renderRecentJobs(result) {
+  const {items: jobs, totals} = result;
+  const pages = Math.max(1, Math.ceil(result.total / Number(byId('recent-limit').value)));
+  if (processingPage >= pages) { processingPage = pages - 1; refresh(); return; }
+  byId('processing-page').textContent = `${processingPage + 1}/${pages}`;
+  byId('processing-page').setAttribute('aria-label', `Page ${processingPage + 1} of ${pages}`);
+  processingHasMore = result.hasMore;
+  byId('processing-previous').disabled = processingPage === 0;
+  byId('processing-next').disabled = !processingHasMore;
+  byId('processing-stats').replaceChildren(...['processing', 'queued', 'new'].map(state => {
+    const card = node('div', undefined, 'stat');
+    card.append(node('span', state.toUpperCase()),
+      node('strong', totals[state].toLocaleString()));
+    return card;
+  }));
   summary('recent-jobs', [
-    node('span', `${jobs.filter(job => job.state === 'processing').length} processing`, 'badge job-processing'),
-    node('span', `${jobs.filter(job => job.state === 'queued').length} queued`, 'badge job-queued')]);
+    node('span', `${totals.processing} PROCESSING`, 'badge job-processing'),
+    node('span', `${totals.queued} QUEUED`, 'badge job-queued'),
+    node('span', `${totals.new} NEW`, 'badge job-new')]);
   renderJobTable('recent-jobs', jobs, 'created_date', 'Created');
 }
 function renderJobs(jobs) {
   const pages = Math.max(1, Math.ceil(jobs.total / Number(byId('limit').value)));
   if (jobPage >= pages) { jobPage = pages - 1; refresh(); return; }
-  const mode = byId('job-mode');
-  const label = mode.selectedOptions[0].text;
-  byId('job-date-heading').textContent = label;
-  renderJobTable('jobs', jobs.items, mode.value, label);
+  renderJobTable('jobs', jobs.items, 'finished_date', 'Finished');
   byId('jobs-page').textContent = `${jobPage + 1}/${pages}`;
   byId('jobs-page').setAttribute('aria-label', `Page ${jobPage + 1} of ${pages}`);
   byId('jobs-previous').disabled = jobPage === 0;
   jobsHasMore = jobs.hasMore;
   byId('jobs-next').disabled = !jobsHasMore;
 }
+function jobRuntime(job) {
+  if (!job.started_date || (!job.finished_date && job.state !== 'processing')) return 'Unavailable';
+  const end = job.finished_date ? Date.parse(job.finished_date) : Date.now();
+  const seconds = (end - Date.parse(job.started_date)) / 1000;
+  return Number.isFinite(seconds) && seconds >= 0 ? duration(seconds) : 'Unavailable';
+}
 function renderJobTable(id, jobs, field, label) {
   const visible = new Set(jobs.map(job => `${id}-${job.id}`));
-  for (const entry of openLogs.keys()) if (entry.startsWith(`${id}-`) && !visible.has(entry)) closeLogs(entry);
+  for (const entry of rememberedLogs.keys()) if (entry.startsWith(`${id}-`) && !visible.has(entry)) closeLogs(entry);
   table(id, jobs.map(job => {
     const jobId = node('span', job.id.slice(0, 8));
     jobId.title = job.id;
-    return [jobId, date(job[field]), node('span', job.state.toUpperCase(), `badge job-${job.state}`), `${Math.round(job.progress * 100)}%`,
+    return [jobId, date(job[field]), jobRuntime(job), node('span', job.state.toUpperCase(), `badge job-${job.state}`), `${Math.round(job.progress * 100)}%`,
       job.image_count, job.owner_label, job.worker_label, job.engine_name, job.engine_version, logButton(id, job.id)];
   }),
-    ['Job', label, 'State', 'Progress', 'Images', 'Owner', 'Worker', 'Engine', 'Version', 'Logs']);
+    ['Job', label, 'Runtime', 'State', 'Progress', 'Images', 'Owner', 'Worker', 'Engine', 'Version', 'Logs']);
   [...byId(id).children].forEach((row, index) => {
     const viewer = openLogs.get(`${id}-${jobs[index]?.id}`);
     if (viewer) row.after(viewer.row);
+    else if (rememberedLogs.has(`${id}-${jobs[index]?.id}`)) row.querySelector('.job-logs-button').click();
   });
 }
 function render(info, totals, jobs, workers, database, recentJobs) {
   stats = totals;
   summary('server', [info.hostname, `Uptime ${duration(info.uptime_seconds)}`]);
   summary('workers', ['active', 'idle', 'off'].map(status => node('span',
-    `${workers.filter(worker => worker.status === status).length} ${status === 'off' ? 'gone' : status}`, `badge ${status}`)));
-  summary('database', [node('span', info.database_connected ? 'Connected' : 'Unavailable',
+    `${workers.filter(worker => worker.status === status).length} ${status === 'off' ? 'GONE' : status.toUpperCase()}`, `badge ${status}`)));
+  summary('database', [node('span', info.database_connected ? 'CONNECTED' : 'UNAVAILABLE',
     `badge ${info.database_connected ? 'active' : 'unavailable'}`), bytes(database.size_bytes), `${database.connections} connections`]);
   const fields = [
     ['Hostname', info.hostname], ['IP addresses', info.ip_addresses.join(', ') || 'Unavailable'],
@@ -415,46 +471,67 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   byId('info').replaceChildren(...fields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
   const dbFields = [
     ['Database', database.database_name], ['Size', bytes(database.size_bytes)],
-    ['Connections', database.connections], ['Active', database.active_connections], ['Idle', database.idle_connections],
-    ['Idle in transaction', database.idle_in_transaction_connections],
+    ['Connections', database.connections], ['ACTIVE', database.active_connections], ['IDLE', database.idle_connections],
+    ['IDLE IN TRANSACTION', database.idle_in_transaction_connections],
     ['Waiting on locks', database.lock_waiting_connections],
     ['Longest active query', database.longest_active_query_seconds === null ? 'None' : duration(database.longest_active_query_seconds)],
     ['Deadlocks', database.deadlocks], ['Statistics reset', database.stats_reset ? date(database.stats_reset) : 'Unavailable'],
   ];
   byId('database').replaceChildren(...dbFields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
   const databaseStatus = node('dd');
-  databaseStatus.append(node('span', info.database_connected ? 'Connected' : 'Unavailable',
+  databaseStatus.append(node('span', info.database_connected ? 'CONNECTED' : 'UNAVAILABLE',
     `badge ${info.database_connected ? 'active' : 'unavailable'}`));
   byId('database').prepend(node('dt', 'Status'), databaseStatus);
   renderStats();
-  if (jobs && !byId('section-jobs-body').hidden) renderJobs(jobs);
+  if (jobs && !byId('section-job-statistics-body').hidden) renderJobs(jobs);
   renderRecentJobs(recentJobs);
   table('workers', workers.map(worker => [worker.label, node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
     worker.processing_jobs, date(worker.last_used), worker.enabled ? 'Yes' : 'No']),
-    ['Worker key', 'Activity', 'Processing jobs', 'Last seen', 'Key enabled']);
-  byId('worker-note').textContent = `PROCESSING job → active. Otherwise, seen within ${info.worker_offline_after_seconds}s → idle; older or never seen → gone.`;
+    ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen', 'Key enabled']);
+  byId('worker-note').textContent = `PROCESSING job → ACTIVE. Otherwise, seen within ${info.worker_offline_after_seconds}s → IDLE; older or never seen → GONE.`;
   byId('updated').textContent = `Updated ${new Date().toLocaleTimeString(undefined, {hourCycle: 'h23'})} · refresh ${info.refresh_interval_seconds}s · pauses while this tab is hidden`;
   interval = info.refresh_interval_seconds * 1000;
   byId('dashboard').hidden = false;
   byId('sections-toggle').hidden = false;
 }
 async function refresh() {
+  saveView();
   clearTimeout(timer);
   if (!key || document.hidden) return;
   controller?.abort();
   controller = new AbortController();
   const signal = controller.signal, current = ++generation;
-  const query = new URLSearchParams({period: byId('period').value});
-  addFilters(query);
-  const jobQuery = new URLSearchParams({limit: byId('limit').value, mode: byId('job-mode').value, order: jobOrder, offset: jobPage * Number(byId('limit').value)});
-  addFilters(jobQuery, 'job-');
-  const recentQuery = new URLSearchParams({limit: byId('recent-limit').value});
+  const query = new URLSearchParams();
+  addFilters(query, 'job-');
+  for (const state of byId('job-state').value ? [byId('job-state').value] : ['done', 'failed'])
+    query.append('state', state);
+  const period = byId('job-period').value;
+  if (period) {
+    const from = new Date();
+    if (period === '1m') {
+      const day = from.getUTCDate();
+      from.setUTCDate(1);
+      from.setUTCMonth(from.getUTCMonth() - 1);
+      const lastDay = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0)).getUTCDate();
+      from.setUTCDate(Math.min(day, lastDay));
+    }
+    else from.setTime(from.getTime() - (period === '7d' ? 7 : 1) * 86400000);
+    query.set('from_finished_date', from.toISOString());
+  }
+  const jobQuery = new URLSearchParams(query);
+  jobQuery.set('limit', byId('limit').value);
+  jobQuery.set('offset', jobPage * Number(byId('limit').value));
+  jobQuery.set('sort_by', 'finished_date');
+  jobQuery.set('sort_order', jobOrder);
+  const recentQuery = new URLSearchParams({limit: byId('recent-limit').value, offset: processingPage * Number(byId('recent-limit').value), finished_within_seconds: byId('recent-finished-seconds').value});
   addFilters(recentQuery, 'recent-');
   byId('jobs-previous').disabled = true;
   byId('jobs-next').disabled = true;
+  byId('processing-previous').disabled = true;
+  byId('processing-next').disabled = true;
   try {
-    const values = await Promise.all([get('info', signal), get(`stats?${query}`, signal),
-      byId('section-jobs-body').hidden ? null : get(`jobs?${jobQuery}`, signal, true), get('workers', signal), get('database', signal), get(`recent-jobs?${recentQuery}`, signal)]);
+    const values = await Promise.all([get('info', signal), get(`jobs/statistics?${query}`, signal),
+      byId('section-job-statistics-body').hidden ? null : get(`../jobs?${jobQuery}`, signal, true), get('workers', signal), get('database', signal), get(`jobs/processing?${recentQuery}`, signal, true)]);
     if (current !== generation) return;
     render(...values);
     byId('message').textContent = '';
@@ -472,6 +549,8 @@ async function refresh() {
     if (current === generation) {
       byId('jobs-previous').disabled = jobPage === 0;
       byId('jobs-next').disabled = !jobsHasMore;
+      byId('processing-previous').disabled = processingPage === 0;
+      byId('processing-next').disabled = !processingHasMore;
     }
     if (current === generation && key && !document.hidden) timer = setTimeout(refresh, interval);
   }
@@ -482,14 +561,16 @@ async function connect(value) {
   controller?.abort(); controller = new AbortController();
   try {
     const [principals, engineOptions] = await Promise.all([
-      get('principals', controller.signal), get('engines', controller.signal)]);
+      get('../admin/keys', controller.signal), get('../engines', controller.signal)]);
     if (current !== generation) return;
     engines = engineOptions;
-    for (const prefix of ['', 'job-', 'recent-']) {
+    for (const prefix of ['job-', 'recent-']) {
       options(`${prefix}owner`, principals.filter(principal => ['user', 'manager', 'admin'].includes(principal.role)), 'All owners');
       options(`${prefix}worker`, principals.filter(principal => principal.role === 'worker'), 'All workers');
       options(`${prefix}engine`, [...new Set(engines.map(engine => engine.name))].map(name => ({id: name, label: name})), 'All engines');
+      for (const field of ['owner', 'worker', 'engine']) restoreSelect(`${prefix}${field}`);
       engineVersions(prefix);
+      restoreSelect(`${prefix}engine-version`);
     }
     const persisted = storeKey(key);
     byId('login').hidden = true; byId('logout').hidden = false;
@@ -512,26 +593,31 @@ byId('login').addEventListener('submit', event => {
 });
 function signOut() {
   for (const id of openLogs.keys()) closeLogs(id);
+  rememberedLogs.clear();
   const cleared = storeKey('');
-  key = ''; jobPage = 0; generation++; clearTimeout(timer); controller?.abort(); stats = undefined;
+  key = ''; jobPage = 0; processingPage = 0; generation++; clearTimeout(timer); controller?.abort(); stats = undefined;
+  saveView();
   byId('dashboard').hidden = true; byId('logout').hidden = true; byId('login').hidden = false;
   byId('sections-toggle').hidden = true;
   document.querySelectorAll('.section-summary').forEach(element => element.replaceChildren());
-  for (const id of ['info', 'database', 'stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
+  for (const id of ['info', 'database', 'stats', 'processing-stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
   if (!cleared) byId('message').textContent = 'Browser storage could not be cleared. Clear site data in your browser to remove the saved key.';
 }
 byId('logout').addEventListener('click', signOut);
 byId('layout').addEventListener('change', () => { document.body.dataset.layout = byId('layout').value; });
-for (const id of ['period', 'owner', 'worker', 'recent-limit', 'engine-version', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', refresh);
-for (const prefix of ['', 'job-', 'recent-']) byId(`${prefix}engine`).addEventListener('change', () => {
+for (const id of ['recent-limit', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
+for (const prefix of ['job-', 'recent-']) byId(`${prefix}engine`).addEventListener('change', () => {
   byId(`${prefix}engine-version`).value = '';
   engineVersions(prefix);
   if (prefix === 'job-') jobPage = 0;
+  else processingPage = 0;
   refresh();
 });
 byId('metric').addEventListener('change', renderStats);
-for (const id of ['limit', 'job-owner', 'job-worker', 'job-engine-version', 'job-mode'])
+for (const id of ['limit', 'job-owner', 'job-worker', 'job-engine-version', 'job-state', 'job-period'])
   byId(id).addEventListener('change', () => { jobPage = 0; updateJobOrder(); refresh(); });
+byId('processing-previous').addEventListener('click', () => { if (processingPage > 0) { processingPage--; refresh(); } });
+byId('processing-next').addEventListener('click', () => { if (processingHasMore) { processingPage++; refresh(); } });
 byId('jobs-previous').addEventListener('click', () => { if (jobPage > 0) { jobPage--; refresh(); } });
 byId('jobs-next').addEventListener('click', () => { jobPage++; refresh(); });
 byId('job-order').addEventListener('click', () => {
@@ -539,6 +625,11 @@ byId('job-order').addEventListener('click', () => {
   jobPage = 0;
   updateJobOrder();
   refresh();
+});
+for (const select of document.querySelectorAll('select[id]')) restoreSelect(select.id);
+document.body.dataset.layout = byId('layout').value;
+document.addEventListener('change', event => {
+  if (event.target.matches('select[id]')) saveSelects();
 });
 updateJobOrder();
 setupSectionOrder();

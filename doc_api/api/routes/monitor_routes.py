@@ -1,6 +1,6 @@
 """Monitoring presentation and authenticated JSON endpoints."""
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 import socket
@@ -17,7 +17,7 @@ from doc_api.api.cruds import monitor_cruds
 from doc_api.api.database import get_async_session
 from doc_api.api.presentation import commit_badge_html, version_badge_html
 from doc_api.api.routes import monitor_router, monitor_page_router
-from doc_api.api.schemas import monitor as schemas
+from doc_api.api.schemas import monitor as schemas, base_objects
 from doc_api.api.schemas.responses import AppCode, DocAPIResponseOK, make_responses, validate_ok_response
 from doc_api.config import config
 from doc_api.db import model
@@ -34,11 +34,9 @@ def _responses(payload, detail):
 
 INFO_RESPONSES = _responses(schemas.MonitorInfo, 'Server information retrieved successfully.')
 STATS_RESPONSES = _responses(schemas.MonitorStats, 'Job statistics retrieved successfully.')
-JOBS_RESPONSES = _responses(list[schemas.MonitorJob], 'Recent jobs retrieved successfully.')
+JOBS_RESPONSES = _responses(schemas.MonitorProcessing, 'Processing jobs retrieved successfully.')
 WORKERS_RESPONSES = _responses(list[schemas.MonitorWorker], 'Worker activity retrieved successfully.')
-PRINCIPALS_RESPONSES = _responses(list[schemas.MonitorPrincipal], 'Monitoring filter options retrieved successfully.')
 DATABASE_RESPONSES = _responses(schemas.MonitorDatabase, 'Database statistics retrieved successfully.')
-ENGINES_RESPONSES = _responses(list[schemas.MonitorEngine], 'Engine filter options retrieved successfully.')
 
 
 def _ok(data, responses):
@@ -107,23 +105,26 @@ async def get_database(key: model.Key = Depends(require_management_key),
     return _ok(schemas.MonitorDatabase(**data), DATABASE_RESPONSES)
 
 
-@monitor_router.get('/stats', summary='Get Job Statistics', tags=['Monitor'],
+@monitor_router.get('/jobs/statistics', summary='Get Job Statistics', tags=['Monitor'],
                     openapi_extra={'x-order': 401},
-                    description='Read DONE/FAILED job totals and total attempts regardless of outcome, including '
-                                'in-progress attempts. Released leases do not count. Windows use finished_date for '
-                                'DONE/FAILED/ERROR and last_change for other states; 1m means 30 days. '
-                                'All attempts of a matching job count in that window. Images count per attempt. '
-                                'Runtime spans first start to finish, including retry waits. '
+                    description='Aggregate every job matching the job-list filters except result availability, before pagination. '
+                                'No limit or ordering applies. Released leases do not count as attempts. '
+                                'Images count per attempt. Runtime spans first start to finish, including retry waits. '
                                 'Individual attempt times, runtimes and historical worker attribution are unavailable.',
                     response_model=DocAPIResponseOK[schemas.MonitorStats], responses=make_responses(STATS_RESPONSES))
-async def get_stats(period: schemas.MonitorPeriod = '24h', owner_id: UUID | None = None,
-                    worker_id: UUID | None = None, engine_name: str | None = None,
-                    engine_version: str | None = None, key: model.Key = Depends(require_management_key),
-                    db: AsyncSession = Depends(get_async_session)):
-    days = {'24h': 1, '7d': 7, '1m': 30}
-    since = None if period == 'all' else datetime.now(timezone.utc) - timedelta(days=days[period])
-    rows = await monitor_cruds.get_stats(db=db, since=since, owner_id=owner_id, worker_id=worker_id,
-                                         engine_name=engine_name, engine_version=engine_version)
+async def get_stats(owner_label: str | None = None, worker_label: str | None = None,
+                    state: list[base_objects.ProcessingState] | None = Query(None, description="Filter by one or more states; repeat state for multiple values."),
+                    engine_name: str | None = None, engine_version: str | None = None,
+                    from_created_date: base_objects.UTCDateTime | None = None,
+                    from_started_date: base_objects.UTCDateTime | None = None,
+                    from_finished_date: base_objects.UTCDateTime | None = None,
+                    from_last_change: base_objects.UTCDateTime | None = None,
+                    key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
+    rows = await monitor_cruds.get_stats(
+        db=db, owner_label=owner_label, worker_label=worker_label, state=state,
+        engine_name=engine_name, engine_version=engine_version,
+        from_created_date=from_created_date, from_started_date=from_started_date,
+        from_finished_date=from_finished_date, from_last_change=from_last_change)
     totals = {state: schemas.MonitorTotals(job_count=0, image_count=0, runtime_seconds=0 if state != 'attempts' else None)
               for state in ('done', 'failed', 'attempts')}
     for row in rows:
@@ -133,49 +134,35 @@ async def get_stats(period: schemas.MonitorPeriod = '24h', owner_id: UUID | None
                                                   runtime_seconds=row['runtime_seconds'])
         totals['attempts'].job_count += row['attempt_count']
         totals['attempts'].image_count += row['attempt_image_count']
-    return _ok(schemas.MonitorStats(period=period, **totals), STATS_RESPONSES)
+    return _ok(schemas.MonitorStats(**totals), STATS_RESPONSES)
 
 
-@monitor_router.get('/jobs', summary='Get Recent Jobs', tags=['Monitor'],
-                    openapi_extra={'x-order': 402},
-                    description='Read jobs with current state and progress. Priority mode shows PROCESSING first, '
-                                'then QUEUED (both oldest creation first), then other jobs newest creation first. '
-                                'Order applies only to timestamp modes; missing timestamps always appear last. '
-                                'Optional owner, latest assigned worker, engine and version filters apply before pagination. '
-                                'Offset skips matching jobs after sorting. X-Total-Count gives the filtered total; X-Has-More indicates another page.',
-                    response_model=DocAPIResponseOK[list[schemas.MonitorJob]], responses=make_responses(JOBS_RESPONSES))
-async def get_jobs(limit: Annotated[int, Query(ge=1, le=20)] = 10,
-                   mode: schemas.MonitorJobSort = 'priority', order: schemas.MonitorSortOrder = 'desc',
-                   offset: Annotated[int, Query(ge=0)] = 0,
-                   owner_id: UUID | None = None, worker_id: UUID | None = None,
-                   engine_name: str | None = None, engine_version: str | None = None,
-                   key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
-    rows, total = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset, mode=mode, order=order,
-                                              with_total=True,
-                                              owner_id=owner_id, worker_id=worker_id,
-                                              engine_name=engine_name, engine_version=engine_version)
-    response = _ok([schemas.MonitorJob(**row) for row in rows], JOBS_RESPONSES)
-    response.headers['X-Has-More'] = str(offset + limit < total).lower()
-    response.headers['X-Total-Count'] = str(total)
-    return response
-
-
-@monitor_router.get('/recent-jobs', summary='Get Recent Job Activity', tags=['Monitor'],
+@monitor_router.get('/jobs/processing', summary='Get Processing Activity', tags=['Monitor'],
                     openapi_extra={'x-order': 407},
-                    description='Read every PROCESSING and QUEUED job, oldest creation first within each group, '
-                                'followed by up to limit other jobs, newest creation first. '
-                                'The limit applies only to other jobs; pending jobs are never truncated. '
-                                'Optional owner, latest assigned worker, engine and version filters apply to all groups.',
-                    response_model=DocAPIResponseOK[list[schemas.MonitorJob]], responses=make_responses(JOBS_RESPONSES))
-async def get_recent_jobs(limit: Annotated[int, Query(ge=1, le=20)] = 10,
+                    description='List PROCESSING and QUEUED jobs oldest first within each group, followed by NEW and '
+                                'recent DONE, FAILED and ERROR jobs newest creation first. '
+                                'limit and offset apply to the whole list; omit limit for all matches. '
+                                'X-Total-Count and X-Has-More describe pagination. Body totals count all matching '
+                                'PROCESSING, QUEUED and NEW jobs before pagination. '
+                                'finished_within_seconds defaults to 60; zero disables finished-job retention. '
+                                'Owner, latest worker, engine and version filters apply before totals and pagination.',
+                    response_model=DocAPIResponseOK[schemas.MonitorProcessing], responses=make_responses(JOBS_RESPONSES))
+async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
+                          offset: Annotated[int, Query(ge=0)] = 0,
+                          finished_within_seconds: Annotated[int, Query(ge=0, le=86400)] = 60,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
                           engine_name: str | None = None, engine_version: str | None = None,
                           key: model.Key = Depends(require_management_key),
                           db: AsyncSession = Depends(get_async_session)):
-    rows = await monitor_cruds.get_recent_jobs(db=db, limit=limit, include_all_pending=True,
+    rows, total, totals = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset,
+                                              finished_within_seconds=finished_within_seconds,
                                               owner_id=owner_id, worker_id=worker_id,
                                               engine_name=engine_name, engine_version=engine_version)
-    return _ok([schemas.MonitorJob(**row) for row in rows], JOBS_RESPONSES)
+    response = _ok(schemas.MonitorProcessing(jobs=[schemas.MonitorJob(**row) for row in rows],
+                                            totals=schemas.MonitorProcessingTotals(**totals)), JOBS_RESPONSES)
+    response.headers['X-Total-Count'] = str(total)
+    response.headers['X-Has-More'] = str(offset + len(rows) < total).lower()
+    return response
 
 
 @monitor_router.get('/workers', summary='Get Worker Activity', tags=['Monitor'],
@@ -199,21 +186,3 @@ async def get_workers(key: model.Key = Depends(require_management_key), db: Asyn
             status = 'off'
         workers.append(schemas.MonitorWorker(**row, status=status))
     return _ok(workers, WORKERS_RESPONSES)
-
-
-@monitor_router.get('/principals', summary='Get Monitoring Filter Options', tags=['Monitor'],
-                    openapi_extra={'x-order': 404},
-                    description='Read key IDs, labels and roles for owner and worker statistics filters.',
-                    response_model=DocAPIResponseOK[list[schemas.MonitorPrincipal]], responses=make_responses(PRINCIPALS_RESPONSES))
-async def get_principals(key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
-    rows = await monitor_cruds.get_principals(db=db)
-    return _ok([schemas.MonitorPrincipal(**row) for row in rows], PRINCIPALS_RESPONSES)
-
-
-@monitor_router.get('/engines', summary='Get Monitoring Engine Options', tags=['Monitor'],
-                    openapi_extra={'x-order': 406},
-                    description='Read engine names and versions, including inactive engines, for statistics filters.',
-                    response_model=DocAPIResponseOK[list[schemas.MonitorEngine]], responses=make_responses(ENGINES_RESPONSES))
-async def get_engines(key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
-    rows = await monitor_cruds.get_engines(db=db)
-    return _ok([schemas.MonitorEngine(**row) for row in rows], ENGINES_RESPONSES)

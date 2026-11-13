@@ -366,7 +366,7 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
         job.log_user = {'0': f"old {OPENAI_KEY}", '1': f"using {OPENAI_KEY}"}
     responses = [await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)]
     if reader_role != "worker":
-        responses.append(await client.get("/v1/jobs", headers=reader_headers))
+        responses.append(await client.get("/v1/jobs", headers=reader_headers, params={"include_logs": True, "include_engine_settings": True}))
     for response in responses:
         assert response.status_code == 200, response.text
         data = response.json()["data"]
