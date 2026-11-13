@@ -315,9 +315,9 @@ class Config:
         # =============================================================================
 
         # Engine settings and job logs shown to user/readonly keys, logged
-        # exceptions and the emails chosen below are masked; admin and worker keys
-        # and stored data are not. false turns masking off, except for
-        # SECRET_MASKING_PARTIAL_KEYS.
+        # exceptions, access-log query strings and the emails chosen below are
+        # masked; admin and worker keys and stored data are not. false turns
+        # masking off, except for SECRET_MASKING_PARTIAL_KEYS.
         self.SECRET_MASKING = self._env_bool("SECRET_MASKING", True)
         # Keys whose names contain key, secret, token, password, passwd,
         # credential, auth, cookie, session or private are secret. Comma-separated
@@ -365,7 +365,8 @@ class Config:
                 }
             },
             # Masks the message and traceback of exception records these handlers
-            # write, third-party loggers included; other records are unchanged.
+            # write, third-party loggers included, and the query string of
+            # uvicorn access records; other records are unchanged.
             # Follows SECRET_MASKING.
             'filters': {
                 'mask_secrets': {

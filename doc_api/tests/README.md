@@ -812,7 +812,7 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 `doc_api.tools.secrets` masks values under secret-looking keys at any depth and
 known secret patterns in free text. User/readonly responses show masked engine
 settings and job logs; admin and worker responses keep the real values, for jobs
-and debugging. Logged exceptions are masked too. Masking happens in the server
+and debugging. Logged exceptions and access-log query strings are masked too. Masking happens in the server
 routes and checkers, not the shared schemas. Stored data is never changed.
 
 - `SECRET_MASKING` turns masking off.
@@ -827,7 +827,7 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] nested keys, subtrees and unchanged input. [`test_secret_masking.py::test_mask_secrets_in_struct_nested_keys_and_subtrees`](test_secret_masking.py).
 - [x] allowlist, empty by default. [`test_secret_masking.py::test_mask_secrets_in_struct_allowlist`](test_secret_masking.py).
 - [x] token shapes, URL credentials and key/value pairs in free text. [`test_secret_masking.py::test_mask_secrets_in_text_patterns`](test_secret_masking.py).
-- [x] DocAPI keys are recognized by the configured `KEY_PREFIX`. [`test_secret_masking.py::test_mask_secrets_in_text_uses_configured_key_prefix`](test_secret_masking.py).
+- [x] dotted names starting with `KEY_PREFIX` stay unmasked; labelled keys are masked. [`test_secret_masking.py::test_dotted_names_with_key_prefix_are_not_masked`](test_secret_masking.py).
 - [x] partial keys reveal the start and end of a value in structures. [`test_secret_masking.py::test_partial_keys_in_struct`](test_secret_masking.py).
 - [x] partial keys in free text. [`test_secret_masking.py::test_partial_keys_in_text`](test_secret_masking.py).
 - [x] partial keys apply with masking turned off. [`test_secret_masking.py::test_partial_keys_apply_with_masking_disabled`](test_secret_masking.py).
@@ -835,6 +835,7 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] optional high-entropy switch. [`test_secret_masking.py::test_mask_secrets_in_text_high_entropy_switch`](test_secret_masking.py).
 - [x] server log handlers carry the masking filter. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
 - [x] only exception records are masked, traceback included. [`test_secret_masking.py::test_logging_masks_only_exceptions`](test_secret_masking.py).
+- [x] access log query strings are masked; other access paths are not scanned. [`test_secret_masking.py::test_access_log_masks_query_string_keys`](test_secret_masking.py).
 - [x] unhandled errors mask the logged URL and the error mail. [`test_secret_masking.py::test_unhandled_error_masks_url_and_mail`](test_secret_masking.py).
 - [x] masking can be disabled. [`test_secret_masking.py::test_masking_can_be_disabled`](test_secret_masking.py).
 - [x] settings from the environment. [`test_secret_masking.py::test_masking_configuration`](test_secret_masking.py).

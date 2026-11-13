@@ -6,7 +6,7 @@ where it is displayed or logged.
 
     mask_secrets_in_struct({"vlm": {"api_key": "sk-..."}})  # {"vlm": {"api_key": "*****"}}
     mask_secrets_in_text("curl -H 'Authorization: Bearer abc...'")
-    handler.addFilter(SecretMaskingFilter())  # exceptions a handler writes
+    handler.addFilter(SecretMaskingFilter())  # exceptions and request query strings a handler writes
 
 Settings come from config: SECRET_MASKING turns masking off,
 SECRET_MASKING_ALLOWED_KEYS lists exact key names (case-insensitive, "-" read
@@ -25,8 +25,13 @@ values are masked fully.
 
 Masking errs on the side of hiding: a masked non-secret is a small loss, a
 leaked key is not.
+
+DocAPI keys ({KEY_PREFIX}.kid.secret) have no pattern of their own. DocAPI
+never logs a key; one reaches masked text only with a label, e.g. an X-API-Key
+header, an api_key query parameter or an "api_key" field, which the key/value
+rules cover. A bare pattern would also mask ordinary dotted names whenever
+KEY_PREFIX is a word used elsewhere, such as a package or host name.
 """
-import functools
 import logging
 import re
 from typing import Any, Iterable, Optional
@@ -107,11 +112,6 @@ _VALUE_PATTERNS = [
     re.compile(r"\b(?P<secret>eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"),
 ]
 
-
-@functools.lru_cache(maxsize=None)
-def _docapi_key_pattern(prefix: str) -> re.Pattern:
-    """DocAPI keys, {KEY_PREFIX}.kid.secret: the key id stays visible."""
-    return re.compile(rf"(?<![\w.-]){re.escape(prefix)}\.[A-Za-z0-9_-]+\.(?P<secret>[A-Za-z0-9_-]+)")
 
 # key=value, key: value, "key": "value" and 'key': 'value' inside text such as
 # logs, tracebacks, reprs and query strings. Group "key" is checked with
@@ -218,7 +218,7 @@ def mask_secrets_in_text(text: str, *, allowed_keys: Optional[Iterable[str]] = N
         text = _protect_partial_pairs(text, partial_keys, protected)
     if config.SECRET_MASKING:
         allowed_keys, mask_high_entropy = _settings(allowed_keys, mask_high_entropy)
-        for pattern in (*_VALUE_PATTERNS, _docapi_key_pattern(config.KEY_PREFIX)):
+        for pattern in _VALUE_PATTERNS:
             text = pattern.sub(_mask_group, text)
         text = _KEY_VALUE.sub(lambda m: _mask_key_value(m, allowed_keys), text)
         if mask_high_entropy:
@@ -271,14 +271,16 @@ def _mask_item(key: Any, item: Any, allowed_keys: frozenset, mask_high_entropy: 
 # --- Logging ------------------------------------------------------------------
 
 class SecretMaskingFilter(logging.Filter):
-    """Mask the message and traceback of exception records; never drops one.
+    """Mask exception records and access-log query strings; never drops a record.
 
-    DocAPI never logs secrets itself. What it cannot avoid is an exception
-    echoing what a client sent, e.g. a parsing or database error quoting the
-    request. Only records carrying an exception are therefore masked; all
-    other records pass unchanged. Attach it to a handler to cover records
-    propagated from third-party loggers too; the server attaches it to its
-    handlers in LOGGING_CONFIG. Settings default to the configured ones.
+    DocAPI never logs secrets itself. What it cannot avoid is a record echoing
+    what a client sent: an exception quoting the request, e.g. a parsing or
+    database error, and the access log line of a request whose query string
+    carries a key (?api_key=...). Exception records are masked in full; of an
+    access record only the path argument is masked, and only when it has a
+    query string. All other records pass unchanged. Attach it to a handler to
+    cover records propagated from third-party loggers too; the server attaches
+    it to its handlers in LOGGING_CONFIG. Settings default to the configured ones.
     """
 
     def __init__(self, name: str = "", *, allowed_keys: Optional[Iterable[str]] = None,
@@ -294,12 +296,32 @@ class SecretMaskingFilter(logging.Filter):
 
 _formatter = logging.Formatter()
 
+# Uvicorn's access record: '%s - "%s %s HTTP/%s" %d' with (client, method,
+# path with query string, HTTP version, status) as its arguments.
+ACCESS_LOGGER = "uvicorn.access"
+_ACCESS_PATH_ARG = 2
+
+
+def _mask_access_record(record: logging.LogRecord, settings: dict) -> logging.LogRecord:
+    """Mask the query string of an access record's path; skip paths without one."""
+    args = record.args
+    if isinstance(args, tuple) and len(args) > _ACCESS_PATH_ARG:
+        path = args[_ACCESS_PATH_ARG]
+        if isinstance(path, str) and "?" in path:
+            record.args = (*args[:_ACCESS_PATH_ARG], mask_secrets_in_text(path, **settings),
+                           *args[_ACCESS_PATH_ARG + 1:])
+    record._secrets_masked = True
+    return record
+
 
 def mask_record(record: logging.LogRecord, *, allowed_keys: Optional[Iterable[str]] = None,
                 mask_high_entropy: Optional[bool] = None) -> logging.LogRecord:
     if not (config.SECRET_MASKING or config.SECRET_MASKING_PARTIAL_KEYS) \
             or getattr(record, "_secrets_masked", False):
         return record
+    settings = dict(allowed_keys=allowed_keys, mask_high_entropy=mask_high_entropy)
+    if record.name == ACCESS_LOGGER and not record.exc_info:
+        return _mask_access_record(record, settings)
     if not record.exc_info and not record.exc_text:
         return record
     try:
@@ -307,7 +329,6 @@ def mask_record(record: logging.LogRecord, *, allowed_keys: Optional[Iterable[st
     except Exception:
         # Leave a malformed record to logging's own error reporting.
         return record
-    settings = dict(allowed_keys=allowed_keys, mask_high_entropy=mask_high_entropy)
     record.msg = mask_secrets_in_text(message, **settings)
     record.args = None
     if record.exc_info and not record.exc_text:
