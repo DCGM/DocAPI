@@ -169,8 +169,6 @@ function updateJobOrder() {
   button.title = `${label}; click to reverse`;
   button.setAttribute('aria-label',
     `${label} order; switch to ${jobOrder === 'desc' ? 'ascending' : 'descending'}`);
-  byId('job-order-note').textContent =
-    `${label} by finish time. Missing timestamps appear last.`;
 }
 function savedKey() {
   try { return localStorage.getItem(keyStorage) || ''; }
@@ -643,3 +641,11 @@ document.addEventListener('visibilitychange', () => {
 });
 const restoredKey = savedKey();
 if (restoredKey) connect(restoredKey);
+
+for (const button of document.querySelectorAll('.section-info-toggle')) {
+  button.addEventListener('click', () => {
+    const content = byId(button.getAttribute('aria-controls'));
+    content.hidden = !content.hidden;
+    button.setAttribute('aria-expanded', String(!content.hidden));
+  });
+}

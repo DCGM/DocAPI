@@ -36,7 +36,7 @@
   <p id="message" role="status" aria-live="polite"></p>
   <main id="dashboard" hidden>
     <p id="updated" class="muted"></p>
-    <section data-section="server"><h2>Server</h2><dl id="info"></dl><p class="muted">Hostname and IP addresses are detected in the API process environment (the container in Docker), unless explicitly overridden in monitoring settings.</p></section>
+    <section data-section="server"><h2>Server</h2><dl id="info"></dl><details class="section-info"><summary class="icon-button" aria-label="About Server" title="About Server"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p>Hostname and IP addresses come from the API process environment (inside the container in Docker), unless overridden in monitoring settings.</p></div></details></section>
     <section data-section="recent-jobs"><h2>Processing</h2>
       <div id="processing-stats" class="stats"></div>
       <div class="controls job-controls">
@@ -48,7 +48,6 @@
         <label>Engine <select id="recent-engine"><option value="">All engines</option></select></label>
         <label>Version <select id="recent-engine-version"><option value="">All versions</option></select></label>
       </div>
-      <p class="muted">PROCESSING jobs first, then QUEUED jobs: oldest creation first. NEW and recently finished jobs follow, newest creation first. Show limits the whole page. DONE, FAILED and ERROR jobs remain visible for the selected time after finishing, independently of the page size. Counters and header counts cover all matching jobs across every page. Runtime spans first start to finish, or the current time for PROCESSING jobs, including retry waits.</p>
       <div class="table-wrap"><table><thead><tr><th>Job</th><th>Created</th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="recent-jobs"></tbody></table></div>
       <div class="controls job-controls">
         <nav class="job-pagination" aria-label="Processing pages">
@@ -56,12 +55,14 @@
           <span id="processing-page" aria-live="polite" aria-label="Page 1 of 1">1/1</span>
           <button id="processing-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
         </nav>
-        <label>Show <select id="recent-limit"><option selected>5</option><option>10</option><option>20</option></select></label>
+        <label><select id="recent-limit" aria-label="Processing jobs per page"><option selected>5</option><option>10</option><option>20</option></select></label>
+        <button type="button" class="icon-button section-info-toggle" aria-label="About Processing" title="About Processing" aria-expanded="false" aria-controls="processing-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="processing-section-info" class="section-info-content muted" hidden><p>Order: oldest PROCESSING jobs, oldest QUEUED jobs, then newest NEW and recently finished jobs. All relevant also includes DONE, FAILED and ERROR jobs for the Keep finished interval.</p><p>Counters cover all matching pages. Runtime includes retry waits, from first start to finish (or now for PROCESSING jobs). Worker filters use the latest assignment.</p></div>
       </div>
+
     </section>
     <section data-section="workers"><h2>Workers</h2>
       <div class="table-wrap"><table><thead><tr><th>Worker key</th><th>Activity</th><th>PROCESSING jobs</th><th>Last seen</th><th>Key enabled</th></tr></thead><tbody id="workers"></tbody></table></div>
-      <p id="worker-note" class="muted"></p>
+      <details class="section-info"><summary class="icon-button" aria-label="About Workers" title="About Workers"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p id="worker-note"></p></div></details>
     </section>
     <section data-section="job-statistics"><h2>Finished</h2>
       <div id="stats" class="stats"></div>
@@ -69,14 +70,12 @@
         <label>Period <select id="job-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
         <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
         <label>State <select id="job-state"><option value="">All relevant</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
-        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label job-order-note" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
+        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
         <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
         <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
         <label>Version <select id="job-engine-version"><option value="">All versions</option></select></label>
       </div>
-      <p class="muted">Totals cover all matching jobs across every page. Attempts cover the matching DONE and FAILED jobs; released leases do not count. Images count per attempt. Runtime spans first start to finish, including retry waits. Period filters by finish time. Worker filters use the latest assignment.</p>
-      <p id="job-order-note" class="muted">Descending by finish time. Missing timestamps appear last.</p>
       <div class="table-wrap"><table><thead><tr><th>Job</th><th>Finished</th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
       <div class="controls job-controls">
         <nav class="job-pagination" aria-label="Jobs pages">
@@ -84,11 +83,13 @@
           <span id="jobs-page" aria-live="polite" aria-label="Page 1 of 1">1/1</span>
           <button id="jobs-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
         </nav>
-        <label>Show <select id="limit"><option>5</option><option selected>10</option><option>20</option></select></label>
+        <label><select id="limit" aria-label="Finished jobs per page"><option>5</option><option selected>10</option><option>20</option></select></label>
+        <button type="button" class="icon-button section-info-toggle" aria-label="About Finished" title="About Finished" aria-expanded="false" aria-controls="finished-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="finished-section-info" class="section-info-content muted" hidden><p>All relevant means DONE or FAILED. Period uses finish time; counters cover all matching pages.</p><p>Released leases do not count as attempts. Images in Attempts count once per attempt. Runtime includes retry waits, from first start to finish. Worker filters use the latest assignment. Missing finish times sort last.</p></div>
       </div>
+
     </section>
     <section data-section="database"><h2>Database</h2><dl id="database"></dl>
-      <p class="muted">Application database only. Client connections exclude this statistics request. ACTIVE queries include time waiting on locks. IDLE IN TRANSACTION includes aborted transactions. Deadlocks are counted since the statistics reset; the reset time may be unavailable. Activity details depend on PostgreSQL permissions and tracking settings.</p>
+      <details class="section-info"><summary class="icon-button" aria-label="About Database" title="About Database"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p>Application database only; connections exclude this statistics request. ACTIVE includes lock waits. IDLE IN TRANSACTION includes aborted transactions. Deadlocks count since the statistics reset. Available details depend on PostgreSQL permissions and tracking settings.</p></div></details>
     </section>
   <section id="section-settings" data-section="settings">
     <h2>Settings</h2>

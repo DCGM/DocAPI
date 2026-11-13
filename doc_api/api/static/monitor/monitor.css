@@ -102,3 +102,17 @@ body[data-layout="mobile"] .job-log-row > td::before { content: none; }
  body[data-layout="auto"] .job-log-row > td { display: block; }
  body[data-layout="auto"] .job-log-row > td::before { content: none; }
 }
+
+.section-info { margin-top: .8rem; }
+.section-info > summary { display: flex; margin-left: auto; width: 32px; height: 32px; min-height: 32px; list-style: none; cursor: pointer; }
+.section-info > summary::-webkit-details-marker { display: none; }
+.section-info[open] > summary { color: var(--accent); border-color: var(--accent); }
+.section-info-content { margin-top: .5rem; }
+.section-info-content p { margin: .5rem 0 0; }
+
+.job-controls:has(> .section-info-toggle) { display: grid; grid-template-columns: max-content max-content minmax(32px, 1fr); }
+.job-controls:has(> .section-info-toggle) > nav { grid-column: 1; grid-row: 1; }
+.job-controls:has(> .section-info-toggle) > label { grid-column: 2; grid-row: 1; }
+.job-controls > .section-info-toggle { grid-column: 3; grid-row: 1; justify-self: end; width: 32px; height: 32px; min-height: 32px; }
+.section-info-toggle[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.job-controls > .section-info-content { grid-column: 1 / -1; margin-top: 0; min-width: 0; }
