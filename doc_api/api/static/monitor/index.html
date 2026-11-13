@@ -38,30 +38,44 @@
     <p id="updated" class="muted"></p>
     <section data-section="server"><h2>Server</h2><dl id="info"></dl><p class="muted">Hostname and IP addresses are detected in the API process environment (the container in Docker), unless explicitly overridden in monitoring settings.</p></section>
     <section data-section="recent-jobs"><h2>Processing</h2>
-      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Created</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="recent-jobs"></tbody></table></div>
-      <div class="controls job-controls"><label>Recent history <select id="recent-limit"><option selected>5</option><option>10</option><option>20</option></select></label>
+      <div id="processing-stats" class="stats"></div>
+      <div class="controls job-controls">
+        <label>Keep finished <select id="recent-finished-seconds"><option value="0">Off</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
         <label class="principal-filter">Owner <select id="recent-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="recent-worker"><option value="">All workers</option></select></label>
         <label>Engine <select id="recent-engine"><option value="">All engines</option></select></label>
         <label>Version <select id="recent-engine-version"><option value="">All versions</option></select></label>
       </div>
-      <p class="muted">All processing jobs first, then all queued jobs: oldest creation first. Recent history limits only the other jobs, shown newest creation first. Filters apply to the table and header counts.</p>
+      <p class="muted">PROCESSING jobs first, then QUEUED jobs: oldest creation first. NEW and recently finished jobs follow, newest creation first. Show limits the whole page. DONE, FAILED and ERROR jobs remain visible for the selected time after finishing, independently of the page size. Counters and header counts cover all matching jobs across every page. Runtime spans first start to finish, or the current time for PROCESSING jobs, including retry waits.</p>
+      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Created</th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="recent-jobs"></tbody></table></div>
+      <div class="controls job-controls">
+        <nav class="job-pagination" aria-label="Processing pages">
+          <button id="processing-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
+          <span id="processing-page" aria-live="polite" aria-label="Page 1 of 1">1/1</span>
+          <button id="processing-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
+        </nav>
+        <label>Show <select id="recent-limit"><option selected>5</option><option>10</option><option>20</option></select></label>
+      </div>
     </section>
     <section data-section="workers"><h2>Workers</h2>
-      <div class="table-wrap"><table><thead><tr><th>Worker key</th><th>Activity</th><th>Processing jobs</th><th>Last seen</th><th>Key enabled</th></tr></thead><tbody id="workers"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Worker key</th><th>Activity</th><th>PROCESSING jobs</th><th>Last seen</th><th>Key enabled</th></tr></thead><tbody id="workers"></tbody></table></div>
       <p id="worker-note" class="muted"></p>
     </section>
-    <section data-section="job-statistics"><h2>Statistics</h2><div id="stats" class="stats"></div><div class="controls stats-filters">
-      <label>Period <select id="period"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="1m">30 days</option><option value="all">All time</option></select></label>
-      <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
-      <label class="principal-filter">Owner <select id="owner"><option value="">All owners</option></select></label>
-      <label class="principal-filter">Worker <select id="worker"><option value="">All workers</option></select></label>
-      <label>Engine <select id="engine"><option value="">All engines</option></select></label>
-      <label>Version <select id="engine-version"><option value="">All versions</option></select></label>
-    </div>
-    <p class="muted">Attempts include all outcomes and in-progress work; released leases do not count. Images count per attempt. Period uses completion/error time, or latest activity for other states, and includes all attempts of each matching job. Runtime is first start to finish, including retry waits; per-attempt runtime is unavailable. Worker filters use the latest assignment.</p></section>
-    <section data-section="jobs"><h2>Jobs</h2>
-      <div class="table-wrap"><table><thead><tr><th>Job</th><th id="job-date-heading">Created</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
+    <section data-section="job-statistics"><h2>Finished</h2>
+      <div id="stats" class="stats"></div>
+      <div class="controls job-controls">
+        <label>Period <select id="job-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
+        <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
+        <label>State <select id="job-state"><option value="">DONE or FAILED</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
+        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label job-order-note" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
+        <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
+        <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
+        <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
+        <label>Version <select id="job-engine-version"><option value="">All versions</option></select></label>
+      </div>
+      <p class="muted">Totals cover all matching jobs across every page. Attempts cover the matching DONE and FAILED jobs; released leases do not count. Images count per attempt. Runtime spans first start to finish, including retry waits. Period filters by finish time. Worker filters use the latest assignment.</p>
+      <p id="job-order-note" class="muted">Descending by finish time. Missing timestamps appear last.</p>
+      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Finished</th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
       <div class="controls job-controls">
         <nav class="job-pagination" aria-label="Jobs pages">
           <button id="jobs-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
@@ -69,17 +83,10 @@
           <button id="jobs-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
         </nav>
         <label>Show <select id="limit"><option>5</option><option selected>10</option><option>20</option></select></label>
-        <label>Mode <select id="job-mode"><option value="created_date">Created</option><option value="started_date">Started</option><option value="finished_date">Finished</option><option value="last_change">Last changed</option></select></label>
-        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label job-order-note" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
-        <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
-        <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
-        <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
-        <label>Version <select id="job-engine-version"><option value="">All versions</option></select></label>
       </div>
-      <p id="job-order-note" class="muted">Descending by created time. Missing timestamps appear last.</p>
     </section>
     <section data-section="database"><h2>Database</h2><dl id="database"></dl>
-      <p class="muted">Application database only. Client connections exclude this statistics request. Active queries include time waiting on locks. Idle in transaction includes aborted transactions. Deadlocks are counted since the statistics reset; the reset time may be unavailable. Activity details depend on PostgreSQL permissions and tracking settings.</p>
+      <p class="muted">Application database only. Client connections exclude this statistics request. ACTIVE queries include time waiting on locks. IDLE IN TRANSACTION includes aborted transactions. Deadlocks are counted since the statistics reset; the reset time may be unavailable. Activity details depend on PostgreSQL permissions and tracking settings.</p>
     </section>
   <section id="section-settings" data-section="settings">
     <h2>Settings</h2>

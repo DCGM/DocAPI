@@ -18,7 +18,7 @@ from functools import partial
 from pathlib import Path
 
 from uuid import UUID, uuid4
-from sqlalchemy import select
+from sqlalchemy import event, select
 from doc_api.config import config
 from doc_api.db import model
 from doc_api.api import main
@@ -234,7 +234,7 @@ async def test_post_job_500_unexpected_crud_result(client, user_headers, engine_
     if stage == "create":
         monkeypatch.setattr(user_routes.user_cruds, "create_job", AsyncMock(return_value=(None, code)))
     elif stage == "images":
-        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], code)))
+        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], 0, code)))
     else:
         engine = await engine_factory(active=True)
         payload["engine_name"] = engine.name
@@ -430,8 +430,240 @@ async def test_get_jobs_200(client, user_headers, reader_headers, reader_role, r
     assert {job["id"] for job in data} == created_ids
 
     for job in data:
-        assert ("log" in job) == (reader_role in {"admin", "manager"})
+        assert not base_objects.JOB_LOG_FIELDS.intersection(job)
         assert "artifacts_deleted_at" not in job or reader_role in {"admin", "manager"}
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
+@pytest.mark.parametrize("include_logs", [None, False, True], ids=["default", "without-logs", "with-logs"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_optional_logs(client, reader_headers, reader_role, job_factory,
+                                         db_sessions, isolated_database, include_logs):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    empty_id = await job_factory(ProcessingState.NEW)
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.previous_attempts = 1
+        for field in base_objects.JOB_LOG_FIELDS:
+            setattr(job, field, {'0': f'{field} earlier', '1': f'{field} current'})
+        empty_job = await db.get(model.Job, empty_id)
+        for field in base_objects.JOB_LOG_FIELDS:
+            setattr(empty_job, field, None)
+    queries = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith('SELECT jobs.'):
+            queries.append(statement.split('FROM', 1)[0])
+    engine = isolated_database.engine.sync_engine
+    event.listen(engine, 'before_cursor_execute', capture)
+    try:
+        response = await client.get('/v1/jobs', headers=reader_headers,
+                                    params={} if include_logs is None else {'include_logs': include_logs})
+    finally:
+        event.remove(engine, 'before_cursor_execute', capture)
+    assert response.status_code == 200, response.text
+    assert queries
+    for field in base_objects.JOB_LOG_FIELDS:
+        assert any(f'jobs.{field}' in query for query in queries) == bool(include_logs)
+    jobs = {job['id']: job for job in response.json()['data']}
+    assert set(jobs) == {str(job_id), str(empty_id)}
+    for field in base_objects.JOB_LOG_FIELDS:
+        if include_logs and (reader_role in {'admin', 'manager'} or field.endswith('_user')):
+            expected = (f'{field} earlier\n\n{field} current' if reader_role in {'admin', 'manager'}
+                        else f'{field} current')
+            assert jobs[str(job_id)][field] == expected
+            if reader_role in {'admin', 'manager'}:
+                assert jobs[str(empty_id)][field] is None
+            else:
+                assert field not in jobs[str(empty_id)]
+        else:
+            assert field not in jobs[str(job_id)]
+            assert field not in jobs[str(empty_id)]
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
+@pytest.mark.parametrize("include_settings", [None, False, True], ids=["default", "without-settings", "with-settings"])
+@pytest.mark.parametrize("include_logs", [False, True], ids=["without-logs", "with-logs"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_optional_engine_settings(client, reader_headers, reader_role, job_factory,
+                                                     db_sessions, isolated_database, include_settings, include_logs):
+    job_id = await job_factory(ProcessingState.PROCESSING)
+    empty_id = await job_factory(ProcessingState.NEW)
+    settings = {'model': 'test-model', 'password': 'test-secret'}
+    async with db_sessions.begin() as db:
+        job = await db.get(model.Job, job_id)
+        job.definition = {**job.definition, 'engine_settings': settings}
+    queries = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith('SELECT jobs.'):
+            queries.append(statement.split('FROM', 1)[0])
+    engine = isolated_database.engine.sync_engine
+    event.listen(engine, 'before_cursor_execute', capture)
+    try:
+        params = {'include_logs': include_logs}
+        if include_settings is not None:
+            params['include_engine_settings'] = include_settings
+        response = await client.get('/v1/jobs', headers=reader_headers, params=params)
+    finally:
+        event.remove(engine, 'before_cursor_execute', capture)
+    assert response.status_code == 200, response.text
+    assert queries
+    assert any('jobs.definition' in query for query in queries) == bool(include_settings)
+    jobs = {job['id']: job for job in response.json()['data']}
+    assert set(jobs) == {str(job_id), str(empty_id)}
+    job = jobs[str(job_id)]
+    assert ('log_user' in job) == include_logs
+    if include_settings:
+        assert job['engine_settings']['model'] == 'test-model'
+        assert job['engine_settings']['password'] == ('test-secret' if reader_role in {'admin', 'manager'} else '*****')
+        if reader_role in {'admin', 'manager'}:
+            assert jobs[str(empty_id)]['engine_settings'] is None
+        else:
+            assert 'engine_settings' not in jobs[str(empty_id)]
+    else:
+        assert all('engine_settings' not in job for job in jobs.values())
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_key_labels(client, reader_headers, reader_role, reader_owner,
+                                      worker_key, job_factory, db_sessions):
+    assigned_id = await job_factory(ProcessingState.PROCESSING)
+    unassigned_id = await job_factory(ProcessingState.QUEUED)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Job, unassigned_id)).worker_key_id = None
+    response = await client.get('/v1/jobs', headers=reader_headers)
+    assert response.status_code == 200, response.text
+    jobs = {job['id']: job for job in response.json()['data']}
+    assert set(jobs) == {str(assigned_id), str(unassigned_id)}
+    for job in jobs.values():
+        if reader_role in {'admin', 'manager'}:
+            assert job['owner_label'] == reader_owner.label
+            assert job['worker_label'] == (worker_key.label if job['id'] == str(assigned_id) else None)
+        else:
+            assert 'owner_label' not in job
+            assert 'worker_label' not in job
+    # Labels belong to the list schema; individual job responses stay unchanged.
+    detail = await client.get(f'/v1/jobs/{assigned_id}', headers=reader_headers)
+    assert detail.status_code == 200, detail.text
+    assert 'owner_label' not in detail.json()['data']
+    assert 'worker_label' not in detail.json()['data']
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
+@pytest.mark.asyncio
+async def test_get_jobs_200_pagination_and_principals(client, reader_headers, reader_role, reader_owner,
+                                                    worker_key, job_factory, db_sessions):
+    ids = [await job_factory(ProcessingState.PROCESSING) for _ in range(5)]
+    foreign_id = await job_factory(ProcessingState.PROCESSING, owner_key_id=worker_key.id)
+    now = datetime.now(timezone.utc)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Key, reader_owner.id)).label = 'Owner Žluťoučký %_&+'
+        (await db.get(model.Key, worker_key.id)).label = 'Worker Žluťoučký %_&+'
+        for index, job_id in enumerate(ids + [foreign_id]):
+            job = await db.get(model.Job, job_id)
+            job.created_date = now + timedelta(seconds=index)
+        (await db.get(model.Job, ids[0])).worker_key_id = None
+    params = {'worker_label': 'Worker Žluťoučký %_&+', 'state': 'processing', 'sort_order': 'asc', 'limit': 2}
+    if reader_role in {'admin', 'manager'}:
+        params['owner_label'] = 'Owner Žluťoučký %_&+'
+    for offset, expected, more in [(0, ids[1:3], True), (2, ids[3:5], False), (4, [], False), (20, [], False)]:
+        response = await client.get('/v1/jobs', headers=reader_headers, params={**params, 'offset': offset})
+        assert response.status_code == 200, response.text
+        assert [job['id'] for job in response.json()['data']] == list(map(str, expected))
+        assert response.headers['X-Total-Count'] == '4'
+        assert response.headers['X-Has-More'] == str(more).lower()
+    # No limit preserves unrestricted listing, including an offset without a limit.
+    response = await client.get('/v1/jobs', headers=reader_headers, params={'sort_order': 'asc', 'offset': 1})
+    expected = ids[1:] + ([foreign_id] if reader_role in {'admin', 'manager'} else [])
+    assert [job['id'] for job in response.json()['data']] == list(map(str, expected))
+    assert response.headers['X-Has-More'] == 'false'
+    response = await client.get('/v1/jobs', headers=reader_headers, params={'worker_label': 'nonexistent-worker'})
+    assert response.json()['data'] == []
+    assert response.headers['X-Total-Count'] == '0'
+    for label in ['Worker', 'worker Žluťoučký %_&+', 'Worker Žluťoučký %_&']:
+        response = await client.get('/v1/jobs', headers=reader_headers, params={'worker_label': label})
+        assert response.status_code == 200, response.text
+        assert response.json()['data'] == []
+    if reader_role in {'admin', 'manager'}:
+        response = await client.get('/v1/jobs', headers=reader_headers, params={'owner_label': 'nonexistent-owner'})
+        assert response.status_code == 200, response.text
+        assert response.json()['data'] == []
+        assert response.headers['X-Total-Count'] == '0'
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly"])
+@pytest.mark.asyncio
+async def test_get_jobs_403_owner_filter(client, reader_headers, reader_owner, worker_key, job_factory):
+    await job_factory(ProcessingState.NEW)
+    for owner_label in [reader_owner.label, worker_key.label]:
+        response = await client.get('/v1/jobs', headers=reader_headers, params={'owner_label': owner_label})
+        assert response.status_code == 403, response.text
+        assert response.json()['code'] == AppCode.API_KEY_FORBIDDEN_FOR_JOB.value
+
+
+@pytest.mark.parametrize("field", ['created_date', 'started_date', 'finished_date', 'last_change'])
+@pytest.mark.parametrize("order", ['asc', 'desc'])
+@pytest.mark.asyncio
+async def test_get_jobs_200_sorting(client, user_headers, job_factory, db_sessions, field, order):
+    ids = [await job_factory(ProcessingState.DONE) for _ in range(5)]
+    now = datetime.now(timezone.utc)
+    nullable = field in {'started_date', 'finished_date'}
+    async with db_sessions.begin() as db:
+        for index, job_id in enumerate(ids):
+            job = await db.get(model.Job, job_id)
+            setattr(job, field, None if nullable and index == 4 else now + timedelta(seconds=index // 2))
+    known = ids[:4] if nullable else ids
+    expected = sorted(known, key=lambda job_id: (ids.index(job_id) // 2, job_id), reverse=order == 'desc')
+    if nullable:
+        expected.append(ids[4])
+    collected = []
+    for offset in range(0, 5, 2):
+        response = await client.get('/v1/jobs', headers=user_headers,
+                                    params={'sort_by': field, 'sort_order': order, 'limit': 2, 'offset': offset})
+        assert response.status_code == 200, response.text
+        assert response.headers['X-Total-Count'] == '5'
+        collected.extend(UUID(job['id']) for job in response.json()['data'])
+    assert collected == expected
+
+
+@pytest.mark.parametrize("available", [False, True])
+@pytest.mark.asyncio
+async def test_get_jobs_200_result_filter_before_pagination(client, user_headers, job_factory,
+                                                          db_sessions, available):
+    ids = [await job_factory(ProcessingState.DONE) for _ in range(6)]
+    now = datetime.now(timezone.utc)
+    async with db_sessions.begin() as db:
+        for index, job_id in enumerate(ids):
+            job = await db.get(model.Job, job_id)
+            job.created_date = now + timedelta(seconds=index)
+            job.results_deleted_at = None if index % 2 == 0 else now
+    availability = {job_id: index % 2 == 0 for index, job_id in enumerate(ids)}
+    response = await client.get('/v1/jobs', headers=user_headers,
+                                params={'result_available': available, 'sort_order': 'asc', 'offset': 1, 'limit': 1})
+    assert response.status_code == 200, response.text
+    expected = [job_id for job_id in ids if availability[job_id] == available][1]
+    assert [job['id'] for job in response.json()['data']] == [str(expected)]
+    assert response.headers['X-Total-Count'] == '3'
+    assert response.headers['X-Has-More'] == 'true'
+
+
+@pytest.mark.parametrize("params", [
+    {'limit': 0}, {'limit': -1}, {'limit': 'bad'}, {'offset': -1}, {'offset': 'bad'},
+    {'sort_by': 'priority'}, {'sort_by': 'invalid'}, {'sort_order': 'invalid'},
+])
+@pytest.mark.asyncio
+async def test_get_jobs_422_listing_options(client, user_headers, params):
+    response = await client.get('/v1/jobs', headers=user_headers, params=params)
+    assert response.status_code == 422, response.text
+    assert response.json()['code'] == AppCode.REQUEST_VALIDATION_ERROR.value
+
+
+@pytest.mark.parametrize("parameter", ["include_logs", "include_engine_settings"])
+@pytest.mark.asyncio
+async def test_get_jobs_422_invalid_include_logs(client, user_headers, parameter):
+    response = await client.get('/v1/jobs', headers=user_headers, params={parameter: 'invalid'})
+    assert response.status_code == 422, response.text
+    assert response.json()['code'] == AppCode.REQUEST_VALIDATION_ERROR.value
 
 
 @pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
@@ -466,21 +698,23 @@ async def test_get_jobs_200_result_availability(client, reader_headers, reader_r
     jobs = jobs_with_output_availability
     response = await client.get("/v1/jobs", params={"result_available": True}, headers=reader_headers)
     assert response.status_code == 200, response.text
-    assert {job["id"] for job in response.json()["data"]} == ({str(jobs.active), str(jobs.other)} if reader_role in {"admin", "manager"} else {str(jobs.active)})
+    assert {job["id"] for job in response.json()["data"]} == ({str(jobs.active), str(jobs.other), str(jobs.missing)} if reader_role in {"admin", "manager"} else {str(jobs.active), str(jobs.missing)})
     response = await client.get("/v1/jobs", params={"result_available": False}, headers=reader_headers)
     assert response.status_code == 200, response.text
     data = {job["id"]: job for job in response.json()["data"]}
-    assert set(data) == {str(jobs.deleted), str(jobs.processing), str(jobs.missing)}
+    assert set(data) == {str(jobs.deleted), str(jobs.processing)}
     deleted = data[str(jobs.deleted)]
     assert deleted["state"] == "done"
     assert deleted["results_deleted_at"] is not None
     assert deleted["inputs_deleted_at"] is not None
     assert ("artifacts_deleted_at" in deleted) == (reader_role in {"admin", "manager"})
-    # Missing legacy files are unavailable even without a deletion timestamp.
-    if reader_role in {"admin", "manager"}:
-        assert data[str(jobs.missing)]["results_deleted_at"] is None
-    else:
-        assert "results_deleted_at" not in data[str(jobs.missing)]
+    # A DONE job with no removal timestamp is available even without a ZIP.
+    response = await client.get(f"/v1/jobs/{jobs.missing}", headers=reader_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["result_available"] is True
+    response = await client.get("/v1/jobs", headers=reader_headers)
+    missing = next(job for job in response.json()["data"] if job["id"] == str(jobs.missing))
+    assert missing["result_available"] is True
 
 
 @pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
@@ -574,7 +808,7 @@ async def test_get_jobs_200_combined_date_filters(client, reader_headers, job_fa
         ("version", {"engine_id": other_version.id}),
         ("engine", {"engine_id": other_engine.id}),
         ("no_engine", {"engine_id": None}),
-        ("no_result", {}),
+        ("no_result", {"results_deleted_at": when}),
     ]
     ids = {}
     for name, changes in cases:
@@ -584,8 +818,6 @@ async def test_get_jobs_200_combined_date_filters(client, reader_headers, job_fa
             job = await db.get(model.Job, job_id)
             for field, value in {**dict.fromkeys(fields, when), "engine_id": engine.id, **changes}.items():
                 setattr(job, field, value)
-        if name != "no_result":
-            (Path(config.RESULTS_DIR) / f"{job_id}.zip").write_bytes(VALID_ZIP)
 
     response = await client.get("/v1/jobs", headers=reader_headers, params={
         **{f"from_{field}": when.isoformat() for field in fields},
@@ -633,6 +865,22 @@ async def test_get_jobs_200_state_filter(client, reader_headers, job_factory, st
 
 @pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
 @pytest.mark.asyncio
+async def test_get_jobs_200_multiple_states(client, reader_headers, job_factory):
+    ids = {state: await job_factory(state) for state in ProcessingState}
+    response = await client.get('/v1/jobs', headers=reader_headers,
+                                params={'state': ['done', 'failed', 'done'], 'limit': 1})
+    assert response.status_code == 200, response.text
+    assert response.headers['X-Total-Count'] == '2'
+    assert response.json()['data'][0]['state'] in {'done', 'failed'}
+    response = await client.get('/v1/jobs', headers=reader_headers, params={'state': ['done', 'failed']})
+    assert {job['id'] for job in response.json()['data']} == {
+        str(ids[ProcessingState.DONE]), str(ids[ProcessingState.FAILED])}
+    response = await client.get('/v1/jobs', headers=reader_headers, params={'state': ['done', 'invalid']})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("reader_role", ["user", "readonly", "admin", "manager"])
+@pytest.mark.asyncio
 async def test_get_jobs_200_engine_filter_combination(client, reader_headers, job_factory, engine_factory, db_sessions):
     first = await engine_factory(name="A", version="1")
     second = await engine_factory(name="A", version="2")
@@ -653,7 +901,7 @@ async def test_get_jobs_200_engine_filter_combination(client, reader_headers, jo
 @pytest.mark.asyncio
 async def test_get_jobs_500_unexpected_crud_result(client, reader_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
-    monkeypatch.setattr(user_routes.general_cruds, "get_jobs_with_engines", AsyncMock(return_value=([], code)))
+    monkeypatch.setattr(user_routes.general_cruds, "get_jobs_with_engines", AsyncMock(return_value=([], 0, code)))
     response = await client.get("/v1/jobs", headers=reader_headers)
     assert_route_invariant(response, invariant_errors, code)
 
@@ -668,7 +916,8 @@ async def test_get_jobs_200_manager_visibility(client, manager_headers, job_fact
         job.artifacts_deleted_at = datetime.now(timezone.utc)
         job.definition = {**job.definition, "engine_settings": {"password": "original-value"}}
     for path in (f"/v1/jobs/{job_id}", "/v1/jobs"):
-        response = await client.get(path, headers=manager_headers)
+        response = await client.get(path, headers=manager_headers,
+                                    params={"include_logs": True} if path == "/v1/jobs" else {})
         assert response.status_code == 200, response.text
         data = response.json()["data"]
         job = data[0] if isinstance(data, list) else data
@@ -809,7 +1058,7 @@ async def test_get_job_500_unexpected_crud_result(client, reader_headers, job_fa
             return job, code
         monkeypatch.setattr(general_routes.general_cruds, "get_job", unexpected)
     elif stage == "images":
-        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], code)))
+        monkeypatch.setattr(general_routes.general_cruds, "get_job_images", AsyncMock(return_value=([], 0, code)))
     else:
         engine = await engine_factory()
         async with db_sessions.begin() as db:
@@ -3811,7 +4060,7 @@ async def test_get_engines_422_invalid_filter(client, user_headers):
 @pytest.mark.asyncio
 async def test_get_engines_500_unexpected_crud_result(client, reader_headers, monkeypatch, invariant_errors):
     code = AppCode.API_KEY_VALID
-    monkeypatch.setattr(general_routes.general_cruds, "get_engines", AsyncMock(return_value=([], code)))
+    monkeypatch.setattr(general_routes.general_cruds, "get_engines", AsyncMock(return_value=([], 0, code)))
     response = await client.get("/v1/engines", headers=reader_headers)
     assert_route_invariant(response, invariant_errors, code)
 
@@ -3996,7 +4245,7 @@ async def test_get_job_200_attempt_logs(client, reader_headers, reader_role, job
         if latest is not None:
             job.log_user['10'] = latest
     detail = await client.get(f"/v1/jobs/{job_id}", headers=reader_headers)
-    listing = await client.get("/v1/jobs", headers=reader_headers)
+    listing = await client.get("/v1/jobs", headers=reader_headers, params={"include_logs": True})
     assert detail.status_code == listing.status_code == 200
     listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
     expected = "old public\n\nmiddle public" + ("\n\n" + latest if latest is not None else "") if reader_role in {"admin", "manager"} else latest
@@ -4021,7 +4270,8 @@ async def test_get_job_200_final_reports(client, reader_headers, reader_role, jo
         if latest is not None:
             job.final_log_user['10'] = latest
     for url in (f'/v1/jobs/{job_id}', '/v1/jobs'):
-        response = await client.get(url, headers=reader_headers)
+        response = await client.get(url, headers=reader_headers,
+                                    params={'include_logs': True} if url == '/v1/jobs' else {})
         assert response.status_code == 200, response.text
         data = response.json()['data']
         if url == '/v1/jobs':

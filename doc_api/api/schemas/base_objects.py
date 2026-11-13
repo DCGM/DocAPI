@@ -1,11 +1,14 @@
 import enum
 from datetime import datetime, timedelta, timezone
-from typing import Optional, get_origin, Union, get_args, List, Any, Annotated
+from typing import Optional, get_origin, Union, get_args, List, Any, Annotated, Literal
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
 
 from doc_api.config import config
+
+JobSort = Literal['created_date', 'started_date', 'finished_date', 'last_change']
+SortOrder = Literal['asc', 'desc']
 
 
 def normalize_utc_datetime(value: datetime) -> datetime:
@@ -122,6 +125,9 @@ class ImageUpdate(BaseModel):
         examples=["d41d8cd98f00b204e9800998ecf8427e"],
         description="MD5 hash of the image file for integrity verification."
     )
+
+
+JOB_LOG_FIELDS = frozenset({'log', 'log_user', 'final_log', 'final_log_user'})
 
 
 class JobProper(BaseModel):
@@ -246,7 +252,7 @@ class JobProper(BaseModel):
         None, description="Admin only: UTC time artifact cleanup removed the ZIP or detected its absence."
     )
     result_available: bool = Field(
-        False, description="Whether the job is done and its result ZIP currently exists."
+        False, description="Whether the job is DONE and results_deleted_at is unset; files are not checked."
     )
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
@@ -268,6 +274,11 @@ class JobWithEngine(JobProper):
         examples=[{"param1": "value1", "param2": 42}],
         description="JSON settings/configuration of the engine assigned to this job."
     )
+
+
+class JobListItem(JobWithEngine):
+    owner_label: Optional[str] = Field(None, description="Admin/manager only: label of the job owner's API key.")
+    worker_label: Optional[str] = Field(None, description="Admin/manager only: label of the assigned worker's API key, or null if unassigned.")
 
 
 class Job(JobWithEngine):

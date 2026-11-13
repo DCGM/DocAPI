@@ -170,7 +170,42 @@ own-job listing and access to known jobs belonging to other owners.
 - [x] post job 201 input links metadata requirement. [`test_user.py::test_post_job_201_input_links_metadata_requirement`](test_user.py).
 - [x] post job 201 preserves input link. [`test_user.py::test_post_job_201_preserves_input_link`](test_user.py).
 
-#### GET /v1/jobs - 200, 422
+#### GET /v1/jobs - 200, 403, 422
+
+Filters combine before pagination. `owner_label` (admin/manager only) and `worker_label`
+filter exact, case-sensitive API key labels; users and readonly keys remain scoped to their own jobs.
+`limit` defaults to unrestricted and `offset` to 0. `sort_by` accepts
+`created_date` (default), `started_date`, `finished_date`, or `last_change`;
+`sort_order` accepts `desc` (default) or `asc`. Missing timestamps sort last,
+with UUID breaking ties in the selected direction. `X-Total-Count` reports the
+filtered total and `X-Has-More` indicates more results. Result availability means DONE with no `results_deleted_at` timestamp; the filter
+is applied in SQL before pagination, without checking files.
+
+- [x] **200** — owner/worker filters, role scoping, pagination, empty pages and response headers. [`test_user.py::test_get_jobs_200_pagination_and_principals`](test_user.py).
+- [x] **403** — owner filtering restricted to admins/managers. [`test_user.py::test_get_jobs_403_owner_filter`](test_user.py).
+- [x] **200** — all timestamp sort modes/directions, nulls last and stable UUID ties across pages. [`test_user.py::test_get_jobs_200_sorting`](test_user.py).
+- [x] **200** — repeated state filters combine states before pagination. [`test_user.py::test_get_jobs_200_multiple_states`](test_user.py).
+- [x] **200** — result availability filtering precedes pagination and total counting. [`test_user.py::test_get_jobs_200_result_filter_before_pagination`](test_user.py).
+- [x] **422** — invalid pagination, sorting options. [`test_user.py::test_get_jobs_422_listing_options`](test_user.py).
+
+Owner and worker key labels are included only for admins and managers; an unassigned worker has a null label.
+
+- [x] **200** — key labels visible only to admins/managers, including unassigned workers. [`test_user.py::test_get_jobs_200_key_labels`](test_user.py).
+
+Logs are omitted by default (including null log fields) and their database columns
+are not loaded. Set `include_logs=true` to return permitted processing and final
+logs with the existing role, attempt-history, and secret-masking rules. Single-job
+detail responses retain their existing log behavior.
+
+Engine settings are also omitted by default. Set `include_engine_settings=true`
+to include them with existing masking rules. The two inclusion flags work
+independently. When engine settings are omitted, the query skips the job definition
+column containing them. Single-job detail responses keep their engine settings.
+
+- [x] **200** — optional engine settings, independent log inclusion, masked secrets, null settings, and database projection. [`test_user.py::test_get_jobs_200_optional_engine_settings`](test_user.py).
+
+- [x] **200** — optional logs, null values, role visibility, and database projection. [`test_user.py::test_get_jobs_200_optional_logs`](test_user.py).
+- [x] **422** — invalid log/settings inclusion flags. [`test_user.py::test_get_jobs_422_invalid_include_logs`](test_user.py).
 
 Date-filter tests cover inclusive boundaries for all four date fields, UTC and
 positive/negative offsets, naive UTC values, and nullable start/finish dates.
@@ -500,6 +535,8 @@ authentication are checked independently of documentation visibility.
 #### GET /v1/admin/keys - 200
 
 - [x] **200** — default case; `KEYS_RETRIEVED`. [`test_admin.py::test_get_keys_200`](test_admin.py).
+- [x] **200** — optional role filter for every role, admin and manager access, including empty matches. [`test_admin.py::test_get_keys_200_role_filter`](test_admin.py).
+- [x] **422** — invalid, uppercase or empty role rejected. [`test_admin.py::test_get_keys_422_role_filter`](test_admin.py).
 
 #### POST /v1/admin/keys - 201, 409, 422
 
@@ -1480,20 +1517,26 @@ local storage until sign-out or authentication rejection.
 No frontend build, CDN, additional Python dependency or database migration is
 required. The responsive layout supports automatic, desktop and mobile modes.
 
-The Monitor Swagger section contains `/v1/monitor/info`, `/stats`, `/jobs`,
-`/recent-jobs`, `/workers`, `/principals`, `/engines` and `/database`. Routes authenticate and validate inputs;
+The Monitor Swagger section contains `/v1/monitor/info`, `/jobs/statistics`,
+`/jobs/processing`, `/workers` and `/database`. Filter options reuse the existing
+`/v1/admin/keys` and `/v1/engines` endpoints, including inactive keys and engines for management keys.
+Routes authenticate and validate inputs;
 `monitor_cruds.py` performs read-only queries without authentication decisions.
 Summary queries exclude job definitions, logs and credentials. Processing shows all
 PROCESSING jobs followed by all QUEUED jobs, oldest creation first in each group,
-then the newest other jobs (five by default; selectable up to twenty). Jobs supports
-server-side pagination and timestamp sorting, with total counts in response headers.
-Processing, Statistics and Jobs each have independent owner, worker, engine and
-version filters. Worker keys are excluded from owner options.
+then NEW and recently finished jobs, newest creation first. The limit applies to the whole list, with standard limit/offset pagination (omit limit for all matching jobs). The response contains jobs plus PROCESSING/QUEUED/NEW totals across all matching records, and X-Total-Count/X-Has-More headers, from one database snapshot. DONE, FAILED and ERROR jobs also remain visible for a configurable finish-time window (60 seconds by default; zero disables it), independently of the page size. The browser provides a persistent Keep finished selector. Jobs uses
+the standard `/v1/jobs` endpoint with label filters and supports server-side pagination and timestamp sorting, with total counts in response headers.
+Finished combines totals above a paginated jobs table. Both requests share owner/worker label,
+engine/version, multiple states and inclusive date filters. The default state selection is DONE and FAILED;
+the selector can narrow it to either state. Period offers 24h (default), 7d, one calendar month or all time,
+translated to from_finished_date by the browser. Totals cover every matching job regardless of the selected
+page or sort order. The table sorts by finish time and shows finish timestamps and elapsed runtime.
+Runtime spans first start to finish, including retry waits; missing or reversed timestamps show Unavailable.
+Processing retains independent filters. Worker keys are excluded from owner options.
 
-The default section order is Server, Processing, Workers, Statistics, Jobs,
-Database, Settings. Every section supports moving and collapsing; browser local
+The default section order is Server, Processing, Workers, Finished, Database, Settings. Every section supports moving and collapsing; browser local
 storage retains its position and collapsed state. Collapsed headers retain useful
-summaries. Jobs has no header summary and skips automatic requests while collapsed.
+summaries. When Finished is collapsed, aggregates continue to refresh the header; the jobs table and its logs skip automatic requests.
 Settings contains the layout selector. Mobile uses a header drawer for links and
 sign-out, while the global collapse/expand control stays in the header.
 
@@ -1519,16 +1562,18 @@ The separate Monitoring configuration section defines:
   the deployer must explicitly supply and maintain outer host information if
   desired. These settings do not affect networking, binding, or public URLs.
 
-Statistics use rolling 24-hour, 7-day, 30-day or all-time windows. DONE/FAILED/ERROR
-jobs use `finished_date`; other states use `last_change`. DONE/FAILED totals count
-jobs, retained `image_count` and elapsed first-start-to-finish time, including retry
-waits. Missing or reversed timestamps do not contribute runtime. Attempts count all
-outcomes and in-progress attempts, excluding released leases; image estimates
-multiply the job's image count by attempts. No per-attempt runtime or historical
-worker attribution is available. Worker filtering uses the latest recorded assignment.
-By default, hostname, addresses and uptime refer to the serving API process/environment,
-including the container when deployed with Docker. Only hostname and addresses can
-be overridden through the monitoring settings above; uptime remains process uptime.
+Statistics aggregate every matching job before pagination using the standard jobs filters except result availability.
+The four date lower bounds are inclusive and normalize timestamps to UTC; there is no
+separate backend period parameter. Aggregate and table queries use the same filter selection.
+Both endpoints accept repeated state parameters, for example state=done&state=failed.
+Result availability uses DONE state and an unset results removal timestamp, without checking files; its filter is available only on the standard jobs endpoint.
+DONE/FAILED totals count jobs, retained image counts and elapsed first-start-to-finish
+time, including retry waits. Missing or reversed timestamps do not contribute runtime.
+Attempts count all outcomes and in-progress attempts, excluding released leases;
+image estimates multiply the job's image count by attempts. Worker filtering uses
+the latest assignment; per-attempt runtime and historical attribution are unavailable.
+Hostname, addresses and uptime refer to the serving API process/environment by default.
+Only hostname and addresses can be overridden; uptime remains process uptime.
 
 The Database section reads PostgreSQL's existing statistics in one SQL
 statement per refresh: database size, client connection counts by state, longest
@@ -1557,14 +1602,15 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_get_monitor_database_200_idle`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_database_200_lock_wait`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200`](test_monitor.py).
+- [x] Statistics match the standard jobs filters, including result files and pagination independence. [`test_monitor.py::test_get_monitor_stats_matches_jobs`](test_monitor.py).
+- [x] Matching OpenAPI filter contracts. [`test_monitor.py::test_get_monitor_stats_filter_contract`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_filters`](test_monitor.py).
 - [x] [`test_monitor.py::test_monitor_attempts_exclude_released_leases`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_engine_filters`](test_monitor.py).
-- [x] [`test_monitor.py::test_get_monitor_jobs_200_limit_and_refresh`](test_monitor.py).
-- [x] [`test_monitor.py::test_get_monitor_jobs_priority`](test_monitor.py).
-- [x] [`test_monitor.py::test_jobs_pagination`](test_monitor.py).
+- [x] [`test_monitor.py::test_jobs_list_200_limit_and_refresh`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_jobs_removed`](test_monitor.py).
 - [x] [`test_monitor.py::test_recent_activity_includes_all_pending`](test_monitor.py).
-- [x] [`test_monitor.py::test_get_monitor_jobs_timestamp_order`](test_monitor.py).
+- [x] [`test_monitor.py::test_processing_finished_grace_period`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_jobs_owner_worker_filters`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_200_activity`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_excludes_management_assignments`](test_monitor.py).
@@ -1576,7 +1622,7 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_monitor_configuration_matches_env`](test_monitor.py).
 - [x] [`test_monitor.py::test_monitor_identity_configuration`](test_monitor.py).
 - [x] [`test_monitor.py::test_monitor_ip_configuration_invalid`](test_monitor.py).
-- [x] [`test_monitor.py::test_get_monitor_stats_200_month_window`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_finished_date_filter`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_unavailable_runtime`](test_monitor.py).
 - [x] [`test_presentation.py::test_monitor_commit_badge`](test_presentation.py).
 - [x] [`test_presentation.py::test_monitor_version_release_link`](test_presentation.py).

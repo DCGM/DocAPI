@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from types import NoneType
@@ -214,18 +213,6 @@ async def get_job(
     ), exclude_none=key.role in {base_objects.KeyRole.USER, base_objects.KeyRole.READONLY})
 
 
-async def result_availability(jobs):
-    """Check actual files, including jobs completed before deletion tracking existed."""
-    def check():
-        return {
-            job.id: job.state == base_objects.ProcessingState.DONE
-            and os.path.isfile(os.path.join(config.RESULTS_DIR, f"{job.id}.zip"))
-            for job in jobs
-        }
-
-    return await asyncio.to_thread(check)
-
-
 # Roles that read engine settings and job logs unmasked.
 UNMASKED_ROLES = {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER, base_objects.KeyRole.WORKER}
 
@@ -255,7 +242,8 @@ async def prepare_job_data(*, db_job: model.Job, db_images: List[model.Image], k
     job = base_objects.JobProper.model_validate(
         db_job, context={"all_attempt_logs": key.role in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}}).model_dump()
     mask_job_logs(job, key)
-    job["result_available"] = (await result_availability([db_job]))[db_job.id]
+    job["result_available"] = (db_job.state == base_objects.ProcessingState.DONE
+                               and db_job.results_deleted_at is None)
     if key.role not in {base_objects.KeyRole.ADMIN, base_objects.KeyRole.MANAGER}:
         job.pop("artifacts_deleted_at", None)
     images = [base_objects.Image.model_validate(img).model_dump() for img in db_images]

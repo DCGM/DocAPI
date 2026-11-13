@@ -60,6 +60,26 @@ async def test_get_keys_200(client, management_headers, dummy, management_role):
         assert "active" in item
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', list(base_objects.KeyRole))
+async def test_get_keys_200_role_filter(client, management_headers, role):
+    unfiltered = await client.get('/v1/admin/keys', headers=management_headers)
+    response = await client.get('/v1/admin/keys', params={'role': role.value}, headers=management_headers)
+    assert response.status_code == 200, response.text
+    rows = response.json()['data']
+    assert all(item['role'] == role.value for item in rows)
+    assert [item['id'] for item in rows] == [
+        item['id'] for item in unfiltered.json()['data'] if item['role'] == role.value]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role', ['invalid', 'WORKER', ''])
+async def test_get_keys_422_role_filter(client, management_headers, role):
+    response = await client.get('/v1/admin/keys', params={'role': role}, headers=management_headers)
+    assert response.status_code == 422, response.text
+    assert response.json()['code'] == 'REQUEST_VALIDATION_ERROR'
+
+
 
 @pytest.mark.asyncio
 async def test_get_keys_500_unexpected_crud_result(client, management_headers, monkeypatch, invariant_errors):
