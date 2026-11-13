@@ -4,7 +4,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -353,8 +353,48 @@ async def test_internal_error_subject_template(monkeypatch, template, expected):
     monkeypatch.setattr(main, 'internal_mail_logger', mail_logger)
     request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
     response = await main.unhandled(request, RuntimeError('test error'))
+    await asyncio.gather(*main.error_mail_tasks)
     assert response.status_code == 500
     assert mail_logger.critical.call_args.kwargs['extra']['subject'] == expected
+
+
+@pytest.mark.asyncio
+async def test_internal_error_mail_does_not_hold_the_event_loop(monkeypatch):
+    import threading
+    from doc_api.api import main
+    monkeypatch.setattr(config, 'INTERNAL_MAIL_SERVER', 'smtp.invalid')
+    release, sent = threading.Event(), []
+
+    def slow_smtp(body, extra):
+        release.wait(5)
+        sent.append(extra['subject'])
+    monkeypatch.setattr(main, 'internal_mail_logger', Mock(critical=slow_smtp))
+    request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
+    response = await main.unhandled(request, RuntimeError('test error'))
+    # The 500 is ready and the loop keeps serving while SMTP is still busy.
+    assert response.status_code == 500
+    await asyncio.sleep(0.05)
+    assert not sent and len(main.error_mail_tasks) == 1
+    release.set()
+    await asyncio.gather(*main.error_mail_tasks)
+    assert len(sent) == 1 and not main.error_mail_tasks
+
+
+@pytest.mark.asyncio
+async def test_internal_error_mail_flood_limit_applies_in_background(monkeypatch):
+    from doc_api.api import main
+    from doc_api.tools.mail.mail_logger import MailLogger
+    sender = Mock()
+    mail_logger = MailLogger(logger_name=f'doc_api.tests.error_mail.{uuid4().hex}', sender=sender, flood_level=2)
+    monkeypatch.setattr(config, 'INTERNAL_MAIL_SERVER', 'smtp.invalid')
+    monkeypatch.setattr(main, 'internal_mail_logger', mail_logger.logger)
+    request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
+    for _ in range(5):
+        await main.unhandled(request, RuntimeError('test error'))
+    await asyncio.gather(*main.error_mail_tasks)
+    # Two alerts and one notice that further ones are not mailed this hour.
+    subjects = [call.args[0] for call in sender.send_message.call_args_list]
+    assert len(subjects) == 3 and subjects[-1].endswith('FLOODED')
 
 
 @pytest.mark.asyncio
@@ -402,29 +442,44 @@ async def test_sparse_final_reports_use_current_attempt(job_factory, db_sessions
 
 @pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
 def test_job_mail_passes_smtp_security_and_username(job_mail_outbox, monkeypatch, channel):
-    sender_factory = Mock()
-    monkeypatch.setattr(job_mail, "MailSender", sender_factory)
+    sender = Mock()
+    mail_sender = Mock(return_value=sender)
+    monkeypatch.setattr(config, "mail_sender", mail_sender)
+    job_mail.send_final_report(job_mail.JobMail(channel, ("one@example.com",), "subject", "report"))
+    mail_sender.assert_called_once_with(channel)
+    sender.send.assert_called_once_with("subject", "report", ["one@example.com"])
+
+
+@pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
+def test_mail_sender_per_channel(monkeypatch, channel):
+    monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", "smtp.example.com")
+    monkeypatch.setattr(config, f"{channel}_MAIL_SENDER_MAIL", "server@example.com")
+    monkeypatch.setattr(config, f"{channel}_MAIL_PORT", 587)
     monkeypatch.setattr(config, f"{channel}_MAIL_SECURITY", "starttls")
     monkeypatch.setattr(config, f"{channel}_MAIL_USERNAME", "smtp-user")
     monkeypatch.setattr(config, f"{channel}_MAIL_TIMEOUT_SECONDS", 12.5)
-    job_mail.send_final_report(job_mail.JobMail(channel, ("one@example.com",), "subject", "report"))
-    assert sender_factory.call_args.kwargs["security"] == "starttls"
-    assert sender_factory.call_args.kwargs["username"] == "smtp-user"
-    assert sender_factory.call_args.kwargs["timeout"] == 12.5
-    sender_factory.return_value.send.assert_called_once()
+    monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
+    sender = config.mail_sender(channel)
+    assert (sender.server, sender.port, sender.sender_mail, sender.security, sender.username, sender.timeout) == \
+           ("smtp.example.com", 587, "server@example.com", "starttls", "smtp-user", 12.5)
+    assert list(sender.receiver_mails) == (["admin@example.com"] if channel == "INTERNAL" else [])
+    # A channel without a server or a sender address has no sender.
+    monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", None)
+    assert config.mail_sender(channel) is None
+    with pytest.raises(ValueError):
+        config.mail_sender("OTHER")
 
 
-def test_mail_logger_passes_smtp_security_and_username(monkeypatch):
+def test_mail_logger_uses_the_internal_sender_and_flood_level(monkeypatch):
     from doc_api.api import main
-    factory = Mock()
+    factory, sender = Mock(), Mock()
     monkeypatch.setattr(main, "MailLogger", factory)
-    monkeypatch.setattr(config, "INTERNAL_MAIL_SECURITY", "starttls")
-    monkeypatch.setattr(config, "INTERNAL_MAIL_USERNAME", "smtp-user")
-    monkeypatch.setattr(config, "INTERNAL_MAIL_TIMEOUT_SECONDS", 12.5)
+    monkeypatch.setattr(config, "mail_sender", Mock(return_value=sender))
+    monkeypatch.setattr(config, "INTERNAL_MAIL_FLOOD_LEVEL", 7)
     main.internal_mail_logger_from_config()
-    assert factory.call_args.kwargs["security"] == "starttls"
-    assert factory.call_args.kwargs["username"] == "smtp-user"
-    assert factory.call_args.kwargs["timeout"] == 12.5
+    config.mail_sender.assert_called_once_with("INTERNAL")
+    assert factory.call_args.kwargs["sender"] is sender
+    assert factory.call_args.kwargs["flood_level"] == 7
 
 
 @pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])

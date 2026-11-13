@@ -18,7 +18,6 @@ from doc_api.api.database import open_session
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import config
 from doc_api.db import model
-from doc_api.tools.mail.mail_sender import MailSender
 from doc_api.tools.secrets import mask_secrets_in_text
 
 logger = logging.getLogger(__name__)
@@ -103,16 +102,11 @@ def send_final_report(mail: JobMail) -> bool | None:
     if not recipients:
         return
     try:
-        sender = MailSender(
-            server=getattr(config, f"{mail.channel}_MAIL_SERVER"),
-            sender_mail=getattr(config, f"{mail.channel}_MAIL_SENDER_MAIL"),
-            port=getattr(config, f"{mail.channel}_MAIL_PORT"),
-            sender_name=getattr(config, f"{mail.channel}_MAIL_SENDER_NAME"),
-            password=getattr(config, f"{mail.channel}_MAIL_PASSWORD"),
-            username=getattr(config, f"{mail.channel}_MAIL_USERNAME"),
-            security=getattr(config, f"{mail.channel}_MAIL_SECURITY"),
-            timeout=getattr(config, f"{mail.channel}_MAIL_TIMEOUT_SECONDS"),
-        )
+        sender = config.mail_sender(mail.channel)
+        if sender is None:
+            logger.error("Job notification %r not sent: the %s mail channel is not configured",
+                         mail.subject, mail.channel)
+            return False
         # Workers are expected to write reports fit to send; masking is opt-in
         # per channel, SECRET_MASKING_INTERNAL_MAIL / SECRET_MASKING_EXTERNAL_MAIL.
         subject, body = mail.subject, mail.body

@@ -6,10 +6,12 @@ import time
 import socket
 import math
 from string import Formatter
+from typing import Optional
 from pathlib import Path
 import re
 import subprocess
 
+from doc_api.tools.mail.mail_sender import MailSender
 from doc_api.tools.secrets import MaskingSettings
 
 COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
@@ -523,6 +525,25 @@ class Config:
         if value < minimum:
             raise ValueError(f"{key} must be an integer >= {minimum}")
         return value
+
+    def mail_sender(self, channel: str) -> Optional[MailSender]:
+        """The sender for the INTERNAL or EXTERNAL mail channel; None when the
+        channel has no server or sender address. Internal mail goes to
+        INTERNAL_MAIL_RECEIVER_MAILS unless the caller names receivers."""
+        if channel not in ("INTERNAL", "EXTERNAL"):
+            raise ValueError(f"Unknown mail channel: {channel}")
+        server = getattr(self, f"{channel}_MAIL_SERVER")
+        sender_mail = getattr(self, f"{channel}_MAIL_SENDER_MAIL")
+        if not server or not sender_mail:
+            return None
+        return MailSender(server=server, sender_mail=sender_mail,
+                          port=getattr(self, f"{channel}_MAIL_PORT"),
+                          receiver_mails=getattr(self, f"{channel}_MAIL_RECEIVER_MAILS", None),
+                          sender_name=getattr(self, f"{channel}_MAIL_SENDER_NAME"),
+                          username=getattr(self, f"{channel}_MAIL_USERNAME"),
+                          password=getattr(self, f"{channel}_MAIL_PASSWORD"),
+                          security=getattr(self, f"{channel}_MAIL_SECURITY"),
+                          timeout=getattr(self, f"{channel}_MAIL_TIMEOUT_SECONDS"))
 
     def secret_masking(self) -> MaskingSettings:
         """The masking tool's settings from the SECRET_MASKING_* settings in force."""

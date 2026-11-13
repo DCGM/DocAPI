@@ -46,21 +46,25 @@ exception_logger.propagate = False
 
 def internal_mail_logger_from_config() -> MailLogger:
     """The logger that mails unhandled errors to the server's admins over the
-    internal mail channel."""
-    return MailLogger(logger_name='doc_api.internal_mail_logger',
-                      sender_mail=config.INTERNAL_MAIL_SENDER_MAIL,
-                      receiver_mails=config.INTERNAL_MAIL_RECEIVER_MAILS,
-                      server=config.INTERNAL_MAIL_SERVER,
-                      port=config.INTERNAL_MAIL_PORT,
-                      sender_name=config.INTERNAL_MAIL_SENDER_NAME,
-                      password=config.INTERNAL_MAIL_PASSWORD,
-                      username=config.INTERNAL_MAIL_USERNAME,
-                      security=config.INTERNAL_MAIL_SECURITY,
-                      timeout=config.INTERNAL_MAIL_TIMEOUT_SECONDS,
+    internal mail channel, at most INTERNAL_MAIL_FLOOD_LEVEL an hour."""
+    return MailLogger(logger_name='doc_api.internal_mail_logger', sender=config.mail_sender("INTERNAL"),
                       flood_level=config.INTERNAL_MAIL_FLOOD_LEVEL)
 
 
 internal_mail_logger = internal_mail_logger_from_config().logger
+
+# Error mail being sent in the background, held so the tasks are not collected
+# before they finish.
+error_mail_tasks: set[asyncio.Task] = set()
+
+
+def mail_error_in_background(subject: str, body: str) -> asyncio.Task:
+    """Mail an unhandled error without holding the event loop: SMTP runs in a
+    thread, and the caller does not wait for it."""
+    task = asyncio.create_task(asyncio.to_thread(internal_mail_logger.critical, body, extra={'subject': subject}))
+    error_mail_tasks.add(task)
+    task.add_done_callback(error_mail_tasks.discard)
+    return task
 
 
 logger = logging.getLogger(__name__)
@@ -330,7 +334,7 @@ async def unhandled(request: Request, exc: Exception):
                 f'{traceback.format_exc()}')
         if config.SECRET_MASKING_INTERNAL_MAIL:
             body = mask_secrets_in_text(body, config.secret_masking())
-        internal_mail_logger.critical(body, extra={'subject': " ".join(subject.splitlines())})
+        mail_error_in_background(" ".join(subject.splitlines()), body)
     exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)
