@@ -70,13 +70,23 @@
         <label>Period <select id="job-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
         <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
         <label>State <select id="job-state"><option value="">All relevant</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
-        <div class="order-control"><span id="job-order-label">Order</span><button id="job-order" type="button" class="icon-button" aria-describedby="job-order-label" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M6 4v16m-4-4 4 4 4-4"/><path class="sort-bars" d="M13 5h9M13 12h6M13 19h3"/></svg></button></div>
         <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
         <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
         <label>Version <select id="job-engine-version"><option value="">All versions</option></select></label>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Finished</th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
+      <div id="stats-tabs" class="stats-tabs" role="tablist" aria-label="Finished breakdown">
+        <button id="stats-tab-hidden" type="button" role="tab" data-group="hidden" aria-selected="true" tabindex="0" aria-controls="stats-group-panel">Hidden</button>
+        <button id="stats-tab-owners" type="button" role="tab" data-group="owners" aria-selected="false" tabindex="-1" aria-controls="stats-group-panel">Owners</button>
+        <button id="stats-tab-workers" type="button" role="tab" data-group="workers" aria-selected="false" tabindex="-1" aria-controls="stats-group-panel">Workers</button>
+        <button id="stats-tab-engines" type="button" role="tab" data-group="engines" aria-selected="false" tabindex="-1" aria-controls="stats-group-panel">Engines</button>
+        <button id="stats-tab-engine_versions" type="button" role="tab" data-group="engine_versions" aria-selected="false" tabindex="-1" aria-controls="stats-group-panel">Engine versions</button>
+      </div>
+      <div id="stats-group-panel" role="tabpanel" aria-labelledby="stats-tab-hidden" tabindex="0" hidden>
+        <div class="controls stats-group-controls"><label>Top <select id="stats-top"><option>5</option><option selected>10</option><option>20</option><option value="0">All</option></select></label></div>
+        <div class="table-wrap"><table><thead id="stats-group-head"></thead><tbody id="stats-groups"></tbody></table></div>
+      </div>
+      <div class="table-wrap"><table class="finished-jobs-table"><thead><tr><th>Job</th><th class="finished-sort-column"><span class="finished-sort-heading">Finished <button id="job-order" type="button" class="icon-button" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M12 4v16m-5-5 5 5 5-5"/></svg></button></span></th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
       <div class="controls job-controls">
         <nav class="job-pagination" aria-label="Jobs pages">
           <button id="jobs-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
@@ -89,11 +99,11 @@
 
     </section>
     <section data-section="database"><h2>Database</h2><dl id="database"></dl>
-      <details class="section-info"><summary class="icon-button" aria-label="About Database" title="About Database"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p>Application database only; connections exclude this statistics request. ACTIVE includes lock waits. IDLE IN TRANSACTION includes aborted transactions. Deadlocks count since the statistics reset. Available details depend on PostgreSQL permissions and tracking settings.</p></div></details>
+      <details class="section-info"><summary class="icon-button" aria-label="About Database" title="About Database"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p>Application database only; connections exclude this statistics request. Active includes lock waits. Idle in transaction includes aborted transactions. Deadlocks count since the statistics reset. Available details depend on PostgreSQL permissions and tracking settings.</p></div></details>
     </section>
   <section id="section-settings" data-section="settings">
     <h2>Settings</h2>
-    <div class="controls"><label>Layout <select id="layout"><option value="auto">Automatic</option><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label></div>
+    <div class="controls"><label>Layout <select id="layout"><option value="auto">Automatic</option><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label><label>Theme <select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
   </section>
   </main>
 </body>

@@ -32,9 +32,12 @@ try {
 } catch {}
 const openLogs = new Map();
 const viewStorage = 'docapi.monitor.view';
+let statsGroup = 'hidden';
+const statsGroups = ['hidden', 'owners', 'workers', 'engines', 'engine_versions'];
 const rememberedLogs = new Map();
 try {
   const saved = JSON.parse(localStorage.getItem(viewStorage) || '{}');
+  if (statsGroups.includes(saved?.statsGroup)) statsGroup = saved.statsGroup;
   if (saved?.order === 'asc') jobOrder = 'asc';
   if (Number.isSafeInteger(saved?.page) && saved.page >= 0) jobPage = saved.page;
   if (Number.isSafeInteger(saved?.processingPage) && saved.processingPage >= 0) processingPage = saved.processingPage;
@@ -45,7 +48,7 @@ try {
 } catch {}
 function saveView() {
   try {
-    localStorage.setItem(viewStorage, JSON.stringify({order: jobOrder, page: jobPage, processingPage, logs: [...rememberedLogs]}));
+    localStorage.setItem(viewStorage, JSON.stringify({order: jobOrder, page: jobPage, processingPage, statsGroup, logs: [...rememberedLogs]}));
   } catch {}
 }
 
@@ -163,9 +166,8 @@ function updateJobOrder() {
   const button = byId('job-order');
   const label = jobOrder === 'desc' ? 'Descending' : 'Ascending';
   button.querySelector('.sort-arrow').setAttribute('d', jobOrder === 'desc' ?
-    'M6 4v16m-4-4 4 4 4-4' : 'M6 20V4m-4 4 4-4 4 4');
-  button.querySelector('.sort-bars').setAttribute('d', jobOrder === 'desc' ?
-    'M13 5h9M13 12h6M13 19h3' : 'M13 5h3M13 12h6M13 19h9');
+    'M12 4v16m-5-5 5 5 5-5' : 'M12 20V4m-5 5 5-5 5 5');
+  button.closest('th').setAttribute('aria-sort', jobOrder === 'desc' ? 'descending' : 'ascending');
   button.title = `${label}; click to reverse`;
   button.setAttribute('aria-label',
     `${label} order; switch to ${jobOrder === 'desc' ? 'ascending' : 'descending'}`);
@@ -399,6 +401,37 @@ function renderStats() {
     byId('metric').selectedOptions[0].text,
     node('span', `DONE ${value('done')}`, 'badge job-done'),
     node('span', `FAILED ${value('failed')}`, 'badge job-failed')]);
+  renderStatsGroups();
+}
+function renderStatsGroups() {
+  for (const tab of byId('stats-tabs').children) {
+    const active = tab.dataset.group === statsGroup;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+  }
+  const panel = byId('stats-group-panel');
+  panel.hidden = statsGroup === 'hidden';
+  panel.setAttribute('aria-labelledby', `stats-tab-${statsGroup}`);
+  if (panel.hidden || !stats) return;
+  const measure = byId('metric').value;
+  const identityHeaders = {owners: ['Owner'], workers: ['Worker'], engines: ['Engine'], engine_versions: ['Engine', 'Version']}[statsGroup];
+  const headers = [...identityHeaders, 'Total', 'DONE', 'FAILED', 'Attempts'];
+  const head = node('tr');
+  for (const header of headers) head.append(node('th', header));
+  byId('stats-group-head').replaceChildren(head);
+  const rows = (stats[statsGroup] || []).map(group => {
+    let identity;
+    if (['owners', 'workers'].includes(statsGroup)) {
+      const label = node('span', group.label ?? (group.id ? group.id.slice(0, 8) : 'Unassigned'));
+      if (group.id) label.title = group.id;
+      identity = [label];
+    } else identity = statsGroup === 'engine_versions' ? [group.name ?? 'Unassigned', group.version ?? '—'] : [group.name ?? 'Unassigned'];
+    return [...identity, ...['total', 'done', 'failed', 'attempts'].map(state => {
+      const value = group[state][measure];
+      return measure === 'runtime_seconds' ? duration(value) : value.toLocaleString();
+    })];
+  });
+  table('stats-groups', rows, headers);
 }
 function renderRecentJobs(result) {
   const {items: jobs} = result;
@@ -459,7 +492,7 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   summary('server', [info.hostname, `Uptime ${duration(info.uptime_seconds)}`]);
   summary('workers', ['active', 'idle', 'off'].map(status => node('span',
     `${workers.filter(worker => worker.status === status).length} ${status === 'off' ? 'GONE' : status.toUpperCase()}`, `badge ${status}`)));
-  summary('database', [node('span', info.database_connected ? 'CONNECTED' : 'UNAVAILABLE',
+  summary('database', [node('span', info.database_connected ? 'Connected' : 'Unavailable',
     `badge ${info.database_connected ? 'active' : 'unavailable'}`), bytes(database.size_bytes), `${database.connections} connections`]);
   const fields = [
     ['Hostname', info.hostname], ['IP addresses', info.ip_addresses.join(', ') || 'Unavailable'],
@@ -470,15 +503,15 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   byId('info').replaceChildren(...fields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
   const dbFields = [
     ['Database', database.database_name], ['Size', bytes(database.size_bytes)],
-    ['Connections', database.connections], ['ACTIVE', database.active_connections], ['IDLE', database.idle_connections],
-    ['IDLE IN TRANSACTION', database.idle_in_transaction_connections],
+    ['Connections', database.connections], ['Active', database.active_connections], ['Idle', database.idle_connections],
+    ['Idle in transaction', database.idle_in_transaction_connections],
     ['Waiting on locks', database.lock_waiting_connections],
     ['Longest active query', database.longest_active_query_seconds === null ? 'None' : duration(database.longest_active_query_seconds)],
     ['Deadlocks', database.deadlocks], ['Statistics reset', database.stats_reset ? date(database.stats_reset) : 'Unavailable'],
   ];
   byId('database').replaceChildren(...dbFields.flatMap(([label, value]) => [node('dt', label), node('dd', value)]));
   const databaseStatus = node('dd');
-  databaseStatus.append(node('span', info.database_connected ? 'CONNECTED' : 'UNAVAILABLE',
+  databaseStatus.append(node('span', info.database_connected ? 'Connected' : 'Unavailable',
     `badge ${info.database_connected ? 'active' : 'unavailable'}`));
   byId('database').prepend(node('dt', 'Status'), databaseStatus);
   renderStats();
@@ -518,6 +551,9 @@ async function refresh() {
     query.set('from_finished_date', from.toISOString());
   }
   const jobQuery = new URLSearchParams(query);
+  const statsQuery = new URLSearchParams(query);
+  statsQuery.set('top', byId('stats-top').value);
+  statsQuery.set('top_by', byId('metric').value);
   jobQuery.set('limit', byId('limit').value);
   jobQuery.set('offset', jobPage * Number(byId('limit').value));
   jobQuery.set('sort_by', 'finished_date');
@@ -530,7 +566,7 @@ async function refresh() {
   byId('processing-previous').disabled = true;
   byId('processing-next').disabled = true;
   try {
-    const values = await Promise.all([get('info', signal), get(`jobs/statistics?${query}`, signal),
+    const values = await Promise.all([get('info', signal), get(`jobs/statistics?${statsQuery}`, signal),
       byId('section-job-statistics-body').hidden ? null : get(`../jobs?${jobQuery}`, signal, true), get('workers', signal), get('database', signal), get(`jobs/processing?${recentQuery}`, signal, true)]);
     if (current !== generation) return;
     render(...values);
@@ -600,11 +636,12 @@ function signOut() {
   byId('dashboard').hidden = true; byId('logout').hidden = true; byId('login').hidden = false;
   byId('sections-toggle').hidden = true;
   document.querySelectorAll('.section-summary').forEach(element => element.replaceChildren());
-  for (const id of ['info', 'database', 'stats', 'processing-stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
+  for (const id of ['info', 'database', 'stats', 'stats-groups', 'processing-stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
   if (!cleared) byId('message').textContent = 'Browser storage could not be cleared. Clear site data in your browser to remove the saved key.';
 }
 byId('logout').addEventListener('click', signOut);
 byId('layout').addEventListener('change', () => { document.body.dataset.layout = byId('layout').value; });
+byId('theme').addEventListener('change', () => { document.documentElement.dataset.theme = byId('theme').value; });
 for (const id of ['recent-limit', 'recent-metric', 'recent-state', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
 for (const prefix of ['job-', 'recent-']) byId(`${prefix}engine`).addEventListener('change', () => {
   byId(`${prefix}engine-version`).value = '';
@@ -613,7 +650,20 @@ for (const prefix of ['job-', 'recent-']) byId(`${prefix}engine`).addEventListen
   else processingPage = 0;
   refresh();
 });
-byId('metric').addEventListener('change', renderStats);
+byId('metric').addEventListener('change', () => { renderStats(); refresh(); });
+byId('stats-top').addEventListener('change', refresh);
+for (const tab of byId('stats-tabs').children) {
+  function select() { statsGroup = tab.dataset.group; saveView(); renderStatsGroups(); }
+  tab.addEventListener('click', select);
+  tab.addEventListener('keydown', event => {
+    const index = statsGroups.indexOf(statsGroup), count = statsGroups.length;
+    const next = {ArrowRight: (index + 1) % count, ArrowLeft: (index + count - 1) % count, Home: 0, End: count - 1}[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    const target = byId('stats-tabs').children[next];
+    target.click(); target.focus();
+  });
+}
 for (const id of ['limit', 'job-owner', 'job-worker', 'job-engine-version', 'job-state', 'job-period'])
   byId(id).addEventListener('change', () => { jobPage = 0; updateJobOrder(); refresh(); });
 byId('processing-previous').addEventListener('click', () => { if (processingPage > 0) { processingPage--; refresh(); } });
@@ -627,6 +677,8 @@ byId('job-order').addEventListener('click', () => {
   refresh();
 });
 for (const select of document.querySelectorAll('select[id]')) restoreSelect(select.id);
+document.documentElement.dataset.theme = byId('theme').value;
+renderStatsGroups();
 document.body.dataset.layout = byId('layout').value;
 document.addEventListener('change', event => {
   if (event.target.matches('select[id]')) saveSelects();

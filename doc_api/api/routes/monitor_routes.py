@@ -109,13 +109,13 @@ async def get_database(key: model.Key = Depends(require_management_key),
                     openapi_extra={'x-order': 401},
                     description='Aggregate every job matching the job-list filters except result availability, before pagination. '
                                 'Overall totals are unlimited. Grouped owners, workers, engines and engine versions are ranked separately. '
-                                'top defaults to 10 per group type; top_by ranks descending across all matching states, '
+                                'top defaults to 10 per group type; use 0 for all entries. top_by ranks descending across all matching states, '
                                 'with identity as a deterministic tie-breaker. Null identities represent unassigned jobs. '
                                 'Workers refer to the latest assignment. Released leases do not count as attempts. '
                                 'Images count per attempt. Runtime spans first start to finish, including retry waits. '
                                 'Individual attempt times, runtimes and historical worker attribution are unavailable.',
                     response_model=DocAPIResponseOK[schemas.MonitorStats], responses=make_responses(STATS_RESPONSES))
-async def get_stats(top: Annotated[int, Query(ge=1, description='Maximum entries per category; overall totals are unaffected.')] = 10,
+async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries per category; 0 returns all entries. Overall totals are unaffected.')] = 10,
                     top_by: Literal['job_count', 'image_count', 'runtime_seconds', 'attempt_count', 'attempt_image_count'] = 'job_count',
                     owner_label: str | None = None, worker_label: str | None = None,
                     state: list[base_objects.ProcessingState] | None = Query(None, description="Filter by one or more states; repeat state for multiple values."),
