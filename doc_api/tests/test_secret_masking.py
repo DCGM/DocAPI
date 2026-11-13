@@ -31,7 +31,6 @@ def masking_settings(monkeypatch):
     monkeypatch.setattr(config, "SECRET_MASKING", True)
     monkeypatch.setattr(config, "SECRET_MASKING_ALLOWED_KEYS", [])
     monkeypatch.setattr(config, "SECRET_MASKING_HIGH_ENTROPY", False)
-    monkeypatch.setattr(config, "KEY_PREFIX", "doc-api")
     monkeypatch.setattr(config, "SECRET_MASKING_MASK", MASK)
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", [])
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_START", 8)
@@ -80,7 +79,6 @@ def test_mask_secrets_in_struct_allowlist(monkeypatch):
     ("hf_abcdefghijklmnopqrstuvwxyzABCDEF", "*****"),
     ("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl", "jwt *****"),
     ("X-API-Key: doc-api.kid123.longsecretvalue", "X-API-Key: *****"),
-    ("using doc-api.kid123.longsecretvalue", "using doc-api.kid123.*****"),
     ("postgresql+asyncpg://user:pa55@db:5432/postgres", "postgresql+asyncpg://user:*****@db:5432/postgres"),
     ("GET /v1/x?api_key=abc&page=2", "GET /v1/x?api_key=*****&page=2"),
     ('{"password": "p\\"w", "user": "u"}', '{"password": "*****", "user": "u"}'),
@@ -99,12 +97,20 @@ def test_mask_secrets_in_text_patterns(text, expected):
     assert mask_secrets_in_struct(text) == expected
 
 
-def test_mask_secrets_in_text_uses_configured_key_prefix(monkeypatch):
-    monkeypatch.setattr(config, "KEY_PREFIX", "my.api")
-    assert mask_secrets_in_text("using my.api.kid123.longsecretvalue") == "using my.api.kid123.*****"
-    # Only the configured prefix marks a DocAPI key; the dot in it is literal.
-    assert mask_secrets_in_text("using doc-api.kid123.longsecretvalue") == "using doc-api.kid123.longsecretvalue"
-    assert mask_secrets_in_text("using myXapi.kid123.longsecretvalue") == "using myXapi.kid123.longsecretvalue"
+@pytest.mark.parametrize("prefix", ["doc-api", "metakat"])
+def test_dotted_names_with_key_prefix_are_not_masked(monkeypatch, prefix):
+    monkeypatch.setattr(config, "KEY_PREFIX", prefix)
+    # A key prefix that is also a package or host name leaves those names alone.
+    for text in ("metakat.page_number.engines.bind INFO : Loaded",
+                 "https://metakat.smart.lib.cas.cz/v1/jobs",
+                 "doc-api.tools.secrets imported"):
+        assert mask_secrets_in_text(text) == text
+    # Labelled keys stay masked whatever the prefix.
+    key = f"{prefix}.Ab3dE9xY.0123456789abcdefghijABCDEFGHIJ0123456789"
+    assert mask_secrets_in_text(f"X-API-Key: {key}") == "X-API-Key: *****"
+    assert mask_secrets_in_text(f"GET /v1/me?api_key={key}&page=2") == "GET /v1/me?api_key=*****&page=2"
+    assert mask_secrets_in_text(f'{{"api_key": "{key}"}}') == '{"api_key": "*****"}'
+    assert mask_secrets_in_struct({"worker": {"api_key": key}}) == {"worker": {"api_key": MASK}}
 
 
 def test_custom_mask(monkeypatch):
@@ -166,6 +172,37 @@ def test_logging_masks_only_exceptions():
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "password=%s", ("hunter2",), None)
     assert SecretMaskingFilter().filter(record) is True
     assert record.getMessage() == "password=hunter2"
+
+
+def _access_record(path):
+    """An access record shaped like uvicorn's."""
+    return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                             ("10.0.0.1:5000", "GET", path, "1.1", 401), None)
+
+
+def test_access_log_masks_query_string_keys():
+    key = "doc-api.Ab3dE9xY.0123456789abcdefghijABCDEFGHIJ0123456789"
+    record = _access_record(f"/v1/me?api_key={key}&limit=5")
+    assert SecretMaskingFilter().filter(record) is True
+    assert record.getMessage() == '10.0.0.1:5000 - "GET /v1/me?api_key=*****&limit=5 HTTP/1.1" 401'
+    # Paths without a query string are not scanned; plain queries pass unchanged.
+    for path in ("/v1/jobs/lease", "/v1/jobs?state=done&limit=50"):
+        record = _access_record(path)
+        SecretMaskingFilter().filter(record)
+        assert record.args[2] == path
+    # Only the access logger gets this; other records still need an exception.
+    record = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, "%s", (f"?api_key={key}",), None)
+    SecretMaskingFilter().filter(record)
+    assert key in record.getMessage()
+    # Through a real handler, as uvicorn's records reach the server's handlers.
+    logger, handler, stream = _masked_log(propagate_from="uvicorn.access")
+    propagate, logger.propagate = logger.propagate, False
+    try:
+        logger.info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5000", "GET", f"/v1/me?api_key={key}", "1.1", 200)
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = propagate
+    assert stream.getvalue() == 'INFO : 10.0.0.1:5000 - "GET /v1/me?api_key=***** HTTP/1.1" 200\n'
 
 
 @pytest.mark.asyncio
