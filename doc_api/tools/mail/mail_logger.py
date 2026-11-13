@@ -12,16 +12,17 @@ class MailLogger:
 
     mail_logger.logger.critical('mail message', extra={'subject': 'text of subject'})
 
-    The records go to a MailHandler, which sends them with a MailSender; the
-    logger does not propagate, so they reach no other handlers. Without a
-    server or a sender mail nothing is sent and the records go nowhere.
+    The records go to a MailHandler, which sends them with a MailSender: the
+    one given as sender, else one built from the server settings. The logger
+    does not propagate, so they reach no other handlers. Without a sender, or a
+    server and a sender mail, nothing is sent and the records go nowhere.
     """
 
     def __init__(
             self,
             logger_name: str,
-            sender_mail: Union[str, None],
-            server: Union[str, None],
+            sender_mail: Union[str, None] = None,
+            server: Union[str, None] = None,
             port: int = 25,
             receiver_mails: Optional[List[str]] = None,
             sender_name: Optional[str] = None,
@@ -30,7 +31,8 @@ class MailLogger:
             subject: str = f'%(subject)s',
             username: Optional[str] = None,
             security: str = 'auto',
-            timeout: float = 60):
+            timeout: float = 60,
+            sender: Optional[MailSender] = None):
 
         self.logger_name = logger_name
         self.mail_handler = None
@@ -47,6 +49,10 @@ class MailLogger:
 
         self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = False
+
+        if sender is not None:
+            self._add_mail_handler(sender, subject, flood_level)
+            return
 
         if server is None:
             logger.warning(f'SMTP server was not specified for {logger_name}, '
@@ -69,9 +75,11 @@ class MailLogger:
                             password=password,
                             security=security,
                             timeout=timeout)
+        self._add_mail_handler(sender, subject, flood_level)
+
+    def _add_mail_handler(self, sender: MailSender, subject: str, flood_level: int):
         self.mail_handler = MailHandler(sender, subject=subject, flood_level=flood_level)
         self.mail_handler.name = 'mail_handler'
-
         self.mail_handler.setLevel(logging.DEBUG)
         self.logger.addHandler(self.mail_handler)
 

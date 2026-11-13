@@ -766,6 +766,8 @@ an SMTP attempt. All tests mock SMTP.
 - [x] admin append/replace writes pad missing attempt positions. [`test_user.py::test_patch_job_200_logs_sparse_attempts`](test_user.py).
 
 - [x] configurable internal-error subjects. [`test_job_mail.py::test_internal_error_subject_template`](test_job_mail.py).
+- [x] internal-error mail is sent in a thread; the 500 and the event loop do not wait for SMTP. [`test_job_mail.py::test_internal_error_mail_does_not_hold_the_event_loop`](test_job_mail.py).
+- [x] the hourly internal-error flood limit applies to mail sent in the background. [`test_job_mail.py::test_internal_error_mail_flood_limit_applies_in_background`](test_job_mail.py).
 - [x] admin subjects use the admin server name by default. [`test_job_mail.py::test_admin_subject_default_uses_admin_server_name`](test_job_mail.py).
 - [x] configurable subject placeholders and subsets. [`test_job_mail.py::test_subject_template`](test_job_mail.py).
 - [x] absent optional subject values. [`test_job_mail.py::test_subject_template_missing_optional_values`](test_job_mail.py).
@@ -1658,7 +1660,8 @@ Additional existing configuration checks:
 
 - [x] [`test_job_mail.py::test_default_subjects`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_job_mail_passes_smtp_security_and_username`](test_job_mail.py).
-- [x] [`test_job_mail.py::test_mail_logger_passes_smtp_security_and_username`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_mail_sender_per_channel`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_mail_logger_uses_the_internal_sender_and_flood_level`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_mail_timeout_must_be_finite_positive`](test_job_mail.py).
 - [x] [`test_run.py::test_http_keep_alive_timeout_configuration`](test_run.py).
 - [x] [`test_run.py::test_http_keep_alive_timeout_rejects_invalid_values`](test_run.py).
