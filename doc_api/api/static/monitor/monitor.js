@@ -485,8 +485,8 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   if (jobs && !byId('section-job-statistics-body').hidden) renderJobs(jobs);
   renderRecentJobs(recentJobs);
   table('workers', workers.map(worker => [worker.label, node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
-    worker.processing_jobs, date(worker.last_used), worker.enabled ? 'Yes' : 'No']),
-    ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen', 'Key enabled']);
+    worker.processing_jobs, date(worker.last_used)]),
+    ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen']);
   byId('worker-note').textContent = `PROCESSING job → ACTIVE. Otherwise, seen within ${info.worker_offline_after_seconds}s → IDLE; older or never seen → GONE.`;
   byId('updated').textContent = `Updated ${new Date().toLocaleTimeString(undefined, {hourCycle: 'h23'})} · refresh ${info.refresh_interval_seconds}s · pauses while this tab is hidden`;
   interval = info.refresh_interval_seconds * 1000;

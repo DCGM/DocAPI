@@ -1614,6 +1614,7 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_get_monitor_jobs_owner_worker_filters`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_200_activity`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_excludes_management_assignments`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_workers_enabled_last_seen_order`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_200_processing_always_active`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_422`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_page_200`](test_monitor.py).
@@ -1622,6 +1623,10 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_monitor_configuration_matches_env`](test_monitor.py).
 - [x] [`test_monitor.py::test_monitor_identity_configuration`](test_monitor.py).
 - [x] [`test_monitor.py::test_monitor_ip_configuration_invalid`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_group_partitions`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_200_group_ranking`](test_monitor.py).
+- [x] [`test_monitor.py::test_get_monitor_stats_422_group_options`](test_monitor.py).
+- [x] [`test_dummy_database_seed.py::test_seed_dummy_database_finished_dataset`](test_dummy_database_seed.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_finished_date_filter`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_unavailable_runtime`](test_monitor.py).
 - [x] [`test_presentation.py::test_monitor_commit_badge`](test_presentation.py).
