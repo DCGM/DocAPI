@@ -846,7 +846,7 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] engine settings and job logs by role; storage intact. [`test_secret_masking.py::test_get_job_200_engine_settings_masked_for_readers`](test_secret_masking.py).
 - [x] engine settings and job logs with partial keys by role. [`test_secret_masking.py::test_get_job_200_partial_keys_revealed_partly`](test_secret_masking.py).
 - [x] validation errors echoing input. [`test_secret_masking.py::test_post_job_422_masks_echoed_input`](test_secret_masking.py).
-- [x] clients never load masking; workers mask only their own health and failure mail. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
+- [x] clients and workers never load masking; worker log and mail are sent as written. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
 - [x] the database password is never logged. [`test_secret_masking.py::test_database_password_is_never_logged`](test_secret_masking.py).
 
 ### Alembic migrations
@@ -995,7 +995,7 @@ alive mail; an alive interval of zero disables
 periodic mail. Alive messages report process uptime and the last pipeline
 return, rather than guaranteeing that processing is progressing.
 
-- [x] Startup, periodic alive mail, disabling mail, masking, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+- [x] Startup, periodic alive mail, disabling mail, unmasked mail, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 - [x] Wrapper lifecycle integration, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 - [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 

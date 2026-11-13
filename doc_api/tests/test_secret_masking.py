@@ -454,21 +454,16 @@ async def test_post_job_422_masks_echoed_input(client, user_headers):
 
 
 def test_workers_and_clients_do_not_mask():
-    import inspect
     import subprocess
     import sys
     from pathlib import Path
-    from doc_worker import doc_worker_wrapper
-    # Clients never load masking: what they receive and log is left as it is.
-    code = "import sys, doc_client.doc_client_wrapper; print('doc_api.tools.secrets' in sys.modules)"
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
-                            cwd=Path(__file__).parents[2])
-    assert result.stdout.strip() == "False"
-    # The worker masks only its own health and failure mail, never job data,
-    # results or what it reports to the API.
-    source = inspect.getsource(doc_worker_wrapper)
-    mail = inspect.getsource(doc_worker_wrapper.DocWorkerWrapper._send_worker_mail)
-    assert source.count("mask_secrets_in_text(") == mail.count("mask_secrets_in_text(") > 0
+    # Clients and workers never load masking: what they receive, log, mail and
+    # report is left as it is.
+    for module in ("doc_client.doc_client_wrapper", "doc_worker.doc_worker_wrapper"):
+        code = f"import sys, {module}; print('doc_api.tools.secrets' in sys.modules)"
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                                cwd=Path(__file__).parents[2])
+        assert result.stdout.strip() == "False", module
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,6 @@ import requests
 
 from doc_api.adapter import Adapter, AdapterResponse
 from doc_api.api.schemas.base_objects import Job, JobLease
-from doc_api.tools.secrets import mask_secrets_in_text
 from doc_api.connector import Connector
 from doc_api.tools.mail.mail_sender import MailSender
 
@@ -1037,7 +1036,9 @@ class DocWorkerWrapper(ABC):
         self._send_worker_mail("FAILURE", message)
 
     def _send_worker_mail(self, status: str, message: str) -> None:
-        """Send masked worker mail with consistent identity, host and subject."""
+        """Send worker mail with consistent identity, host and subject.
+
+        Not masked: it goes to the worker's operators, like the worker log."""
         if self.mail_sender is None:
             return
         now = datetime.now(timezone.utc)
@@ -1047,8 +1048,7 @@ class DocWorkerWrapper(ABC):
             fields = (("worker", self.identity), ("hostname", self.hostname),
                       ("time", now.strftime("%Y-%m-%d %H:%M:%S UTC")), ("status", status))
             header = "\n".join(_row(label, value) for label, value in fields)
-            self.send_mail(mask_secrets_in_text(subject),
-                           mask_secrets_in_text(f"{header}\n\n{message}\n"))
+            self.send_mail(subject, f"{header}\n\n{message}\n")
         except Exception:
             # Alert delivery must not interrupt processing or cause another alert.
             logger.exception("Could not send worker mail")

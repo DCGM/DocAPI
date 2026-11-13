@@ -82,13 +82,13 @@ def test_config_rejects_invalid_intervals(field, value):
         WorkerHealthConfig(**{field: value})
 
 
-def test_subject_and_body_are_masked_and_prefix_is_configurable(health):
+def test_subject_and_body_are_not_masked_and_prefix_is_configurable(health):
     health.worker.mail_subject = "[My worker] {status}: {identity}"
-    health.worker.identity = "host api_key=private-value"
+    health.worker.identity = "host page_key=p1"
     health.send_alive()
     subject, body = health.worker.send_mail.call_args.args
-    assert subject.startswith("[My worker] ALIVE:")
-    assert "private-value" not in subject + body
+    assert subject == "[My worker] ALIVE: host page_key=p1"
+    assert "host page_key=p1" in body
 
 
 @pytest.fixture
@@ -275,16 +275,17 @@ def test_wrapper_rejects_health_without_mail_sender_before_side_effects(wrapper,
     assert "Worker health requires a mail sender." in caplog.text
 
 
-def test_failure_mail_masks_secrets_without_health(wrapper):
-    wrapper._notify_worker_failure("password=private-value")
+def test_failure_mail_is_not_masked_without_health(wrapper):
+    wrapper._notify_worker_failure("unknown page key: p1, contains_keyword=True")
     subject, body, _ = wrapper.mail_sender.send.call_args.args
-    assert "private-value" not in subject + body
+    assert "FAILURE" in subject
+    assert "unknown page key: p1, contains_keyword=True" in body
 
 
-def test_failure_mail_includes_exception_chain_and_masks_it(wrapper):
+def test_failure_mail_includes_exception_chain(wrapper):
     try:
         try:
-            raise OSError("disk full password=private-value")
+            raise OSError("disk full at page_key=p1")
         except OSError as cause:
             raise RuntimeError("cannot save history") from cause
     except RuntimeError as exception:
@@ -294,7 +295,7 @@ def test_failure_mail_includes_exception_chain_and_masks_it(wrapper):
     assert "OSError: disk full" in body
     assert "RuntimeError: cannot save history" in body
     assert "Traceback" in body
-    assert "private-value" not in body
+    assert "disk full at page_key=p1" in body
 
 
 def test_wrapper_defaults_identity_and_detects_hostname(wrapper, tmp_path):
