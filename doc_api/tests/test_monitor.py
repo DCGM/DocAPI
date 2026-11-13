@@ -716,6 +716,7 @@ async def test_get_monitor_stats_200_group_ranking(client, admin_headers, job_fa
         assert response.status_code == 200, response.text
         return response.json()['data']
     all_groups = await stats()
+    assert await stats(top=0) == all_groups
     assert [row['name'] for row in all_groups['engines']] == ['Alpha', 'Beta', None]
     assert [(row['name'], row['version']) for row in all_groups['engine_versions']] == [
         ('Alpha', '1'), ('Alpha', '2'), ('Beta', '1'), (None, None)]
@@ -738,7 +739,7 @@ async def test_get_monitor_stats_200_group_ranking(client, admin_headers, job_fa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('params', [{'top': 0}, {'top': -1}, {'top_by': 'unknown'}])
+@pytest.mark.parametrize('params', [{'top': -1}, {'top_by': 'unknown'}])
 async def test_get_monitor_stats_422_group_options(client, admin_headers, params):
     response = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers, params=params)
     assert response.status_code == 422, response.text

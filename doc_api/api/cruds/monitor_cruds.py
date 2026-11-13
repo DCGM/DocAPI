@@ -98,8 +98,9 @@ async def get_stats(*, db: AsyncSession, top: int = 10, top_by: str = 'job_count
         order_by=[g[top_by].desc().nulls_last(),
                   *(column.asc().nulls_last() for column in list(g)[:6])],
     ).label('rank')).cte('ranked_stats')
-    query = select(ranked).where(or_(ranked.c.category == 'overall', ranked.c.rank <= top)).order_by(
-        ranked.c.category, ranked.c.rank)
+    query = select(ranked).order_by(ranked.c.category, ranked.c.rank)
+    if top:
+        query = query.where(or_(ranked.c.category == 'overall', ranked.c.rank <= top))
     try:
         async with db.begin():
             return (await db.execute(query)).mappings().all()
