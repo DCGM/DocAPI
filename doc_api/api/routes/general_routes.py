@@ -1,6 +1,7 @@
 import logging
 import os
 from types import NoneType
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 import fastapi
@@ -223,7 +224,7 @@ def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dic
     engine_settings = db_job.definition.get("engine_settings", None)
     if key.role in UNMASKED_ROLES:
         return engine_settings
-    return mask_secrets_in_struct(engine_settings)
+    return mask_secrets_in_struct(engine_settings, config.secret_masking())
 
 
 def mask_job_logs(job: dict, key: model.Key) -> dict:
@@ -234,7 +235,7 @@ def mask_job_logs(job: dict, key: model.Key) -> dict:
         return job
     for field in ("log", "log_user", "final_log", "final_log_user"):
         if job.get(field) is not None:
-            job[field] = mask_secrets_in_text(job[field])
+            job[field] = mask_secrets_in_text(job[field], config.secret_masking())
     return job
 
 
@@ -382,6 +383,23 @@ PATCH_JOB_RESPONSES = {
         "detail": "Job was already marked as error.",
     }
 }
+
+
+def require_lease_date_in_range(last_change: Optional[datetime]) -> None:
+    """Reject a last_change whose lease, last_change plus the job timeout, cannot be
+    represented, before anything is saved, rather than failing to build the
+    lease response after the update has committed."""
+    if last_change is None or config.JOB_TIMEOUT_SECONDS <= 0:
+        return
+    try:
+        last_change + timedelta(seconds=config.JOB_TIMEOUT_SECONDS)
+    except OverflowError as error:
+        raise RequestValidationError([{
+            "type": "value_error", "loc": ("body", "last_change"), "input": last_change.isoformat(),
+            "msg": "Value error, Timestamp plus the configured job timeout exceeds the supported date range.",
+        }]) from error
+
+
 @root_router.patch(
     "/v1/jobs/{job_id}",
     summary="Update Job",
@@ -470,6 +488,7 @@ async def patch_job(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER, base_objects.KeyRole.WORKER)),
         db: AsyncSession = Depends(get_async_session)):
 
+    require_lease_date_in_range(job_progress_update.last_change)
     db_job, code_get_job = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, code_get_job, request)
     code_update_job = None

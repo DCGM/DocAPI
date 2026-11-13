@@ -1,27 +1,26 @@
-"""Mask secrets in anything DocAPI displays, logs or emails.
+"""Mask secrets in text and data before they are displayed, logged or emailed.
 
-Only the server applies it; workers and clients handle the real settings and
-are not masked. Stored data is never masked: callers mask a copy at the point
-where it is displayed or logged.
+A standalone tool: it reads no configuration. Every function takes a
+MaskingSettings, the defaults when omitted; the caller decides where the
+settings come from. Stored data is never masked: callers mask a copy at the
+point where it is displayed or logged.
 
     mask_secrets_in_struct({"vlm": {"api_key": "sk-..."}})  # {"vlm": {"api_key": "*****"}}
-    mask_secrets_in_text("curl -H 'Authorization: Bearer abc...'")
+    mask_secrets_in_text("curl -H 'Authorization: Bearer abc...'", MaskingSettings(mask="[hidden]"))
     handler.addFilter(SecretMaskingFilter())  # exceptions and request query strings a handler writes
 
-Settings come from config: SECRET_MASKING turns masking off,
-SECRET_MASKING_ALLOWED_KEYS lists exact key names (case-insensitive, "-" read
-as "_") that only look secret, and SECRET_MASKING_HIGH_ENTROPY also masks long
-random-looking tokens. Values under allowed keys are still scanned for secret
-patterns. Every secret is replaced by SECRET_MASKING_MASK, "*****" by default,
-whatever its length.
+MaskingSettings.enabled turns masking off. allowed_keys lists exact key names
+(case-insensitive, "-" read as "_") that only look secret, and high_entropy
+also masks long random-looking tokens. Values under allowed keys are still
+scanned for secret patterns. Every secret is replaced by mask, "*****" by
+default, whatever its length.
 
-SECRET_MASKING_PARTIAL_KEYS lists exact key names whose values are revealed
-partly, e.g. sk-proj-*****wxyz, so that a user can tell which API key a job
-used. SECRET_MASKING_PARTIAL_START and SECRET_MASKING_PARTIAL_END set how many
-characters stay visible. These keys override everything else: they are masked
-this way even when they do not look secret and even when SECRET_MASKING is
-off. A value is revealed only if at least half of it stays hidden; shorter
-values are masked fully.
+partial_keys lists exact key names whose values are revealed partly, e.g.
+sk-proj-*****wxyz, so that a reader can tell which API key was used.
+partial_start and partial_end set how many characters stay visible. These keys
+override everything else: they are masked this way even when they do not look
+secret and even when masking is not enabled. A value is revealed only if at
+least half of it stays hidden; shorter values are masked fully.
 
 Masking errs on the side of hiding: a masked non-secret is a small loss, a
 leaked key is not.
@@ -34,9 +33,8 @@ KEY_PREFIX is a word used elsewhere, such as a package or host name.
 """
 import logging
 import re
-from typing import Any, Iterable, Optional
-
-from doc_api.config import config
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, Optional, Union
 
 # A key whose lowercased name contains one of these is secret, at any depth.
 SECRET_KEY_PARTS = ("key", "secret", "token", "password", "passwd", "credential",
@@ -45,49 +43,59 @@ SECRET_KEY_PARTS = ("key", "secret", "token", "password", "passwd", "credential"
 _SECRET_KEY = re.compile("|".join(SECRET_KEY_PARTS))
 
 
-def _replacement() -> str:
-    """The configured replacement for a secret, SECRET_MASKING_MASK."""
-    return config.SECRET_MASKING_MASK
-
-
 def _normalize_keys(keys: Iterable[str]) -> frozenset:
     return frozenset(key.strip().lower().replace("-", "_") for key in keys if key.strip())
 
 
-def _partial_keys() -> frozenset:
-    return _normalize_keys(config.SECRET_MASKING_PARTIAL_KEYS)
+@dataclass(frozen=True)
+class MaskingSettings:
+    """How to mask; the defaults mask every secret-looking value with "*****"."""
+    enabled: bool = True
+    mask: str = "*****"
+    allowed_keys: Iterable[str] = frozenset()
+    high_entropy: bool = False
+    partial_keys: Iterable[str] = frozenset()
+    partial_start: int = 8
+    partial_end: int = 4
+
+    def __post_init__(self):
+        # Key names are compared case-insensitively, with "-" read as "_".
+        object.__setattr__(self, "allowed_keys", _normalize_keys(self.allowed_keys))
+        object.__setattr__(self, "partial_keys", _normalize_keys(self.partial_keys))
+        object.__setattr__(self, "mask", self.mask or "*****")
+        object.__setattr__(self, "partial_start", max(int(self.partial_start), 0))
+        object.__setattr__(self, "partial_end", max(int(self.partial_end), 0))
+
+    @property
+    def active(self) -> bool:
+        """Whether anything is masked at all: enabled, or partial keys set."""
+        return self.enabled or bool(self.partial_keys)
 
 
-def _is_partial_key(name: Any, partial_keys: frozenset) -> bool:
-    return isinstance(name, str) and name.lower().replace("-", "_") in partial_keys
+DEFAULT_SETTINGS = MaskingSettings()
 
 
-def reveal_partly(value: str) -> str:
-    """Keep the configured start and end of value and mask the rest.
+def _is_partial_key(name: Any, settings: MaskingSettings) -> bool:
+    return isinstance(name, str) and name.lower().replace("-", "_") in settings.partial_keys
+
+
+def reveal_partly(value: str, settings: MaskingSettings = DEFAULT_SETTINGS) -> str:
+    """Keep the start and end of value set in settings and mask the rest.
 
     Values too short to keep at least half hidden are masked fully.
     """
-    start, end = config.SECRET_MASKING_PARTIAL_START, config.SECRET_MASKING_PARTIAL_END
+    start, end = settings.partial_start, settings.partial_end
     if len(value) < 2 * (start + end) or start + end == 0:
-        return _replacement()
-    return value[:start] + _replacement() + (value[-end:] if end else "")
+        return settings.mask
+    return value[:start] + settings.mask + (value[-end:] if end else "")
 
 
-def _settings(allowed_keys: Optional[Iterable[str]], mask_high_entropy: Optional[bool]):
-    """Explicit arguments, else the configured settings."""
-    if allowed_keys is None:
-        allowed_keys = config.SECRET_MASKING_ALLOWED_KEYS
-    if mask_high_entropy is None:
-        mask_high_entropy = config.SECRET_MASKING_HIGH_ENTROPY
-    return _normalize_keys(allowed_keys), bool(mask_high_entropy)
-
-
-def is_secret_key(name: Any, allowed_keys: Optional[Iterable[str]] = None) -> bool:
+def is_secret_key(name: Any, settings: MaskingSettings = DEFAULT_SETTINGS) -> bool:
+    """Whether a key's name looks secret and is not allowed in settings."""
     if not isinstance(name, str):
         return False
-    allowed_keys, _ = _settings(allowed_keys, None)
     normalized = name.lower().replace("-", "_")
-    return normalized not in allowed_keys and _SECRET_KEY.search(normalized) is not None
+    return normalized not in settings.allowed_keys and _SECRET_KEY.search(normalized) is not None
 
 
 # --- Patterns for free text ---------------------------------------------------
@@ -115,7 +123,7 @@ _VALUE_PATTERNS = [
 
 # key=value, key: value, "key": "value" and 'key': 'value' inside text such as
 # logs, tracebacks, reprs and query strings. Group "key" is checked with
-# is_secret_key, so the allowlist applies here too.
+# is_secret_key, so the allowed keys apply here too.
 _KEY_VALUE = re.compile(
     r"""(?P<key>[A-Za-z_][\w.-]*)(?P<kq>\\?["']?)(?P<sep>\s*[:=]\s*)"""
     r"""(?:\\(?P<eq>["'])(?:(?!\\(?P=eq)).)*\\(?P=eq)"""
@@ -129,58 +137,58 @@ _KEY_VALUE = re.compile(
 _HIGH_ENTROPY = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9+/_=-])")
 
 
-def _mask_group(match: re.Match) -> str:
+def _mask_group(match: re.Match, settings: MaskingSettings) -> str:
     start, end = match.span("secret")
     text = match.group(0)
     offset = match.start()
-    return text[:start - offset] + _replacement() + text[end - offset:]
+    return text[:start - offset] + settings.mask + text[end - offset:]
 
 
-def _mask_key_value(match: re.Match, allowed_keys: frozenset) -> str:
-    if not is_secret_key(match.group("key"), allowed_keys):
+def _mask_key_value(match: re.Match, settings: MaskingSettings) -> str:
+    if not is_secret_key(match.group("key"), settings):
         # The value may hold a pair itself, e.g. "ValueError: password=x".
         prefix = f'{match.group("key")}{match.group("kq")}{match.group("sep")}'
         rest = match.group(0)[len(prefix):]
-        return prefix + _KEY_VALUE.sub(lambda m: _mask_key_value(m, allowed_keys), rest)
+        return prefix + _KEY_VALUE.sub(lambda m: _mask_key_value(m, settings), rest)
     if match.group("eq") is not None:
-        value = f'\\{match.group("eq")}{_replacement()}\\{match.group("eq")}'
+        value = f'\\{match.group("eq")}{settings.mask}\\{match.group("eq")}'
     elif match.group("q") is not None:
-        value = f'{match.group("q")}{_replacement()}{match.group("q")}'
+        value = f'{match.group("q")}{settings.mask}{match.group("q")}'
     else:
         bare = match.group("bare")
         # Keep nulls and an already masked value as they are.
-        if bare.lower() in {"none", "null", _replacement().lower()}:
+        if bare.lower() in {"none", "null", settings.mask.lower()}:
             return match.group(0)
-        value = _replacement()
+        value = settings.mask
     return f'{match.group("key")}{match.group("kq")}{match.group("sep")}{value}'
 
 
-def _reveal_key_value_partly(match: re.Match, partial_keys: frozenset) -> Optional[str]:
+def _reveal_key_value_partly(match: re.Match, settings: MaskingSettings) -> Optional[str]:
     """The pair with its value revealed partly, or None for any other key."""
-    if not _is_partial_key(match.group("key"), partial_keys):
+    if not _is_partial_key(match.group("key"), settings):
         return None
     prefix = f'{match.group("key")}{match.group("kq")}{match.group("sep")}'
     if match.group("eq") is not None:
         quote = f'\\{match.group("eq")}'
-        return f'{prefix}{quote}{reveal_partly(match.group(0)[len(prefix) + 2:-2])}{quote}'
+        return f'{prefix}{quote}{reveal_partly(match.group(0)[len(prefix) + 2:-2], settings)}{quote}'
     if match.group("q") is not None:
         quote = match.group("q")
-        return f'{prefix}{quote}{reveal_partly(match.group(0)[len(prefix) + 1:-1])}{quote}'
+        return f'{prefix}{quote}{reveal_partly(match.group(0)[len(prefix) + 1:-1], settings)}{quote}'
     bare = match.group("bare")
-    if bare.lower() in {"none", "null", _replacement().lower()}:
+    if bare.lower() in {"none", "null", settings.mask.lower()}:
         return match.group(0)
     scheme = re.match(r"(?i)(?:Bearer|Basic|Token)\s+", bare)
     scheme = scheme.group(0) if scheme else ""
-    return f'{prefix}{scheme}{reveal_partly(bare[len(scheme):])}'
+    return f'{prefix}{scheme}{reveal_partly(bare[len(scheme):], settings)}'
 
 
-def _protect_partial_pairs(text: str, partial_keys: frozenset, protected: list) -> str:
+def _protect_partial_pairs(text: str, settings: MaskingSettings, protected: list) -> str:
     """Reveal partial-key pairs partly and swap them for placeholders.
 
     The placeholders keep the general masking from masking them again.
     """
     def protect(match: re.Match) -> str:
-        revealed = _reveal_key_value_partly(match, partial_keys)
+        revealed = _reveal_key_value_partly(match, settings)
         if revealed is None:
             # The value may hold a pair itself, e.g. "ValueError: api_key=x".
             prefix = f'{match.group("key")}{match.group("kq")}{match.group("sep")}'
@@ -195,39 +203,34 @@ def _restore_partial_pairs(text: str, protected: list) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], text)
 
 
-def _mask_high_entropy_token(match: re.Match) -> str:
+def _mask_high_entropy_token(match: re.Match, settings: MaskingSettings) -> str:
     token = match.group(0)
     if re.search(r"[A-Z]", token) and re.search(r"[a-z]", token) and re.search(r"[0-9]", token):
-        return _replacement()
+        return settings.mask
     return token
 
 
-def mask_secrets_in_text(text: str, *, allowed_keys: Optional[Iterable[str]] = None,
-                         mask_high_entropy: Optional[bool] = None) -> str:
+def mask_secrets_in_text(text: str, settings: MaskingSettings = DEFAULT_SETTINGS) -> str:
     """Mask secret patterns in free text, e.g. a log line or a traceback.
 
     Values of partial keys in key=value pairs are revealed partly, also when
-    SECRET_MASKING is off. allowed_keys and mask_high_entropy default to the
-    configured settings.
+    masking is not enabled.
     """
-    partial_keys = _partial_keys()
-    if not text or not (config.SECRET_MASKING or partial_keys):
+    if not text or not settings.active:
         return text
     protected = []
-    if partial_keys:
-        text = _protect_partial_pairs(text, partial_keys, protected)
-    if config.SECRET_MASKING:
-        allowed_keys, mask_high_entropy = _settings(allowed_keys, mask_high_entropy)
+    if settings.partial_keys:
+        text = _protect_partial_pairs(text, settings, protected)
+    if settings.enabled:
         for pattern in _VALUE_PATTERNS:
-            text = pattern.sub(_mask_group, text)
-        text = _KEY_VALUE.sub(lambda m: _mask_key_value(m, allowed_keys), text)
-        if mask_high_entropy:
-            text = _HIGH_ENTROPY.sub(_mask_high_entropy_token, text)
+            text = pattern.sub(lambda m: _mask_group(m, settings), text)
+        text = _KEY_VALUE.sub(lambda m: _mask_key_value(m, settings), text)
+        if settings.high_entropy:
+            text = _HIGH_ENTROPY.sub(lambda m: _mask_high_entropy_token(m, settings), text)
     return _restore_partial_pairs(text, protected) if protected else text
 
 
-def mask_secrets_in_struct(value: Any, *, allowed_keys: Optional[Iterable[str]] = None,
-                           mask_high_entropy: Optional[bool] = None) -> Any:
+def mask_secrets_in_struct(value: Any, settings: MaskingSettings = DEFAULT_SETTINGS) -> Any:
     """Return a masked copy of value; value itself is never modified.
 
     Dicts and lists are walked at any depth. The value of a secret-looking key,
@@ -236,36 +239,32 @@ def mask_secrets_in_struct(value: Any, *, allowed_keys: Optional[Iterable[str]] 
     are returned as they are.
 
     A string under a partial key is revealed partly and any other value under
-    it masked fully, whether the key looks secret or not and also when
-    SECRET_MASKING is off. allowed_keys and mask_high_entropy default to the
-    configured settings.
+    it masked fully, whether the key looks secret or not and also when masking
+    is not enabled.
     """
-    partial_keys = _partial_keys()
-    if not (config.SECRET_MASKING or partial_keys):
+    if not settings.active:
         return value
-    return _mask(value, *_settings(allowed_keys, mask_high_entropy), partial_keys)
+    return _mask(value, settings)
 
 
-def _mask(value: Any, allowed_keys: frozenset, mask_high_entropy: bool, partial_keys: frozenset) -> Any:
+def _mask(value: Any, settings: MaskingSettings) -> Any:
     if isinstance(value, str):
-        return mask_secrets_in_text(value, allowed_keys=allowed_keys, mask_high_entropy=mask_high_entropy)
+        return mask_secrets_in_text(value, settings)
     if isinstance(value, dict):
-        return {key: _mask_item(key, item, allowed_keys, mask_high_entropy, partial_keys)
-                for key, item in value.items()}
+        return {key: _mask_item(key, item, settings) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return type(value)(_mask(item, allowed_keys, mask_high_entropy, partial_keys) for item in value)
+        return type(value)(_mask(item, settings) for item in value)
     return value
 
 
-def _mask_item(key: Any, item: Any, allowed_keys: frozenset, mask_high_entropy: bool,
-               partial_keys: frozenset) -> Any:
+def _mask_item(key: Any, item: Any, settings: MaskingSettings) -> Any:
     if item is None:
         return None
-    if _is_partial_key(key, partial_keys):
-        return reveal_partly(item) if isinstance(item, str) else _replacement()
-    if config.SECRET_MASKING and is_secret_key(key, allowed_keys):
-        return _replacement()
-    return _mask(item, allowed_keys, mask_high_entropy, partial_keys)
+    if _is_partial_key(key, settings):
+        return reveal_partly(item, settings) if isinstance(item, str) else settings.mask
+    if settings.enabled and is_secret_key(key, settings):
+        return settings.mask
+    return _mask(item, settings)
 
 
 # --- Logging ------------------------------------------------------------------
@@ -279,18 +278,21 @@ class SecretMaskingFilter(logging.Filter):
     carries a key (?api_key=...). Exception records are masked in full; of an
     access record only the path argument is masked, and only when it has a
     query string. All other records pass unchanged. Attach it to a handler to
-    cover records propagated from third-party loggers too; the server attaches
-    it to its handlers in LOGGING_CONFIG. Settings default to the configured ones.
+    cover records propagated from third-party loggers too.
+
+    settings is a MaskingSettings, or a function returning one that is called
+    for each record, so that changed settings apply at once; the defaults when
+    omitted.
     """
 
-    def __init__(self, name: str = "", *, allowed_keys: Optional[Iterable[str]] = None,
-                 mask_high_entropy: Optional[bool] = None):
+    def __init__(self, name: str = "", *,
+                 settings: Union[MaskingSettings, Callable[[], MaskingSettings]] = DEFAULT_SETTINGS):
         super().__init__(name)
-        self.allowed_keys = None if allowed_keys is None else _normalize_keys(allowed_keys)
-        self.mask_high_entropy = mask_high_entropy
+        self.settings = settings
 
     def filter(self, record: logging.LogRecord) -> bool:
-        mask_record(record, allowed_keys=self.allowed_keys, mask_high_entropy=self.mask_high_entropy)
+        settings = self.settings() if callable(self.settings) else self.settings
+        mask_record(record, settings)
         return True
 
 
@@ -302,24 +304,21 @@ ACCESS_LOGGER = "uvicorn.access"
 _ACCESS_PATH_ARG = 2
 
 
-def _mask_access_record(record: logging.LogRecord, settings: dict) -> logging.LogRecord:
+def _mask_access_record(record: logging.LogRecord, settings: MaskingSettings) -> logging.LogRecord:
     """Mask the query string of an access record's path; skip paths without one."""
     args = record.args
     if isinstance(args, tuple) and len(args) > _ACCESS_PATH_ARG:
         path = args[_ACCESS_PATH_ARG]
         if isinstance(path, str) and "?" in path:
-            record.args = (*args[:_ACCESS_PATH_ARG], mask_secrets_in_text(path, **settings),
+            record.args = (*args[:_ACCESS_PATH_ARG], mask_secrets_in_text(path, settings),
                            *args[_ACCESS_PATH_ARG + 1:])
     record._secrets_masked = True
     return record
 
 
-def mask_record(record: logging.LogRecord, *, allowed_keys: Optional[Iterable[str]] = None,
-                mask_high_entropy: Optional[bool] = None) -> logging.LogRecord:
-    if not (config.SECRET_MASKING or config.SECRET_MASKING_PARTIAL_KEYS) \
-            or getattr(record, "_secrets_masked", False):
+def mask_record(record: logging.LogRecord, settings: MaskingSettings = DEFAULT_SETTINGS) -> logging.LogRecord:
+    if not settings.active or getattr(record, "_secrets_masked", False):
         return record
-    settings = dict(allowed_keys=allowed_keys, mask_high_entropy=mask_high_entropy)
     if record.name == ACCESS_LOGGER and not record.exc_info:
         return _mask_access_record(record, settings)
     if not record.exc_info and not record.exc_text:
@@ -329,14 +328,14 @@ def mask_record(record: logging.LogRecord, *, allowed_keys: Optional[Iterable[st
     except Exception:
         # Leave a malformed record to logging's own error reporting.
         return record
-    record.msg = mask_secrets_in_text(message, **settings)
+    record.msg = mask_secrets_in_text(message, settings)
     record.args = None
     if record.exc_info and not record.exc_text:
         # Formatters reuse exc_text instead of formatting exc_info again.
         record.exc_text = _formatter.formatException(record.exc_info)
     if record.exc_text:
-        record.exc_text = mask_secrets_in_text(record.exc_text, **settings)
+        record.exc_text = mask_secrets_in_text(record.exc_text, settings)
     if record.stack_info:
-        record.stack_info = mask_secrets_in_text(record.stack_info, **settings)
+        record.stack_info = mask_secrets_in_text(record.stack_info, settings)
     record._secrets_masked = True
     return record

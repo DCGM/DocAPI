@@ -7,37 +7,6 @@ from doc_api.tools.mail.mail_sender import MailSender
 logger = logging.getLogger(__name__)
 
 
-# The server's own config is imported only by its factories, so that the mail
-# tools can be used without the server's settings.
-def get_internal_mail_logger():
-    from doc_api.config import config
-    return MailLogger(logger_name='doc_api.internal_mail_logger',
-                      sender_mail=config.INTERNAL_MAIL_SENDER_MAIL,
-                      receiver_mails=config.INTERNAL_MAIL_RECEIVER_MAILS,
-                      server=config.INTERNAL_MAIL_SERVER,
-                      port=config.INTERNAL_MAIL_PORT,
-                      sender_name=config.INTERNAL_MAIL_SENDER_NAME,
-                      password=config.INTERNAL_MAIL_PASSWORD,
-                      username=config.INTERNAL_MAIL_USERNAME,
-                      security=config.INTERNAL_MAIL_SECURITY,
-                      timeout=config.INTERNAL_MAIL_TIMEOUT_SECONDS,
-                      flood_level=config.INTERNAL_MAIL_FLOOD_LEVEL)
-
-
-def get_external_mail_logger():
-    from doc_api.config import config
-    return MailLogger(logger_name='doc_api.external_mail_logger',
-                      sender_mail=config.EXTERNAL_MAIL_SENDER_MAIL,
-                      server=config.EXTERNAL_MAIL_SERVER,
-                      port=config.EXTERNAL_MAIL_PORT,
-                      sender_name=config.EXTERNAL_MAIL_SENDER_NAME,
-                      password=config.EXTERNAL_MAIL_PASSWORD,
-                      username=config.EXTERNAL_MAIL_USERNAME,
-                      security=config.EXTERNAL_MAIL_SECURITY,
-                      timeout=config.EXTERNAL_MAIL_TIMEOUT_SECONDS,
-                      flood_level=config.EXTERNAL_MAIL_FLOOD_LEVEL)
-
-
 class MailLogger:
     """A logger whose records are emailed.
 

@@ -82,13 +82,13 @@ def test_config_rejects_invalid_intervals(field, value):
         WorkerHealthConfig(**{field: value})
 
 
-def test_subject_and_body_are_masked_and_prefix_is_configurable(health):
+def test_subject_and_body_are_sent_as_written_and_prefix_is_configurable(health):
     health.worker.mail_subject = "[My worker] {status}: {identity}"
-    health.worker.identity = "host api_key=private-value"
+    health.worker.identity = "host page_key=p1"
     health.send_alive()
     subject, body = health.worker.send_mail.call_args.args
-    assert subject.startswith("[My worker] ALIVE:")
-    assert "private-value" not in subject + body
+    assert subject == "[My worker] ALIVE: host page_key=p1"
+    assert "host page_key=p1" in body
 
 
 @pytest.fixture
@@ -275,16 +275,32 @@ def test_wrapper_rejects_health_without_mail_sender_before_side_effects(wrapper,
     assert "Worker health requires a mail sender." in caplog.text
 
 
-def test_failure_mail_masks_secrets_without_health(wrapper):
-    wrapper._notify_worker_failure("password=private-value")
+def test_failure_mail_is_sent_as_written_without_health(wrapper):
+    wrapper._notify_worker_failure("unknown page key: p1, contains_keyword=True")
     subject, body, _ = wrapper.mail_sender.send.call_args.args
-    assert "private-value" not in subject + body
+    assert "FAILURE" in subject
+    assert "unknown page key: p1, contains_keyword=True" in body
 
 
-def test_failure_mail_includes_exception_chain_and_masks_it(wrapper):
+def test_mail_sender_subclass_filters_all_worker_mail(wrapper):
+    from doc_api.tools.mail.mail_sender import MailSender
+
+    class RedactingMailSender(MailSender):
+        def send(self, subject, body, receiver_mails=None):
+            self.sent = (subject.replace("p1", "[id]"), body.replace("p1", "[id]"))
+            return True
+    wrapper.mail_sender = RedactingMailSender(server="smtp.example.org", sender_mail="worker@example.org")
+    wrapper.identity = "host p1"
+    wrapper._notify_worker_failure("page p1 failed")
+    assert "p1" not in "".join(wrapper.mail_sender.sent)
+    assert wrapper.send_mail("note p1", "body p1") is True
+    assert wrapper.mail_sender.sent == ("note [id]", "body [id]")
+
+
+def test_failure_mail_includes_exception_chain(wrapper):
     try:
         try:
-            raise OSError("disk full password=private-value")
+            raise OSError("disk full at page_key=p1")
         except OSError as cause:
             raise RuntimeError("cannot save history") from cause
     except RuntimeError as exception:
@@ -294,7 +310,7 @@ def test_failure_mail_includes_exception_chain_and_masks_it(wrapper):
     assert "OSError: disk full" in body
     assert "RuntimeError: cannot save history" in body
     assert "Traceback" in body
-    assert "private-value" not in body
+    assert "disk full at page_key=p1" in body
 
 
 def test_wrapper_defaults_identity_and_detects_hostname(wrapper, tmp_path):

@@ -8,7 +8,7 @@ from doc_api.api.checkers import job_mail
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import Config, config
 from doc_api.db import model
-from doc_api.tools.secrets import SecretMaskingFilter, mask_secrets_in_struct, mask_secrets_in_text
+from doc_api.tools.secrets import MaskingSettings, SecretMaskingFilter, mask_secrets_in_struct, mask_secrets_in_text
 
 MASK = "*****"
 OPENAI_KEY = "sk-proj-abcdefghijklmnopqrstuvwx"
@@ -39,9 +39,19 @@ def masking_settings(monkeypatch):
     monkeypatch.setattr(config, "SECRET_MASKING_EXTERNAL_MAIL", False)
 
 
+
+def masked_text(text, settings=None):
+    """Masked with the server's settings in force, as the server masks."""
+    return mask_secrets_in_text(text, settings or config.secret_masking())
+
+
+def masked_struct(value, settings=None):
+    return mask_secrets_in_struct(value, settings or config.secret_masking())
+
+
 def test_mask_secrets_in_struct_nested_keys_and_subtrees():
     original = copy.deepcopy(SETTINGS)
-    masked = mask_secrets_in_struct(SETTINGS)
+    masked = masked_struct(SETTINGS)
     assert SETTINGS == original
     assert masked == {
         "biblio": {"core": {"vlm": {"api_key": MASK, "model": "gpt-4o", "api_key_env": MASK,
@@ -53,19 +63,19 @@ def test_mask_secrets_in_struct_nested_keys_and_subtrees():
         "endpoint": f"https://reader:{MASK}@llm.example.org/v1",
         "note": f"fallback key is {MASK}",
     }
-    assert mask_secrets_in_struct(masked) == masked
-    assert mask_secrets_in_struct(("x", 1, None)) == ("x", 1, None)
+    assert masked_struct(masked) == masked
+    assert masked_struct(("x", 1, None)) == ("x", 1, None)
 
 
 def test_mask_secrets_in_struct_allowlist(monkeypatch):
     settings = {"api_key_env": "sk-abcdefghijklmnopqrstuvwx", "session": "s1", "cache_key": "pages", "author": "A"}
-    assert mask_secrets_in_struct(settings) == {"api_key_env": MASK, "session": MASK, "cache_key": MASK, "author": MASK}
+    assert masked_struct(settings) == {"api_key_env": MASK, "session": MASK, "cache_key": MASK, "author": MASK}
     monkeypatch.setattr(config, "SECRET_MASKING_ALLOWED_KEYS", ["api_key_env", "Cache-Key", " AUTHOR "])
     # Allowed values are still scanned for secret patterns.
-    assert mask_secrets_in_struct(settings) == \
+    assert masked_struct(settings) == \
            {"api_key_env": MASK, "session": MASK, "cache_key": "pages", "author": "A"}
-    assert mask_secrets_in_text("author=A, cache-key=pages, session=s1") == "author=A, cache-key=pages, session=*****"
-    assert mask_secrets_in_struct(settings, allowed_keys=["session"]) == \
+    assert masked_text("author=A, cache-key=pages, session=s1") == "author=A, cache-key=pages, session=*****"
+    assert mask_secrets_in_struct(settings, MaskingSettings(allowed_keys=["session"])) == \
            {"api_key_env": MASK, "session": "s1", "cache_key": MASK, "author": MASK}
 
 
@@ -93,8 +103,8 @@ def test_mask_secrets_in_struct_allowlist(monkeypatch):
     ("Engine: name=ocr, version=1.0, author=X", "Engine: name=ocr, version=1.0, author=*****"),
 ])
 def test_mask_secrets_in_text_patterns(text, expected):
-    assert mask_secrets_in_text(text) == expected
-    assert mask_secrets_in_struct(text) == expected
+    assert masked_text(text) == expected
+    assert masked_struct(text) == expected
 
 
 @pytest.mark.parametrize("prefix", ["doc-api", "myapp"])
@@ -104,28 +114,28 @@ def test_dotted_names_with_key_prefix_are_not_masked(monkeypatch, prefix):
     for text in (f"{prefix}.engines.loader.bind INFO : Loaded",
                  f"https://{prefix}.api.example.org/v1/jobs",
                  "doc-api.tools.secrets imported"):
-        assert mask_secrets_in_text(text) == text
+        assert masked_text(text) == text
     # Labelled keys stay masked whatever the prefix.
     key = f"{prefix}.Ab3dE9xY.0123456789abcdefghijABCDEFGHIJ0123456789"
-    assert mask_secrets_in_text(f"X-API-Key: {key}") == "X-API-Key: *****"
-    assert mask_secrets_in_text(f"GET /v1/me?api_key={key}&page=2") == "GET /v1/me?api_key=*****&page=2"
-    assert mask_secrets_in_text(f'{{"api_key": "{key}"}}') == '{"api_key": "*****"}'
-    assert mask_secrets_in_struct({"worker": {"api_key": key}}) == {"worker": {"api_key": MASK}}
+    assert masked_text(f"X-API-Key: {key}") == "X-API-Key: *****"
+    assert masked_text(f"GET /v1/me?api_key={key}&page=2") == "GET /v1/me?api_key=*****&page=2"
+    assert masked_text(f'{{"api_key": "{key}"}}') == '{"api_key": "*****"}'
+    assert masked_struct({"worker": {"api_key": key}}) == {"worker": {"api_key": MASK}}
 
 
 def test_custom_mask(monkeypatch):
     monkeypatch.setattr(config, "SECRET_MASKING_MASK", "[hidden]")
-    assert mask_secrets_in_struct({"api_key": "x", "n": 1}) == {"api_key": "[hidden]", "n": 1}
-    assert mask_secrets_in_text(f"api_key={OPENAI_KEY}, note {OPENAI_KEY}") == "api_key=[hidden], note [hidden]"
+    assert masked_struct({"api_key": "x", "n": 1}) == {"api_key": "[hidden]", "n": 1}
+    assert masked_text(f"api_key={OPENAI_KEY}, note {OPENAI_KEY}") == "api_key=[hidden], note [hidden]"
 
 
 def test_mask_secrets_in_text_high_entropy_switch(monkeypatch):
     text = "token-free id Q2xhdWRlIGNvZGUgaXMgaGVyZQ1234abcdXYZ and sha " + "9f86d081884c7d65" * 4
-    assert mask_secrets_in_text(text) == text
+    assert masked_text(text) == text
     masked = "token-free id ***** and sha " + "9f86d081884c7d65" * 4
-    assert mask_secrets_in_text(text, mask_high_entropy=True) == masked
+    assert mask_secrets_in_text(text, MaskingSettings(high_entropy=True)) == masked
     monkeypatch.setattr(config, "SECRET_MASKING_HIGH_ENTROPY", True)
-    assert mask_secrets_in_text(text) == masked
+    assert masked_text(text) == masked
 
 
 def _masked_log(*, propagate_from: str = "doc_api.tests.secret_masking"):
@@ -133,17 +143,23 @@ def _masked_log(*, propagate_from: str = "doc_api.tests.secret_masking"):
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(logging.Formatter("%(levelname)s : %(message)s"))
-    handler.addFilter(SecretMaskingFilter())
+    handler.addFilter(SecretMaskingFilter(settings=config.secret_masking))
     logger = logging.getLogger(propagate_from)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     return logger, handler, stream
 
 
-def test_server_log_handlers_mask_secrets():
-    handlers = Config().LOGGING_CONFIG["handlers"]
-    assert Config().LOGGING_CONFIG["filters"]["mask_secrets"]["()"] == "doc_api.tools.secrets.SecretMaskingFilter"
+def test_server_log_handlers_mask_secrets(monkeypatch):
+    server = Config()
+    handlers = server.LOGGING_CONFIG["handlers"]
+    mask_filter = server.LOGGING_CONFIG["filters"]["mask_secrets"]
+    assert mask_filter["()"] == "doc_api.tools.secrets.SecretMaskingFilter"
     assert all(handler["filters"] == ["mask_secrets"] for handler in handlers.values())
+    # The filter reads the server's settings in force for each record.
+    monkeypatch.setattr(server, "SECRET_MASKING_MASK", "[hidden]")
+    assert mask_filter["settings"]() == server.secret_masking()
+    assert mask_filter["settings"]().mask == "[hidden]"
 
 
 def test_logging_masks_only_exceptions():
@@ -266,8 +282,8 @@ def _sent_report(outbox, subject, body, channel="INTERNAL"):
 
 def test_masking_can_be_disabled(monkeypatch, job_mail_outbox):
     monkeypatch.setattr(config, "SECRET_MASKING", False)
-    assert mask_secrets_in_struct(SETTINGS) == SETTINGS
-    assert mask_secrets_in_text(f"api_key={OPENAI_KEY}") == f"api_key={OPENAI_KEY}"
+    assert masked_struct(SETTINGS) == SETTINGS
+    assert masked_text(f"api_key={OPENAI_KEY}") == f"api_key={OPENAI_KEY}"
     logger, handler, stream = _masked_log()
     try:
         try:
@@ -286,7 +302,7 @@ def test_partial_keys_in_struct(monkeypatch):
     settings = {"vlm": {"api_key": OPENAI_KEY, "model": "gpt-4o-mini-2024-07-18-preview", "token": OPENAI_KEY},
                 "short": {"api_key": "sk-abc"}, "nested": {"api_key": {"value": OPENAI_KEY}},
                 "number": {"model": 4}, "unset": {"api_key": None}}
-    assert mask_secrets_in_struct(settings) == {
+    assert masked_struct(settings) == {
         # Partial keys override: a key that does not look secret is masked too.
         "vlm": {"api_key": OPENAI_KEY_PARTLY, "model": "gpt-4o-m*****view", "token": MASK},
         # Too short to keep half hidden, and not a string: masked fully.
@@ -295,7 +311,7 @@ def test_partial_keys_in_struct(monkeypatch):
     }
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_START", 3)
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_END", 0)
-    assert mask_secrets_in_struct({"api_key": OPENAI_KEY}) == {"api_key": "sk-*****"}
+    assert masked_struct({"api_key": OPENAI_KEY}) == {"api_key": "sk-*****"}
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -313,15 +329,15 @@ def test_partial_keys_in_struct(monkeypatch):
 ])
 def test_partial_keys_in_text(monkeypatch, text, expected):
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["api_key"])
-    assert mask_secrets_in_text(text) == expected
+    assert masked_text(text) == expected
 
 
 def test_partial_keys_apply_with_masking_disabled(monkeypatch, job_mail_outbox):
     monkeypatch.setattr(config, "SECRET_MASKING", False)
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["api_key"])
-    assert mask_secrets_in_struct({"api_key": OPENAI_KEY, "token": OPENAI_KEY}) == \
+    assert masked_struct({"api_key": OPENAI_KEY, "token": OPENAI_KEY}) == \
            {"api_key": OPENAI_KEY_PARTLY, "token": OPENAI_KEY}
-    assert mask_secrets_in_text(f"api_key={OPENAI_KEY} token={OPENAI_KEY}") == \
+    assert masked_text(f"api_key={OPENAI_KEY} token={OPENAI_KEY}") == \
            f"api_key={OPENAI_KEY_PARTLY} token={OPENAI_KEY}"
     logger, handler, stream = _masked_log()
     try:
@@ -347,6 +363,8 @@ def test_masking_configuration(monkeypatch):
     assert (defaults.SECRET_MASKING_PARTIAL_KEYS, defaults.SECRET_MASKING_PARTIAL_START,
             defaults.SECRET_MASKING_PARTIAL_END) == ([], 8, 4)
     assert (defaults.SECRET_MASKING_INTERNAL_MAIL, defaults.SECRET_MASKING_EXTERNAL_MAIL) == (True, False)
+    # The server's defaults are the masking tool's own.
+    assert defaults.secret_masking() == MaskingSettings()
     monkeypatch.setenv("SECRET_MASKING", "false")
     monkeypatch.setenv("SECRET_MASKING_ALLOWED_KEYS", " api_key_env, max_tokens ,,")
     monkeypatch.setenv("SECRET_MASKING_HIGH_ENTROPY", "true")
@@ -363,6 +381,9 @@ def test_masking_configuration(monkeypatch):
     assert (configured.SECRET_MASKING_PARTIAL_KEYS, configured.SECRET_MASKING_PARTIAL_START,
             configured.SECRET_MASKING_PARTIAL_END) == (["api_key", "vlm_key"], 4, 0)
     assert (configured.SECRET_MASKING_INTERNAL_MAIL, configured.SECRET_MASKING_EXTERNAL_MAIL) == (False, True)
+    assert configured.secret_masking() == MaskingSettings(
+        enabled=False, mask="[hidden]", allowed_keys=["api_key_env", "max_tokens"], high_entropy=True,
+        partial_keys=["api_key", "vlm_key"], partial_start=4, partial_end=0)
     monkeypatch.setenv("SECRET_MASKING_MASK", "")
     assert Config().SECRET_MASKING_MASK == "*****"
 
@@ -410,7 +431,7 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
         if isinstance(data, list):
             data = next(item for item in data if item["id"] == str(job_id))
         privileged = reader_role in {"admin", "manager", "worker"}
-        assert data["engine_settings"] == (SETTINGS if privileged else mask_secrets_in_struct(SETTINGS))
+        assert data["engine_settings"] == (SETTINGS if privileged else masked_struct(SETTINGS))
         if reader_role in {"admin", "manager"}:
             assert data["log_user"] == f"old {OPENAI_KEY}\n\nusing {OPENAI_KEY}"
         else:
@@ -454,21 +475,41 @@ async def test_post_job_422_masks_echoed_input(client, user_headers):
 
 
 def test_workers_and_clients_do_not_mask():
-    import inspect
     import subprocess
     import sys
     from pathlib import Path
-    from doc_worker import doc_worker_wrapper
-    # Clients never load masking: what they receive and log is left as it is.
-    code = "import sys, doc_client.doc_client_wrapper; print('doc_api.tools.secrets' in sys.modules)"
+    # Workers and clients never load masking: what they receive, log, mail and
+    # report is left as it is.
+    for module in ("doc_client.doc_client_wrapper", "doc_worker.doc_worker_wrapper"):
+        code = f"import sys, {module}; print('doc_api.tools.secrets' in sys.modules)"
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                                cwd=Path(__file__).parents[2])
+        assert result.stdout.strip() == "False", module
+
+
+@pytest.mark.parametrize("module", ["doc_api.tools.secrets", "doc_api.tools.mail.mail_sender",
+                                    "doc_api.tools.mail.mail_handler", "doc_api.tools.mail.mail_logger",
+                                    "doc_api.adapter", "doc_api.api.schemas.base_objects",
+                                    "doc_worker.doc_worker_wrapper", "doc_client.doc_client_wrapper"])
+def test_tools_workers_and_clients_do_not_load_server_config(module):
+    import subprocess
+    import sys
+    from pathlib import Path
+    code = f"import sys, {module}; print('doc_api.config' in sys.modules)"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                             cwd=Path(__file__).parents[2])
-    assert result.stdout.strip() == "False"
-    # The worker masks only its own health and failure mail, never job data,
-    # results or what it reports to the API.
-    source = inspect.getsource(doc_worker_wrapper)
-    mail = inspect.getsource(doc_worker_wrapper.DocWorkerWrapper._send_worker_mail)
-    assert source.count("mask_secrets_in_text(") == mail.count("mask_secrets_in_text(") > 0
+    assert result.stdout.strip() == "False", module
+
+
+def test_masking_tool_without_settings_uses_defaults():
+    assert MaskingSettings() == MaskingSettings(enabled=True, mask="*****", allowed_keys=(), high_entropy=False,
+                                                partial_keys=(), partial_start=8, partial_end=4)
+    assert mask_secrets_in_text(f"api_key={OPENAI_KEY}") == "api_key=*****"
+    assert mask_secrets_in_text(f"api_key={OPENAI_KEY}", MaskingSettings(enabled=False)) == f"api_key={OPENAI_KEY}"
+    settings = MaskingSettings(mask="[x]", allowed_keys=[" Cache-Key "], partial_keys=["api_key"], partial_start=3,
+                               partial_end=0)
+    assert mask_secrets_in_struct({"cache_key": "pages", "api_key": OPENAI_KEY, "token": "t"}, settings) == \
+           {"cache_key": "pages", "api_key": "sk-[x]", "token": "[x]"}
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import subprocess
 
+from doc_api.tools.secrets import MaskingSettings
+
 COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 
 
@@ -367,10 +369,11 @@ class Config:
             # Masks the message and traceback of exception records these handlers
             # write, third-party loggers included, and the query string of
             # uvicorn access records; other records are unchanged.
-            # Follows SECRET_MASKING.
+            # Follows the SECRET_MASKING settings in force for each record.
             'filters': {
                 'mask_secrets': {
-                    '()': 'doc_api.tools.secrets.SecretMaskingFilter'
+                    '()': 'doc_api.tools.secrets.SecretMaskingFilter',
+                    'settings': self.secret_masking,
                 }
             },
             'handlers': {
@@ -520,6 +523,15 @@ class Config:
         if value < minimum:
             raise ValueError(f"{key} must be an integer >= {minimum}")
         return value
+
+    def secret_masking(self) -> MaskingSettings:
+        """The masking tool's settings from the SECRET_MASKING_* settings in force."""
+        return MaskingSettings(enabled=self.SECRET_MASKING, mask=self.SECRET_MASKING_MASK,
+                               allowed_keys=self.SECRET_MASKING_ALLOWED_KEYS,
+                               high_entropy=self.SECRET_MASKING_HIGH_ENTROPY,
+                               partial_keys=self.SECRET_MASKING_PARTIAL_KEYS,
+                               partial_start=self.SECRET_MASKING_PARTIAL_START,
+                               partial_end=self.SECRET_MASKING_PARTIAL_END)
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)

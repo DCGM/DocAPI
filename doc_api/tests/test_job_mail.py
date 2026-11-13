@@ -414,15 +414,14 @@ def test_job_mail_passes_smtp_security_and_username(job_mail_outbox, monkeypatch
     sender_factory.return_value.send.assert_called_once()
 
 
-@pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
-def test_mail_logger_passes_smtp_security_and_username(monkeypatch, channel):
-    from doc_api.tools.mail import mail_logger
+def test_mail_logger_passes_smtp_security_and_username(monkeypatch):
+    from doc_api.api import main
     factory = Mock()
-    monkeypatch.setattr(mail_logger, "MailLogger", factory)
-    monkeypatch.setattr(config, f"{channel}_MAIL_SECURITY", "starttls")
-    monkeypatch.setattr(config, f"{channel}_MAIL_USERNAME", "smtp-user")
-    monkeypatch.setattr(config, f"{channel}_MAIL_TIMEOUT_SECONDS", 12.5)
-    getattr(mail_logger, f"get_{channel.lower()}_mail_logger")()
+    monkeypatch.setattr(main, "MailLogger", factory)
+    monkeypatch.setattr(config, "INTERNAL_MAIL_SECURITY", "starttls")
+    monkeypatch.setattr(config, "INTERNAL_MAIL_USERNAME", "smtp-user")
+    monkeypatch.setattr(config, "INTERNAL_MAIL_TIMEOUT_SECONDS", 12.5)
+    main.internal_mail_logger_from_config()
     assert factory.call_args.kwargs["security"] == "starttls"
     assert factory.call_args.kwargs["username"] == "smtp-user"
     assert factory.call_args.kwargs["timeout"] == 12.5

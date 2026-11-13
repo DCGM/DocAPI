@@ -36,7 +36,7 @@ from doc_api.api.schemas.responses import AppCode, validate_server_error_respons
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
 from doc_api.config import config
-from doc_api.tools.mail.mail_logger import get_internal_mail_logger
+from doc_api.tools.mail.mail_logger import MailLogger
 from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from doc_api.db import model
 
@@ -44,7 +44,23 @@ from doc_api.db import model
 exception_logger = logging.getLogger('doc_api.exception_logger')
 exception_logger.propagate = False
 
-internal_mail_logger = get_internal_mail_logger().logger
+def internal_mail_logger_from_config() -> MailLogger:
+    """The logger that mails unhandled errors to the server's admins over the
+    internal mail channel."""
+    return MailLogger(logger_name='doc_api.internal_mail_logger',
+                      sender_mail=config.INTERNAL_MAIL_SENDER_MAIL,
+                      receiver_mails=config.INTERNAL_MAIL_RECEIVER_MAILS,
+                      server=config.INTERNAL_MAIL_SERVER,
+                      port=config.INTERNAL_MAIL_PORT,
+                      sender_name=config.INTERNAL_MAIL_SENDER_NAME,
+                      password=config.INTERNAL_MAIL_PASSWORD,
+                      username=config.INTERNAL_MAIL_USERNAME,
+                      security=config.INTERNAL_MAIL_SECURITY,
+                      timeout=config.INTERNAL_MAIL_TIMEOUT_SECONDS,
+                      flood_level=config.INTERNAL_MAIL_FLOOD_LEVEL)
+
+
+internal_mail_logger = internal_mail_logger_from_config().logger
 
 
 logger = logging.getLogger(__name__)
@@ -292,7 +308,7 @@ async def validation_handler(_: Request, exc: RequestValidationError):
             Exception: str,
             # Invalid numeric input must still produce a valid JSON error response.
             float: lambda value: value if isfinite(value) else str(value),
-        }))
+        }), config.secret_masking())
     )
     return validate_client_error_response(payload)
 
@@ -303,7 +319,7 @@ async def unhandled(request: Request, exc: Exception):
     # logged exception is masked by the log handlers' filter; the URL line is
     # plain text and is masked here, and so is the mail if
     # SECRET_MASKING_INTERNAL_MAIL is on.
-    url = mask_secrets_in_text(str(request.url))
+    url = mask_secrets_in_text(str(request.url), config.secret_masking())
     if config.INTERNAL_MAIL_SERVER is not None:
         subject = config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
             server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME)
@@ -313,7 +329,7 @@ async def unhandled(request: Request, exc: Exception):
                 f'ERROR: {exc}\n\n'
                 f'{traceback.format_exc()}')
         if config.SECRET_MASKING_INTERNAL_MAIL:
-            body = mask_secrets_in_text(body)
+            body = mask_secrets_in_text(body, config.secret_masking())
         internal_mail_logger.critical(body, extra={'subject': " ".join(subject.splitlines())})
     exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
