@@ -57,8 +57,8 @@ async def test_swagger_root_path_and_version(monkeypatch):
 
 
 @pytest.mark.parametrize('api_url,worker_url', [('', ''), ('https://github.com/DCGM/DocAPI', ''),
-    ('', 'https://github.com/DCGM/MetaKat'),
-    ('https://github.com/DCGM/DocAPI', 'https://github.com/DCGM/MetaKat/')])
+    ('', 'https://github.com/example/worker'),
+    ('https://github.com/DCGM/DocAPI', 'https://github.com/example/worker/')])
 @pytest.mark.asyncio
 async def test_native_swagger_description(monkeypatch, api_url, worker_url):
     monkeypatch.setattr(config, 'API_REPOSITORY_URL', api_url)
