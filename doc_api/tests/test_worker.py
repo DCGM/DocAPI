@@ -2776,12 +2776,17 @@ async def test_patch_job_200_attempt_logs(client, worker_headers, admin_headers,
         if all_attempts:
             assert "ATTEMPT 2 STARTED AT " in job["log"]
             assert "latest technical" in job["log"] and "first\nsecond\n" in job["log"]
-        listing = await client.get("/v1/jobs", headers=headers)
+        listing = await client.get("/v1/jobs", headers=headers, params={"include_logs": "true"})
         # Workers cannot list jobs; user/readonly/admin must use the same log projection as GET.
         if headers == user_headers or all_attempts:
             assert listing.status_code == 200, listing.text
             listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
             assert listed["log_user"] == job["log_user"]
+            # Logs are opt-in in the listing.
+            listing = await client.get("/v1/jobs", headers=headers)
+            assert listing.status_code == 200, listing.text
+            listed = next(item for item in listing.json()["data"] if item["id"] == str(job_id))
+            assert "log_user" not in listed
 
 
 @pytest.mark.parametrize("worker_role", ["worker", "admin", "manager"])
