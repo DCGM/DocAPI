@@ -42,10 +42,35 @@ class MonitorTotals(BaseModel):
     runtime_seconds: float | None
 
 
-class MonitorStats(BaseModel):
+class MonitorStateStats(BaseModel):
     done: MonitorTotals
     failed: MonitorTotals
     attempts: MonitorTotals
+
+
+class MonitorGroupStats(MonitorStateStats):
+    """Totals cover all matching states, independently of the DONE/FAILED breakdown."""
+    total: MonitorTotals
+
+
+class MonitorKeyStats(MonitorGroupStats):
+    id: UUID | None
+    label: str | None
+
+
+class MonitorEngineStats(MonitorGroupStats):
+    name: str | None
+
+
+class MonitorEngineVersionStats(MonitorEngineStats):
+    version: str | None
+
+
+class MonitorStats(MonitorStateStats):
+    owners: list[MonitorKeyStats]
+    workers: list[MonitorKeyStats]
+    engines: list[MonitorEngineStats]
+    engine_versions: list[MonitorEngineVersionStats]
 
 
 class MonitorJob(BaseModel):
@@ -79,7 +104,6 @@ class MonitorProcessing(BaseModel):
 class MonitorWorker(BaseModel):
     id: UUID
     label: str
-    enabled: bool
     last_used: datetime | None
     status: Literal['active', 'idle', 'off']
     processing_jobs: int

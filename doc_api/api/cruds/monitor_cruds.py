@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select, func, case, and_, or_, exc, text, true
+from sqlalchemy import select, func, case, and_, or_, exc, text, true, tuple_
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,23 +51,58 @@ async def get_database_stats(*, db: AsyncSession):
         raise DBError('Failed reading monitoring database statistics.') from error
 
 
-async def get_stats(*, db: AsyncSession, **filters):
-    # Attempt counters exclude released leases. Individual attempt timestamps
-    # and historical worker assignments are not stored.
+async def get_stats(*, db: AsyncSession, top: int = 10, top_by: str = 'job_count', **filters):
+    # Select only the scalar inputs, never definitions, logs or image records.
     job = model.Job
+    query = jobs_query(**filters)
+    owner_label, worker_label = list(query.selected_columns)[-2:]
     attempts = func.coalesce(job.previous_attempts + 1, 0)
     valid_dates = and_(job.started_date.is_not(None), job.finished_date.is_not(None),
                        job.finished_date >= job.started_date)
     elapsed = case((valid_dates, func.extract('epoch', job.finished_date - job.started_date)), else_=None)
-    query = jobs_query(**filters)
+    filtered = query.with_only_columns(
+        job.state, job.owner_key_id, owner_label.label('owner_label'),
+        job.worker_key_id, worker_label.label('worker_label'),
+        model.Engine.name.label('engine_name'), model.Engine.version.label('engine_version'),
+        job.image_count, elapsed.label('runtime_seconds'), attempts.label('attempt_count'),
+    ).cte('filtered_jobs')
+    f = filtered.c
+    dimensions = [f.owner_key_id, f.owner_label, f.worker_key_id, f.worker_label,
+                  f.engine_name, f.engine_version]
+    measures = [func.count().label('job_count'), func.coalesce(func.sum(f.image_count), 0).label('image_count'),
+                func.sum(f.runtime_seconds).label('runtime_seconds'),
+                func.coalesce(func.sum(f.attempt_count), 0).label('attempt_count'),
+                func.coalesce(func.sum(f.attempt_count * f.image_count), 0).label('attempt_image_count')]
+    for state in (ProcessingState.DONE, ProcessingState.FAILED):
+        measures.extend([
+            func.count().filter(f.state == state).label(state.value + '_job_count'),
+            func.coalesce(func.sum(f.image_count).filter(f.state == state), 0).label(state.value + '_image_count'),
+            func.sum(f.runtime_seconds).filter(f.state == state).label(state.value + '_runtime_seconds'),
+        ])
+    # GROUPING distinguishes a genuine NULL identity from a rolled-up dimension.
+    category = case(
+        (func.grouping(f.owner_key_id) == 0, 'owners'),
+        (func.grouping(f.worker_key_id) == 0, 'workers'),
+        (func.grouping(f.engine_version) == 0, 'engine_versions'),
+        (func.grouping(f.engine_name) == 0, 'engines'),
+        else_='overall',
+    ).label('category')
+    grouped = select(*dimensions, category, *measures).group_by(
+        func.grouping_sets(tuple_(), tuple_(f.owner_key_id, f.owner_label),
+                           tuple_(f.worker_key_id, f.worker_label), tuple_(f.engine_name),
+                           tuple_(f.engine_name, f.engine_version)),
+    ).cte('grouped_stats')
+    g = grouped.c
+    ranked = select(*g, func.row_number().over(
+        partition_by=g.category,
+        order_by=[g[top_by].desc().nulls_last(),
+                  *(column.asc().nulls_last() for column in list(g)[:6])],
+    ).label('rank')).cte('ranked_stats')
+    query = select(ranked).where(or_(ranked.c.category == 'overall', ranked.c.rank <= top)).order_by(
+        ranked.c.category, ranked.c.rank)
     try:
         async with db.begin():
-            aggregate = query.with_only_columns(
-                job.state, func.count().label('job_count'), func.sum(job.image_count).label('image_count'),
-                func.sum(elapsed).label('runtime_seconds'), func.sum(attempts).label('attempt_count'),
-                func.sum(attempts * job.image_count).label('attempt_image_count'),
-            ).group_by(job.state)
-            return (await db.execute(aggregate)).mappings().all()
+            return (await db.execute(query)).mappings().all()
     except exc.SQLAlchemyError as error:
         raise DBError('Failed reading monitoring job statistics.') from error
 
@@ -151,10 +186,11 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset:
 async def get_workers(*, db: AsyncSession):
     processing = select(model.Job.worker_key_id.label('key_id'), func.count().label('processing_jobs')).where(
         model.Job.state == ProcessingState.PROCESSING).group_by(model.Job.worker_key_id).subquery()
-    query = select(model.Key.id, model.Key.label, model.Key.active.label('enabled'), model.Key.last_used,
+    query = select(model.Key.id, model.Key.label, model.Key.last_used,
                    func.coalesce(processing.c.processing_jobs, 0).label('processing_jobs')).outerjoin(
         processing, processing.c.key_id == model.Key.id).where(
-        model.Key.role == KeyRole.WORKER).order_by(model.Key.label)
+        model.Key.role == KeyRole.WORKER, model.Key.active.is_(True)).order_by(
+        model.Key.last_used.desc().nulls_last(), model.Key.label, model.Key.id)
     try:
         async with db.begin():
             return (await db.execute(query)).mappings().all()

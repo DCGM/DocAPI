@@ -504,19 +504,43 @@ async def test_get_monitor_workers_excludes_management_assignments(client, monit
 
 
 @pytest.mark.asyncio
+async def test_get_monitor_workers_enabled_last_seen_order(client, monitor_headers, worker_key, db_sessions):
+    now = datetime.now(timezone.utc)
+    async with db_sessions.begin() as db:
+        (await db.get(model.Key, worker_key.id)).last_used = now - timedelta(minutes=1)
+        for label, last_used, active in [
+            ('a-never-seen', None, True),
+            ('z-recent', now, True),
+            ('disabled-recent', now + timedelta(seconds=1), False),
+        ]:
+            db.add(model.Key(label=label, role=KeyRole.WORKER, active=active,
+                             last_used=last_used, kid=label, salt=label, key_hash=label))
+    response = await client.get('/v1/monitor/workers', headers=monitor_headers)
+    assert response.status_code == 200, response.text
+    workers = response.json()['data']
+    assert [row['label'] for row in workers] == ['z-recent', worker_key.label, 'a-never-seen']
+    assert all('enabled' not in row for row in workers)
+
+
+@pytest.mark.asyncio
 async def test_get_monitor_workers_200_processing_always_active(client, monitor_headers, monitor_jobs,
                                                                worker_key, db_sessions):
     async with db_sessions.begin() as db:
         key = await db.get(model.Key, worker_key.id)
         key.last_used = None
-        key.active = False
     response = await client.get('/v1/monitor/workers', headers=monitor_headers)
     worker = next(row for row in response.json()['data'] if row['id'] == str(worker_key.id))
     assert worker['status'] == 'active'
     assert worker['processing_jobs'] == 1
-    assert worker['enabled'] is False
+    assert 'enabled' not in worker
     assert worker['last_used'] is None
     assert not {'kid', 'key_hash', 'salt'} & worker.keys()
+
+    async with db_sessions.begin() as db:
+        (await db.get(model.Key, worker_key.id)).active = False
+    response = await client.get('/v1/monitor/workers', headers=monitor_headers)
+    assert response.status_code == 200, response.text
+    assert str(worker_key.id) not in {row['id'] for row in response.json()['data']}
 
 
 @pytest.mark.parametrize('path', [
@@ -629,3 +653,92 @@ async def test_get_monitor_stats_200_unavailable_runtime(client, admin_headers, 
     assert response.status_code == 200, response.text
     assert response.json()['data']['done']['job_count'] == 1
     assert response.json()['data']['done']['runtime_seconds'] is None
+
+
+@pytest.mark.asyncio
+async def test_get_monitor_stats_200_group_partitions(client, monitor_headers, monitor_jobs, db_sessions):
+    from sqlalchemy import event
+
+    statements = []
+    async with db_sessions() as db:
+        engine = db.bind.sync_engine
+    def record(connection, cursor, statement, parameters, context, executemany):
+        if 'GROUPING SETS' in statement:
+            statements.append(statement)
+    event.listen(engine, 'before_cursor_execute', record)
+    try:
+        response = await client.get('/v1/monitor/jobs/statistics', headers=monitor_headers,
+                                    params=[('state', 'done'), ('state', 'failed')])
+    finally:
+        event.remove(engine, 'before_cursor_execute', record)
+    assert response.status_code == 200, response.text
+    assert len(statements) == 1
+    data = response.json()['data']
+    for category in ('owners', 'workers', 'engines', 'engine_versions'):
+        groups = data[category]
+        assert len(groups) == 1
+        assert groups[0]['total'] == {'job_count': 2, 'image_count': 17, 'runtime_seconds': 720}
+        for state in ('done', 'failed', 'attempts'):
+            assert groups[0][state] == data[state]
+    assert data['owners'][0]['id'] is not None
+    assert data['workers'][0]['id'] is not None
+    assert data['engines'][0]['name'] is None
+    assert data['engine_versions'][0]['version'] is None
+
+
+@pytest.mark.asyncio
+async def test_get_monitor_stats_200_group_ranking(client, admin_headers, job_factory, engine_factory, db_sessions):
+    engines = [await engine_factory(name='Alpha', version='1'),
+               await engine_factory(name='Alpha', version='2'),
+               await engine_factory(name='Beta', version='1')]
+    identities = []
+    for label in ('rank-a', 'rank-b'):
+        response = await client.post('/v1/admin/keys', headers=admin_headers,
+                                     json={'label': label, 'role': 'user'})
+        assert response.status_code == 201, response.text
+        identity = await client.get('/v1/me', headers={'X-API-Key': response.json()['data']['secret']})
+        assert identity.status_code == 200, identity.text
+        identities.append(UUID(identity.json()['data']['id']))
+    now = datetime.now(timezone.utc)
+    for index, (images, runtime, previous) in enumerate([(2, 10, 1), (5, 20, 0), (9, 40, 2), (1, None, None)]):
+        job_id = await job_factory(ProcessingState.FAILED if index == 1 else ProcessingState.DONE,
+                                   owner_key_id=identities[index // 2])
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            job.engine_id = engines[index].id if index < 3 else None
+            job.worker_key_id = identities[index // 2] if index < 3 else None
+            job.image_count = images
+            job.previous_attempts = previous
+            job.finished_date = now
+            job.started_date = now - timedelta(seconds=runtime) if runtime is not None else None
+    async def stats(**params):
+        response = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers, params=params)
+        assert response.status_code == 200, response.text
+        return response.json()['data']
+    all_groups = await stats()
+    assert [row['name'] for row in all_groups['engines']] == ['Alpha', 'Beta', None]
+    assert [(row['name'], row['version']) for row in all_groups['engine_versions']] == [
+        ('Alpha', '1'), ('Alpha', '2'), ('Beta', '1'), (None, None)]
+    assert [(row['label'], row['total']['job_count']) for row in all_groups['workers']] == [
+        ('rank-a', 2), ('rank-b', 1), (None, 1)]
+    for top_by, expected in [('job_count', 'Alpha'), ('image_count', 'Beta'),
+                             ('runtime_seconds', 'Beta'), ('attempt_count', 'Alpha'),
+                             ('attempt_image_count', 'Beta')]:
+        limited = await stats(top=1, top_by=top_by)
+        assert all(len(limited[category]) == 1 for category in ('owners', 'workers', 'engines', 'engine_versions'))
+        assert limited['engines'][0]['name'] == expected
+        for state in ('done', 'failed', 'attempts'):
+            assert limited[state] == all_groups[state]
+    filtered = await stats(engine_name='Alpha', engine_version='2', state='failed', top=1)
+    assert filtered['engines'][0]['total']['job_count'] == 1
+    assert filtered['engines'][0]['failed'] == filtered['failed']
+    empty = await stats(owner_label='nonexistent')
+    assert all(empty[category] == [] for category in ('owners', 'workers', 'engines', 'engine_versions'))
+    assert empty['done']['job_count'] == empty['attempts']['job_count'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('params', [{'top': 0}, {'top': -1}, {'top_by': 'unknown'}])
+async def test_get_monitor_stats_422_group_options(client, admin_headers, params):
+    response = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers, params=params)
+    assert response.status_code == 422, response.text

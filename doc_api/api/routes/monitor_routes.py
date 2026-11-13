@@ -108,11 +108,16 @@ async def get_database(key: model.Key = Depends(require_management_key),
 @monitor_router.get('/jobs/statistics', summary='Get Job Statistics', tags=['Monitor'],
                     openapi_extra={'x-order': 401},
                     description='Aggregate every job matching the job-list filters except result availability, before pagination. '
-                                'No limit or ordering applies. Released leases do not count as attempts. '
+                                'Overall totals are unlimited. Grouped owners, workers, engines and engine versions are ranked separately. '
+                                'top defaults to 10 per group type; top_by ranks descending across all matching states, '
+                                'with identity as a deterministic tie-breaker. Null identities represent unassigned jobs. '
+                                'Workers refer to the latest assignment. Released leases do not count as attempts. '
                                 'Images count per attempt. Runtime spans first start to finish, including retry waits. '
                                 'Individual attempt times, runtimes and historical worker attribution are unavailable.',
                     response_model=DocAPIResponseOK[schemas.MonitorStats], responses=make_responses(STATS_RESPONSES))
-async def get_stats(owner_label: str | None = None, worker_label: str | None = None,
+async def get_stats(top: Annotated[int, Query(ge=1, description='Maximum entries per category; overall totals are unaffected.')] = 10,
+                    top_by: Literal['job_count', 'image_count', 'runtime_seconds', 'attempt_count', 'attempt_image_count'] = 'job_count',
+                    owner_label: str | None = None, worker_label: str | None = None,
                     state: list[base_objects.ProcessingState] | None = Query(None, description="Filter by one or more states; repeat state for multiple values."),
                     engine_name: str | None = None, engine_version: str | None = None,
                     from_created_date: base_objects.UTCDateTime | None = None,
@@ -121,20 +126,40 @@ async def get_stats(owner_label: str | None = None, worker_label: str | None = N
                     from_last_change: base_objects.UTCDateTime | None = None,
                     key: model.Key = Depends(require_management_key), db: AsyncSession = Depends(get_async_session)):
     rows = await monitor_cruds.get_stats(
-        db=db, owner_label=owner_label, worker_label=worker_label, state=state,
+        db=db, top=top, top_by=top_by, owner_label=owner_label, worker_label=worker_label, state=state,
         engine_name=engine_name, engine_version=engine_version,
         from_created_date=from_created_date, from_started_date=from_started_date,
         from_finished_date=from_finished_date, from_last_change=from_last_change)
-    totals = {state: schemas.MonitorTotals(job_count=0, image_count=0, runtime_seconds=0 if state != 'attempts' else None)
-              for state in ('done', 'failed', 'attempts')}
+
+    def totals(row):
+        values = {}
+        for state in ('done', 'failed'):
+            count = row[state + '_job_count']
+            values[state] = schemas.MonitorTotals(
+                job_count=count, image_count=row[state + '_image_count'],
+                runtime_seconds=row[state + '_runtime_seconds'] if count else 0)
+        values['attempts'] = schemas.MonitorTotals(
+            job_count=row['attempt_count'], image_count=row['attempt_image_count'], runtime_seconds=None)
+        return values
+
+    groups = {'owners': [], 'workers': [], 'engines': [], 'engine_versions': []}
     for row in rows:
-        state = row['state'].value
-        if state in ('done', 'failed'):
-            totals[state] = schemas.MonitorTotals(job_count=row['job_count'], image_count=row['image_count'],
-                                                  runtime_seconds=row['runtime_seconds'])
-        totals['attempts'].job_count += row['attempt_count']
-        totals['attempts'].image_count += row['attempt_image_count']
-    return _ok(schemas.MonitorStats(**totals), STATS_RESPONSES)
+        values = totals(row)
+        if row['category'] == 'overall':
+            overall = values
+            continue
+        values['total'] = schemas.MonitorTotals(
+            job_count=row['job_count'], image_count=row['image_count'], runtime_seconds=row['runtime_seconds'])
+        if row['category'] in ('owners', 'workers'):
+            field, prefix = ('owners', 'owner') if row['category'] == 'owners' else ('workers', 'worker')
+            groups[field].append(schemas.MonitorKeyStats(
+                id=row[prefix + '_key_id'], label=row[prefix + '_label'], **values))
+        elif row['category'] == 'engines':
+            groups['engines'].append(schemas.MonitorEngineStats(name=row['engine_name'], **values))
+        else:
+            groups['engine_versions'].append(schemas.MonitorEngineVersionStats(
+                name=row['engine_name'], version=row['engine_version'], **values))
+    return _ok(schemas.MonitorStats(**overall, **groups), STATS_RESPONSES)
 
 
 @monitor_router.get('/jobs/processing', summary='Get Processing Activity', tags=['Monitor'],
@@ -170,7 +195,8 @@ async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
 
 @monitor_router.get('/workers', summary='Get Worker Activity', tags=['Monitor'],
                     openapi_extra={'x-order': 403},
-                    description='Read activity per worker key. PROCESSING assignments always mean active. '
+                    description='Read activity for enabled worker keys, ordered by last_used descending '
+                                'with never-seen workers last. PROCESSING assignments always mean active. '
                                 'Otherwise recent last_used means idle and older or missing last_used means off. '
                                 'Multiple processes sharing one key appear as one worker.',
                     response_model=DocAPIResponseOK[list[schemas.MonitorWorker]], responses=make_responses(WORKERS_RESPONSES))
