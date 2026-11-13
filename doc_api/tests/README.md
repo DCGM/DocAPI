@@ -846,7 +846,7 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] engine settings and job logs by role; storage intact. [`test_secret_masking.py::test_get_job_200_engine_settings_masked_for_readers`](test_secret_masking.py).
 - [x] engine settings and job logs with partial keys by role. [`test_secret_masking.py::test_get_job_200_partial_keys_revealed_partly`](test_secret_masking.py).
 - [x] validation errors echoing input. [`test_secret_masking.py::test_post_job_422_masks_echoed_input`](test_secret_masking.py).
-- [x] workers and clients never load masking. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
+- [x] clients never load masking; workers mask only their own health and failure mail. [`test_secret_masking.py::test_workers_and_clients_do_not_mask`](test_secret_masking.py).
 - [x] the database password is never logged. [`test_secret_masking.py::test_database_password_is_never_logged`](test_secret_masking.py).
 
 ### Alembic migrations
