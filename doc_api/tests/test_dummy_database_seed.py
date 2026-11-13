@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select, func
 import pytest
 
+from doc_api.api.checkers import job_mail
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.db import model
 from scripts.seed_dummy_database import DUMMY_UUID_PREFIX, clear_database, seed_database
@@ -50,6 +51,25 @@ async def test_seed_dummy_database_finished_dataset(client, admin_headers, isola
         assert await db.get(model.Key, jobs[0].owner_key_id) is None
     assert await clear_database(isolated_database.engine.url.render_as_string(hide_password=False)) == {
         'jobs': 0, 'keys': 0, 'engines': 0}
+
+
+@pytest.mark.asyncio
+async def test_seed_dummy_database_sends_no_job_mail(isolated_database, db_sessions, job_mail_outbox):
+    database_url = isolated_database.engine.url.render_as_string(hide_password=False)
+    await seed_database(database_url, jobs=1005, owners=3, workers=2, engines=1, versions=1,
+                        prefix='dummy-no-mail')
+    async with db_sessions() as db:
+        rows = (await db.scalars(select(model.JobNotification))).all()
+        assert len(rows) == 1005 and len({row.job_id for row in rows}) == 1005
+        assert {row.state for row in rows} == {'sent'}
+        assert all(str(row.id).startswith(DUMMY_UUID_PREFIX + '-') for row in rows)
+    await job_mail.check_job_notifications()
+    assert job_mail_outbox == []
+    async with db_sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(model.JobNotification)) == 1005
+    await clear_database(database_url)
+    async with db_sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(model.JobNotification)) == 0
 
 
 @pytest.mark.asyncio

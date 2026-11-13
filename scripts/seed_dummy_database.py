@@ -3,8 +3,9 @@
 Run from the repository root with server dependencies installed:
     python -m scripts.seed_dummy_database postgresql://postgres:postgres@localhost:5433/doc_api_db
 
-Only DONE/FAILED jobs are inserted. No files, notifications or runnable work are
-created. Dummy engines are inactive and key secrets are unusable by default.
+Only DONE/FAILED jobs are inserted. No files or runnable work are created, and no
+mail is sent: each job gets one notification record already marked sent, so the
+server's job mail checker never queues a report for it. Dummy engines are inactive and key secrets are unusable by default.
 Deleted-file timestamps reflect that the synthetic files do not exist. Each run has its own
 label prefix and adds records without modifying existing data. All synthetic job,
 key and engine UUIDs begin with d00df00d-. Use --clear to remove these records.
@@ -26,6 +27,8 @@ from doc_api.db import model
 
 
 DUMMY_UUID_PREFIX = 'd00df00d'
+# Placeholder recipient of the suppressed notifications; .invalid never resolves.
+DUMMY_NOTIFICATION_RECIPIENT = 'dummy-records@example.invalid'
 
 
 def dummy_uuid():
@@ -101,6 +104,7 @@ async def seed_database(database_url, *, jobs=10000, owners=40, workers=20, engi
             await connection.execute(insert(model.Key), keys)
             await connection.execute(insert(model.Engine), engine_rows)
             batch = []
+            notifications = []
             for index in range(jobs):
                 state = ProcessingState.DONE if rng.random() < 0.8 else ProcessingState.FAILED
                 done += state == ProcessingState.DONE
@@ -129,9 +133,19 @@ async def seed_database(database_url, *, jobs=10000, owners=40, workers=20, engi
                     final_log={attempt: f'Synthetic job finished with state {state.value.upper()}.'},
                     final_log_user={attempt: 'Synthetic output; no files were generated.'},
                 ))
+                # The job mail checker prepares notifications only for jobs without any,
+                # so one already-sent record keeps synthetic reports out of every channel.
+                notifications.append(dict(
+                    id=dummy_uuid(), job_id=batch[-1]['id'], channel='INTERNAL',
+                    recipient=DUMMY_NOTIFICATION_RECIPIENT, subject='Synthetic job; no mail sent.', body='',
+                    state='sent', delivery_attempts=0, created_at=now, next_attempt_at=now,
+                    last_error='Suppressed by the dummy database seeder; never delivered.',
+                ))
                 if len(batch) == 1000 or index == jobs - 1:
                     await connection.execute(insert(model.Job), batch)
+                    await connection.execute(insert(model.JobNotification), notifications)
                     batch.clear()
+                    notifications.clear()
     finally:
         await engine.dispose()
     return dict(prefix=prefix, jobs=jobs, done=done, failed=failed, owners=owners,
