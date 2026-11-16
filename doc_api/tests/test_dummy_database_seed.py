@@ -7,7 +7,7 @@ import pytest
 from doc_api.api.checkers import job_mail
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.db import model
-from scripts.seed_dummy_database import DUMMY_UUID_PREFIX, clear_database, seed_database
+from doc_api.db.seed_dummy_database import DUMMY_UUID_PREFIX, clear_database, seed_database
 
 
 @pytest.mark.asyncio
