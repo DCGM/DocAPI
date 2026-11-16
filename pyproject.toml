@@ -54,6 +54,7 @@ dev = [
     "httpx",
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
     "pytest_asyncio"
 ]
 

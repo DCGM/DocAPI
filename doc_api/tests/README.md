@@ -1,11 +1,13 @@
 # Running tests
 
-Install the service and test dependencies in your Python environment:
+The workflow and the rules for changes are in [`AGENTS.md`](../../AGENTS.md).
+Install the pinned server versions and the test dependencies in your Python
+environment:
 
 ```sh
-python -m pip install -e '.[server,dev]'
+python -m pip install -r doc_api/requirements.txt -e '.[server,dev]'
 export TEST_DATABASE_URL='postgresql+asyncpg://test_user:password@localhost:5432/postgres'
-python -m pytest doc_api/tests doc_worker/tests
+python -m pytest -n 8 doc_api/tests doc_worker/tests
 ```
 
 `TEST_DATABASE_URL` points to an existing PostgreSQL maintenance database. Its user
