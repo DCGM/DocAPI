@@ -12,7 +12,7 @@ from typing import Optional
 
 from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 from doc_api.api.schemas.base_objects import Job
-from doc_api.connector import Connector
+from doc_api.connector import DEFAULT_TIMEOUT, Connector
 
 
 logger = logging.getLogger(__name__)
@@ -140,6 +140,18 @@ def main():
         help="Time in seconds to wait between job requests"
     )
     parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT[0],
+        help="Seconds to wait for a connection to DocAPI"
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT[1],
+        help="Seconds to wait for the next bytes of a DocAPI response"
+    )
+    parser.add_argument(
         "--cleanup-job-dir",
         action="store_true",
         help="Remove job directory after successful processing"
@@ -172,7 +184,7 @@ def main():
         parser.error("Either --base-dir or both --jobs-dir and --engines-dir must be specified")
     
     # Create connector
-    connector = Connector(api_key=args.api_key)
+    connector = Connector(api_key=args.api_key, timeout=(args.connect_timeout, args.read_timeout))
     
     # Create and start worker
     worker = DummyWorker(

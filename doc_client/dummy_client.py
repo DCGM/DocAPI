@@ -11,7 +11,7 @@ from typing import Optional
 
 from doc_client.doc_client_wrapper import DocClientWrapper
 from doc_api.api.schemas.base_objects import Job
-from doc_api.connector import Connector
+from doc_api.connector import DEFAULT_TIMEOUT, Connector
 
 
 logger = logging.getLogger(__name__)
@@ -91,6 +91,18 @@ def main():
         default=5.0,
         help="Time in seconds to wait between result checks"
     )
+    parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT[0],
+        help="Seconds to wait for a connection to DocAPI"
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT[1],
+        help="Seconds to wait for the next bytes of a DocAPI response"
+    )
     
     # Logging configuration
     parser.add_argument(
@@ -109,7 +121,7 @@ def main():
     )
     
     # Create connector
-    connector = Connector(api_key=args.api_key)
+    connector = Connector(api_key=args.api_key, timeout=(args.connect_timeout, args.read_timeout))
     
     # Create client
     client = DummyClient(

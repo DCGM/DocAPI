@@ -202,6 +202,21 @@ def test_only_unreachable_reports_are_held(worker, server):
     assert _subjects(worker) == ["[OCR worker] FAILURE (host)"]
 
 
+def test_a_request_that_times_out_is_an_outage(tmp_path, clock):
+    import socket
+    from doc_api.connector import Connector
+    # A local server that accepts the connection and never answers.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        worker = Worker(f"http://127.0.0.1:{listener.getsockname()[1]}/", Connector("key", timeout=(1, 0.2)),
+                        base_dir=str(tmp_path), mail_sender=mock.Mock(), mail_receivers=["admin@example.org"],
+                        identity="OCR worker", hostname="host", disconnected_grace_seconds=0)
+        assert worker.run_job_pipeline() is None
+    assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
+    assert "ReadTimeout" in _mails(worker)[0][1]
+
+
 @pytest.mark.parametrize("settings", [dict(disconnected_grace_seconds=-1),
                                       dict(disconnected_grace_seconds=float("inf")),
                                       dict(disconnected_mail_interval_seconds=0),
