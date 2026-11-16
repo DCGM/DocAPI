@@ -9,7 +9,8 @@ from doc_worker.doc_worker_wrapper import WorkerHealth, WorkerHealthConfig
 @pytest.fixture
 def health():
     from doc_worker.doc_worker_wrapper import DocWorkerWrapper
-    worker = types.SimpleNamespace(mail_sender=mock.Mock(), send_mail=mock.Mock(), current_job=None,
+    worker = types.SimpleNamespace(mail_sender=mock.Mock(), mail_receivers=["admin@example.org"],
+                                   send_mail=mock.Mock(), current_job=None,
                                    job_history=None, identity="worker abc", hostname="host",
                                    mail_subject="[{identity}] {status} ({hostname})")
     worker._send_worker_mail = types.MethodType(DocWorkerWrapper._send_worker_mail, worker)
@@ -43,6 +44,26 @@ def test_health_mail_can_be_disabled(health):
         health.start()
     health.worker.send_mail.assert_not_called()
     thread.assert_not_called()
+
+
+def test_health_start_rejects_missing_mail_receivers(health):
+    health.worker.mail_receivers = []
+    with mock.patch("threading.Thread") as thread:
+        with pytest.raises(ValueError, match="health requires mail receivers"):
+            health.start()
+    thread.assert_not_called()
+    health.worker.send_mail.assert_not_called()
+
+
+def test_worker_mail_is_off_without_receivers(wrapper):
+    wrapper.mail_receivers = []
+    wrapper._notify_worker_failure("cannot connect")
+    wrapper.mail_sender.send.assert_not_called()
+
+
+def test_a_mail_sender_without_receivers_is_warned_about(wrapper, tmp_path, caplog):
+    type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock())
+    assert "Worker mail is off: the worker has a mail sender but no mail receivers" in caplog.text
 
 
 def test_health_start_rejects_missing_mail_sender(health):
