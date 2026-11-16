@@ -5,7 +5,7 @@ import traceback
 from datetime import datetime, timezone
 from time import monotonic
 from contextlib import asynccontextmanager, suppress
-from typing import Optional, List, Set
+from typing import List, Optional, Sequence, Set
 
 import fastapi
 from fastapi import FastAPI, Request
@@ -31,12 +31,13 @@ from doc_api.api.checkers.cleanup import run_cleanup
 from doc_api.api.checkers.job_readiness import run_job_readiness_checks
 from doc_api.api.checkers.job_leases import run_job_lease_checks
 from doc_api.api.checkers.job_mail import run_job_mail_checks
+from doc_api.api.mail_senders import mail_sender
 from doc_api.api.routes import admin_router, debug_router, root_router, monitor_router, monitor_page_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
 from doc_api.config import config
-from doc_api.tools.mail.mail_logger import MailLogger
+from doc_api.tools.mail_sender import MailSender
 from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from doc_api.db import model
 
@@ -44,24 +45,20 @@ from doc_api.db import model
 exception_logger = logging.getLogger('doc_api.exception_logger')
 exception_logger.propagate = False
 
-def internal_mail_logger_from_config() -> MailLogger:
-    """The logger that mails unhandled errors to the server's admins over the
-    internal mail channel, at most INTERNAL_MAIL_FLOOD_LEVEL an hour."""
-    return MailLogger(logger_name='doc_api.internal_mail_logger', sender=config.mail_sender("INTERNAL"),
-                      flood_level=config.INTERNAL_MAIL_FLOOD_LEVEL)
-
-
-internal_mail_logger = internal_mail_logger_from_config().logger
-
 # Error mail being sent in the background, held so the tasks are not collected
 # before they finish.
 error_mail_tasks: set[asyncio.Task] = set()
 
 
-def mail_error_in_background(subject: str, body: str) -> asyncio.Task:
-    """Mail an unhandled error without holding the event loop: SMTP runs in a
-    thread, and the caller does not wait for it."""
-    task = asyncio.create_task(asyncio.to_thread(internal_mail_logger.critical, body, extra={'subject': subject}))
+def mail_error_in_background(sender: MailSender, receivers: Sequence[str], subject: str, body: str) -> asyncio.Task:
+    """Mail an unhandled error to each receiver without holding the event loop:
+    SMTP runs in a thread, and the caller does not wait for it. The sender's
+    limits apply; an error held back by them is only in the server log."""
+    def send_to_each():
+        for receiver in receivers:
+            sender.send(subject, body, receiver)
+
+    task = asyncio.create_task(asyncio.to_thread(send_to_each))
     error_mail_tasks.add(task)
     task.add_done_callback(error_mail_tasks.discard)
     return task
@@ -324,7 +321,9 @@ async def unhandled(request: Request, exc: Exception):
     # plain text and is masked here, and so is the mail if
     # SECRET_MASKING_INTERNAL_MAIL is on.
     url = mask_secrets_in_text(str(request.url), config.secret_masking())
-    if config.INTERNAL_MAIL_SERVER is not None:
+    sender = mail_sender("INTERNAL")
+    receivers = config.INTERNAL_MAIL_RECEIVER_MAILS
+    if sender is not None and receivers:
         subject = config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
             server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME)
         body = (f'URL: {request.url}\n'
@@ -334,7 +333,7 @@ async def unhandled(request: Request, exc: Exception):
                 f'{traceback.format_exc()}')
         if config.SECRET_MASKING_INTERNAL_MAIL:
             body = mask_secrets_in_text(body, config.secret_masking())
-        mail_error_in_background(" ".join(subject.splitlines()), body)
+        mail_error_in_background(sender, list(receivers), " ".join(subject.splitlines()), body)
     exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
     exception_logger.exception(exc)

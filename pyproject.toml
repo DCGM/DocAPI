@@ -14,8 +14,8 @@ license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.10"
 # Everything the shared layer imports: doc_api.connector, doc_api.adapter,
-# doc_api.api.schemas and doc_api.tools.mail. Installing doc-api on its own gives
-# a usable worker or client without pulling in the service stack.
+# doc_api.api.schemas and doc_api.tools.mail_sender. Installing doc-api on its
+# own gives a usable worker or client without pulling in the service stack.
 dependencies = [
     "fastapi",
     "numpy",
@@ -50,6 +50,7 @@ client = [
 ]
 
 dev = [
+    "aiosmtpd",
     "httpx",
     "pytest",
     "pytest-cov",

@@ -4,6 +4,7 @@ import os
 import logging
 import time
 import socket
+import ssl
 import math
 from string import Formatter
 from typing import Optional
@@ -11,7 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from doc_api.tools.mail.mail_sender import MailSender
+from doc_api.tools.mail_sender import MailSender
 from doc_api.tools.secrets import MaskingSettings
 
 COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
@@ -68,6 +69,29 @@ def validate_mail_subject(template: str, setting: str, examples: dict):
             raise ValueError("Subject must be a non-empty single line")
     except (KeyError, ValueError, IndexError, TypeError) as error:
         raise ValueError(f"Invalid {setting}: {error}") from error
+
+
+def validate_mail_ca_file(path: Optional[str], setting: str):
+    """Fail at startup on a CA file that cannot be read, not on the first send."""
+    if path is None:
+        return
+    try:
+        ssl.create_default_context(cafile=path)
+    except (OSError, ssl.SSLError) as error:
+        raise ValueError(f"Invalid {setting}: {error}") from error
+
+
+RENAMED_MAIL_LIMITS = {"FLOOD_LEVEL": "SEND_RECEIVER_LIMIT", "SEND_LIMIT": "SEND_SERVER_LIMIT",
+                       "SEND_WINDOW_SECONDS": "SEND_SERVER_WINDOW_SECONDS"}
+
+
+def reject_renamed_mail_limits():
+    """Fail at startup on a mail limit under its old name, which would
+    otherwise be ignored and leave the limit off."""
+    for channel in ("INTERNAL", "EXTERNAL"):
+        for old, new in RENAMED_MAIL_LIMITS.items():
+            if f"{channel}_MAIL_{old}" in os.environ:
+                raise ValueError(f"{channel}_MAIL_{old} was renamed to {channel}_MAIL_{new}")
 
 class Config:
     def __init__(self):
@@ -269,6 +293,8 @@ class Config:
         self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
         self.INTERNAL_MAIL_USERNAME = os.getenv("INTERNAL_MAIL_USERNAME", None)
         self.INTERNAL_MAIL_SECURITY = os.getenv("INTERNAL_MAIL_SECURITY", "auto")
+        self.INTERNAL_MAIL_CA_FILE = os.getenv("INTERNAL_MAIL_CA_FILE", None)
+        validate_mail_ca_file(self.INTERNAL_MAIL_CA_FILE, "INTERNAL_MAIL_CA_FILE")
         self.INTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("INTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
         if not math.isfinite(self.INTERNAL_MAIL_TIMEOUT_SECONDS) or self.INTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
             raise ValueError("INTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
@@ -276,7 +302,24 @@ class Config:
             address.strip() for address in os.getenv("INTERNAL_MAIL_RECEIVER_MAILS", "").split(",")
             if address.strip()
         ]
-        self.INTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("INTERNAL_MAIL_FLOOD_LEVEL", 10))
+        reject_renamed_mail_limits()
+        # Emails per receiver and subject per sliding window, to protect the
+        # receivers; 0 turns it off.
+        self.INTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_RECEIVER_LIMIT", 10))
+        self.INTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS = float(
+            os.getenv("INTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "3600"))
+        # Emails through this channel's sender per sliding window, to protect the
+        # SMTP server; 0 turns it off.
+        self.INTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_SERVER_LIMIT", 100))
+        self.INTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS = float(
+            os.getenv("INTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS", "3600"))
+        for setting in ("INTERNAL_MAIL_SEND_RECEIVER_LIMIT", "INTERNAL_MAIL_SEND_SERVER_LIMIT"):
+            if getattr(self, setting) < 0:
+                raise ValueError(f"{setting} must not be negative")
+        for setting in ("INTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "INTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS"):
+            window = getattr(self, setting)
+            if not math.isfinite(window) or window <= 0:
+                raise ValueError(f"{setting} must be a finite, positive number")
         self.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE = os.getenv(
             "INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE", "[{admin_server_name}] INTERNAL SERVER ERROR")
         validate_mail_subject(self.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE, "INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE",
@@ -295,10 +338,28 @@ class Config:
         self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
         self.EXTERNAL_MAIL_USERNAME = os.getenv("EXTERNAL_MAIL_USERNAME", None)
         self.EXTERNAL_MAIL_SECURITY = os.getenv("EXTERNAL_MAIL_SECURITY", "auto")
+        self.EXTERNAL_MAIL_CA_FILE = os.getenv("EXTERNAL_MAIL_CA_FILE", None)
+        validate_mail_ca_file(self.EXTERNAL_MAIL_CA_FILE, "EXTERNAL_MAIL_CA_FILE")
         self.EXTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("EXTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
         if not math.isfinite(self.EXTERNAL_MAIL_TIMEOUT_SECONDS) or self.EXTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
             raise ValueError("EXTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
-        self.EXTERNAL_MAIL_FLOOD_LEVEL = int(os.getenv("EXTERNAL_MAIL_FLOOD_LEVEL", 0))
+        # Emails per receiver and subject per sliding window, to protect the
+        # receivers; 0 turns it off.
+        self.EXTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_RECEIVER_LIMIT", 10))
+        self.EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS = float(
+            os.getenv("EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "3600"))
+        # Emails through this channel's sender per sliding window, to protect the
+        # SMTP server; 0 turns it off.
+        self.EXTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_SERVER_LIMIT", 500))
+        self.EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS = float(
+            os.getenv("EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS", "3600"))
+        for setting in ("EXTERNAL_MAIL_SEND_RECEIVER_LIMIT", "EXTERNAL_MAIL_SEND_SERVER_LIMIT"):
+            if getattr(self, setting) < 0:
+                raise ValueError(f"{setting} must not be negative")
+        for setting in ("EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS"):
+            window = getattr(self, setting)
+            if not math.isfinite(window) or window <= 0:
+                raise ValueError(f"{setting} must be a finite, positive number")
         self.USER_JOB_MAIL_SUBJECT_TEMPLATE = os.getenv(
             "USER_JOB_MAIL_SUBJECT_TEMPLATE", "[{server_name}] {status} job {job_id_short}")
         validate_mail_subject(self.USER_JOB_MAIL_SUBJECT_TEMPLATE, "USER_JOB_MAIL_SUBJECT_TEMPLATE", JOB_MAIL_SUBJECT_EXAMPLES)
@@ -527,9 +588,10 @@ class Config:
         return value
 
     def mail_sender(self, channel: str) -> Optional[MailSender]:
-        """The sender for the INTERNAL or EXTERNAL mail channel; None when the
-        channel has no server or sender address. Internal mail goes to
-        INTERNAL_MAIL_RECEIVER_MAILS unless the caller names receivers."""
+        """A new sender for the INTERNAL or EXTERNAL mail channel; None when the
+        channel has no server or sender address. Callers send to each receiver,
+        internal mail to INTERNAL_MAIL_RECEIVER_MAILS. The server keeps one
+        sender per channel (api/mail_senders.py) so its limits hold."""
         if channel not in ("INTERNAL", "EXTERNAL"):
             raise ValueError(f"Unknown mail channel: {channel}")
         server = getattr(self, f"{channel}_MAIL_SERVER")
@@ -538,12 +600,16 @@ class Config:
             return None
         return MailSender(server=server, sender_mail=sender_mail,
                           port=getattr(self, f"{channel}_MAIL_PORT"),
-                          receiver_mails=getattr(self, f"{channel}_MAIL_RECEIVER_MAILS", None),
                           sender_name=getattr(self, f"{channel}_MAIL_SENDER_NAME"),
                           username=getattr(self, f"{channel}_MAIL_USERNAME"),
                           password=getattr(self, f"{channel}_MAIL_PASSWORD"),
                           security=getattr(self, f"{channel}_MAIL_SECURITY"),
-                          timeout=getattr(self, f"{channel}_MAIL_TIMEOUT_SECONDS"))
+                          ca_file=getattr(self, f"{channel}_MAIL_CA_FILE"),
+                          timeout=getattr(self, f"{channel}_MAIL_TIMEOUT_SECONDS"),
+                          send_receiver_limit=getattr(self, f"{channel}_MAIL_SEND_RECEIVER_LIMIT"),
+                          send_receiver_window_seconds=getattr(self, f"{channel}_MAIL_SEND_RECEIVER_WINDOW_SECONDS"),
+                          send_server_limit=getattr(self, f"{channel}_MAIL_SEND_SERVER_LIMIT"),
+                          send_server_window_seconds=getattr(self, f"{channel}_MAIL_SEND_SERVER_WINDOW_SECONDS"))
 
     def secret_masking(self) -> MaskingSettings:
         """The masking tool's settings from the SECRET_MASKING_* settings in force."""

@@ -2927,7 +2927,7 @@ async def test_post_job_lease_200_exhausted_attempt_mail(client, worker_headers,
 @pytest.mark.asyncio
 async def test_patch_job_200_smtp_failure(client, worker_headers, job_factory, db_sessions, job_mail_outbox, monkeypatch):
     from unittest.mock import Mock
-    monkeypatch.setattr('doc_api.tools.mail.mail_sender.smtplib.SMTP', Mock(side_effect=OSError('SMTP unavailable')))
+    monkeypatch.setattr('doc_api.tools.mail_sender.smtplib.SMTP', Mock(side_effect=OSError('SMTP unavailable')))
     job_id = await job_factory(ProcessingState.PROCESSING)
     response = await client.patch(f'/v1/jobs/{job_id}', headers=worker_headers,
         json={'state': 'failed', 'final_log': 'report'})
@@ -2958,8 +2958,12 @@ async def test_patch_job_500_no_mail_on_failed_commit(client, worker_headers, jo
     finally:
         event.remove(Session, 'before_commit', fail_commit)
     assert response.status_code == 500, response.text
+    await asyncio.gather(*main.error_mail_tasks)
     await check_job_notifications()
-    assert job_mail_outbox == []
+    # Only the unhandled-error alert is mailed; no job report.
+    assert [message['Subject'] for _, _, message in job_mail_outbox] == [
+        config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
+            server_name=config.SERVER_NAME, admin_server_name=config.ADMIN_SERVER_NAME)]
     async with db_sessions() as db:
         job = await db.get(model.Job, job_id)
         assert job.state == ProcessingState.PROCESSING
@@ -2971,13 +2975,13 @@ async def test_patch_job_500_no_mail_on_failed_commit(client, worker_headers, jo
 async def test_patch_job_200_api_responsive_during_mail(client, worker_headers, admin_headers, job_factory,
                                                        job_mail_outbox, monkeypatch, isolated_database):
     from threading import Event
-    from doc_api.tools.mail.mail_sender import MailSender
+    from doc_api.tools.mail_sender import MailResult, MailSender, MailStatus
     started, release = Event(), Event()
 
-    def blocked_send(*args, **kwargs):
+    def blocked_send(sender, subject, body, receiver, headers=None):
         started.set()
         assert release.wait(10), 'SMTP test did not release the sender'
-        return True
+        return MailResult(MailStatus.SENT, receiver)
 
     monkeypatch.setattr(MailSender, 'send', blocked_send)
     job_id = await job_factory(ProcessingState.PROCESSING)
