@@ -78,9 +78,8 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a pu
 - All Pydantic schemas live in `doc_api/api/schemas/base_objects.py`. The only
   exception is `doc_api/api/schemas/responses.py`, which holds the response
   envelopes and `AppCode`.
-  - Not yet true: the monitoring schemas in `schemas/monitor.py` and
-    `JobDefinition` in `cruds/user_cruds.py` still have to move there. Put new
-    schemas in `base_objects.py` regardless.
+  - `base_objects.py` is shared with the worker and the client, so a schema
+    never checks anything against the server settings; the route does that.
   - Place a new class among the related schemas, not at the end of the file.
   - Place a new attribute by its significance among the existing ones, not
     necessarily last.

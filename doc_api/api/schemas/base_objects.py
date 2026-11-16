@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional, get_origin, Union, get_args, List, Any, Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
+from pydantic import AfterValidator, AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_serializer, model_validator
 
 
 JobSort = Literal['created_date', 'started_date', 'finished_date', 'last_change']
@@ -124,6 +124,18 @@ class ImageUpdate(BaseModel):
         examples=["d41d8cd98f00b204e9800998ecf8427e"],
         description="MD5 hash of the image file for integrity verification."
     )
+
+
+# One image of a job definition. The server checks the name's extension against
+# its settings when the job is created (check_image_extensions in user_routes).
+class ImageForJobDefinition(BaseModel):
+    name: str = Field(description="Image filename. The server may require an extension or restrict allowed extensions.")
+    order: int = Field(ge=0, le=2_147_483_647, strict=True)
+    image_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
+    alto_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
+    page_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
+
+    model_config = ConfigDict(extra="forbid")
 
 
 JOB_LOG_FIELDS = frozenset({'log', 'log_user', 'final_log', 'final_log_user'})
@@ -300,6 +312,20 @@ class Job(JobWithEngine):
         ...,
         description="List of images associated with this job."
     )
+
+
+# A new job, as a user submits it.
+class JobDefinition(BaseModel):
+    images: List[ImageForJobDefinition]
+    meta_json_required: bool = False
+    alto_required: bool = False
+    page_required: bool = False
+
+    engine_name: Optional[str] = None
+    engine_version: Optional[str] = None
+    engine_settings: Optional[dict] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class JobUpdate(BaseModel):
@@ -717,6 +743,110 @@ class EngineUpdate(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+
+# Monitoring: public payloads that never include credentials or job
+# definitions and logs.
+
+
+class MonitorInfo(BaseModel):
+    server_name: str
+    hostname: str
+    ip_addresses: list[str]
+    version: str
+    commit: str | None
+    started_at: datetime
+    uptime_seconds: float
+    server_time: datetime
+    database_connected: bool
+    refresh_interval_seconds: int
+    worker_offline_after_seconds: int
+
+
+class MonitorDatabase(BaseModel):
+    database_name: str
+    size_bytes: int
+    connections: int
+    active_connections: int
+    idle_connections: int
+    idle_in_transaction_connections: int
+    lock_waiting_connections: int
+    longest_active_query_seconds: float | None
+    deadlocks: int
+    stats_reset: datetime | None
+
+
+class MonitorTotals(BaseModel):
+    job_count: int
+    image_count: int
+    runtime_seconds: float | None
+
+
+class MonitorStateStats(BaseModel):
+    done: MonitorTotals
+    failed: MonitorTotals
+    attempts: MonitorTotals
+
+
+class MonitorGroupStats(MonitorStateStats):
+    """Totals cover all matching states, independently of the DONE/FAILED breakdown."""
+    total: MonitorTotals
+
+
+class MonitorKeyStats(MonitorGroupStats):
+    id: UUID | None
+    label: str | None
+
+
+class MonitorEngineStats(MonitorGroupStats):
+    name: str | None
+
+
+class MonitorEngineVersionStats(MonitorEngineStats):
+    version: str | None
+
+
+class MonitorStats(MonitorStateStats):
+    owners: list[MonitorKeyStats]
+    workers: list[MonitorKeyStats]
+    engines: list[MonitorEngineStats]
+    engine_versions: list[MonitorEngineVersionStats]
+
+
+class MonitorJob(BaseModel):
+    id: UUID
+    state: ProcessingState
+    image_count: int
+    progress: float
+    previous_attempts: int | None
+    created_date: datetime
+    started_date: datetime | None
+    finished_date: datetime | None
+    last_change: datetime
+    owner_label: str | None
+    worker_label: str | None
+    engine_name: str | None
+    engine_version: str | None
+
+
+class MonitorProcessingTotals(BaseModel):
+    processing: int
+    queued: int
+    new: int
+
+
+class MonitorProcessing(BaseModel):
+    jobs: list[MonitorJob]
+    totals: MonitorProcessingTotals
+    image_totals: MonitorProcessingTotals
+
+
+class MonitorWorker(BaseModel):
+    id: UUID
+    label: str
+    last_used: datetime | None
+    status: Literal['active', 'idle', 'off']
+    processing_jobs: int
 
 
 def model_example(model_type: Any) -> Any:
