@@ -228,9 +228,9 @@ async def test_unhandled_error_masks_url_and_mail(monkeypatch):
     from unittest.mock import Mock
     from doc_api.api import main
     from doc_api.config import config
-    monkeypatch.setattr(config, "INTERNAL_MAIL_SERVER", "smtp.invalid")
-    mail_logger = Mock()
-    monkeypatch.setattr(main, "internal_mail_logger", mail_logger)
+    sender = Mock()
+    monkeypatch.setattr(config, "mail_sender", Mock(return_value=sender))
+    monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     main.exception_logger.addHandler(handler)
@@ -244,7 +244,7 @@ async def test_unhandled_error_masks_url_and_mail(monkeypatch):
         main.exception_logger.removeHandler(handler)
     await asyncio.gather(*main.error_mail_tasks)
     assert response.status_code == 500
-    mail = mail_logger.critical.call_args.args[0]
+    mail = sender.send.call_args.args[1]
     assert OPENAI_KEY not in mail
     assert "URL: http://test/v1/jobs?token=*****" in mail
     assert "ERROR: could not parse api_key=*****" in mail
@@ -257,9 +257,9 @@ async def test_unhandled_error_mail_unmasked_when_internal_mail_masking_off(monk
     from unittest.mock import Mock
     from doc_api.api import main
     monkeypatch.setattr(config, "SECRET_MASKING_INTERNAL_MAIL", False)
-    monkeypatch.setattr(config, "INTERNAL_MAIL_SERVER", "smtp.invalid")
-    mail_logger = Mock()
-    monkeypatch.setattr(main, "internal_mail_logger", mail_logger)
+    sender = Mock()
+    monkeypatch.setattr(config, "mail_sender", Mock(return_value=sender))
+    monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     main.exception_logger.addHandler(handler)
@@ -272,7 +272,7 @@ async def test_unhandled_error_mail_unmasked_when_internal_mail_masking_off(monk
     finally:
         main.exception_logger.removeHandler(handler)
     await asyncio.gather(*main.error_mail_tasks)
-    assert f"URL: http://test/v1/jobs?token={OPENAI_KEY}" in mail_logger.critical.call_args.args[0]
+    assert f"URL: http://test/v1/jobs?token={OPENAI_KEY}" in sender.send.call_args.args[1]
     # The server log is masked regardless of the mail setting.
     assert "URL: http://test/v1/jobs?token=*****" in stream.getvalue()
 
@@ -490,8 +490,7 @@ def test_workers_and_clients_do_not_mask():
         assert result.stdout.strip() == "False", module
 
 
-@pytest.mark.parametrize("module", ["doc_api.tools.secrets", "doc_api.tools.mail.mail_sender",
-                                    "doc_api.tools.mail.mail_handler", "doc_api.tools.mail.mail_logger",
+@pytest.mark.parametrize("module", ["doc_api.tools.secrets", "doc_api.tools.mail_sender",
                                     "doc_api.adapter", "doc_api.api.schemas.base_objects",
                                     "doc_worker.doc_worker_wrapper", "doc_client.doc_client_wrapper"])
 def test_tools_workers_and_clients_do_not_load_server_config(module):

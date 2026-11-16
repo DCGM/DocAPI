@@ -4,8 +4,6 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
-from threading import Lock
-from time import time
 from string import Formatter
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,16 +11,16 @@ from sqlalchemy import exc, select, exists, func, and_, or_, cast, String
 from sqlalchemy.dialects.postgresql import insert
 
 from doc_api.api.database import open_session
+from doc_api.api.mail_senders import mail_sender
 
 
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import config
 from doc_api.db import model
+from doc_api.tools.mail_sender import MailStatus
 from doc_api.tools.secrets import mask_secrets_in_text
 
 logger = logging.getLogger(__name__)
-_flood_lock = Lock()
-_flood_counts: dict[tuple[str, str, str], tuple[int, int]] = {}
 
 
 @dataclass(frozen=True)
@@ -79,30 +77,15 @@ async def get_final_reports(db: AsyncSession, job: model.Job) -> list[JobMail]:
     return reports
 
 
-def send_final_report(mail: JobMail) -> bool | None:
-    """One SMTP attempt without a DB connection; None means rate-limited.
+def send_final_report(mail: JobMail) -> bool | datetime:
+    """One SMTP attempt without a DB connection: whether it was sent, or the time
+    the channel's sender holds it back until.
 
-    The checker persists retries. Flood limits are per channel/recipient/subject
-    within this server process and count SMTP attempts, including failures.
+    The checker persists retries. The sender's send receiver and server limits hold within
+    this server process and count SMTP attempts, including failures.
     """
-    limit = getattr(config, f"{mail.channel}_MAIL_FLOOD_LEVEL")
-    hour = int(time() // 3600)
-    recipients = []
-    with _flood_lock:
-        for address in dict.fromkeys(mail.recipients):
-            key = (mail.channel, address.casefold(), mail.subject)
-            bucket, count = _flood_counts.get(key, (hour, 0))
-            count = count if bucket == hour else 0
-            if limit > 0 and count >= limit:
-                logger.warning("Job notification suppressed by the flood limit for %s with subject %r",
-                               address, mail.subject)
-                continue
-            _flood_counts[key] = (hour, count + 1)
-            recipients.append(address)
-    if not recipients:
-        return
     try:
-        sender = config.mail_sender(mail.channel)
+        sender = mail_sender(mail.channel)
         if sender is None:
             logger.error("Job notification %r not sent: the %s mail channel is not configured",
                          mail.subject, mail.channel)
@@ -113,7 +96,13 @@ def send_final_report(mail: JobMail) -> bool | None:
         if getattr(config, f"SECRET_MASKING_{mail.channel}_MAIL"):
             masking = config.secret_masking()
             subject, body = mask_secrets_in_text(subject, masking), mask_secrets_in_text(body, masking)
-        return sender.send(subject, body, recipients)
+        # The sender logs each outcome.
+        if len(mail.recipients) != 1:
+            raise ValueError(f"A job notification goes to one recipient, not {len(mail.recipients)}")
+        result = sender.send(subject, body, mail.recipients[0])
+        if result.status is MailStatus.HELD_BACK:
+            return datetime.fromtimestamp(result.retry_at, timezone.utc)
+        return result.status is MailStatus.SENT
     except Exception:
         logger.exception("Failed preparing job notification %r", mail.subject)
         return False
@@ -199,7 +188,7 @@ async def claim_notification() -> ClaimedNotification | None:
                     JobMail(row.channel, (row.recipient,), row.subject, row.body))
 
 
-async def finish_notification(claim: ClaimedNotification, result: bool | None):
+async def finish_notification(claim: ClaimedNotification, result: bool | datetime):
     now = datetime.now(timezone.utc)
     async with open_session() as db:
         async with db.begin():
@@ -214,11 +203,11 @@ async def finish_notification(claim: ClaimedNotification, result: bool | None):
                 row.state = 'sent'
                 row.sent_at = now
                 row.last_error = None
-            elif result is None:
+            elif isinstance(result, datetime):
                 row.state = 'pending'
-                row.delivery_attempts -= 1  # Flood suppression is not an SMTP attempt.
-                row.next_attempt_at = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-                row.last_error = 'Deferred by the subject/recipient flood limit.'
+                row.delivery_attempts -= 1  # A held-back email is not an SMTP attempt.
+                row.next_attempt_at = max(result, now)
+                row.last_error = 'Deferred by the mail send receiver or server limit.'
             else:
                 row.last_error = 'SMTP delivery failed; see the server log for exception details.'
                 if row.delivery_attempts >= config.JOB_MAIL_MAX_ATTEMPTS:

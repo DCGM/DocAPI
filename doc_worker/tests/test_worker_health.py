@@ -99,7 +99,8 @@ def wrapper(tmp_path):
         def process_job(self, *args, **kwargs):
             return WorkerResponse.ok()
 
-    worker = Worker("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock())
+    worker = Worker("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock(),
+                    mail_receivers=["admin@example.org"])
     worker.adapter = mock.Mock()
     worker.adapter.patch_job_error.return_value = types.SimpleNamespace(is_success=True)
     worker.adapter.patch_job_fail.return_value = types.SimpleNamespace(is_success=True)
@@ -116,7 +117,8 @@ def test_wrapper_health_is_disabled_by_default(wrapper):
 
 def test_wrapper_constructs_health_from_explicit_config(wrapper, tmp_path):
     worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path),
-                           mail_sender=mock.Mock(), identity="My worker", health_config=WorkerHealthConfig())
+                           mail_sender=mock.Mock(), mail_receivers=["admin@example.org"], identity="My worker",
+                           health_config=WorkerHealthConfig())
     assert isinstance(worker.health, WorkerHealth)
     assert worker.identity == "My worker"
 
@@ -275,6 +277,12 @@ def test_wrapper_rejects_health_without_mail_sender_before_side_effects(wrapper,
     assert "Worker health requires a mail sender." in caplog.text
 
 
+def test_wrapper_rejects_health_without_mail_receivers(wrapper, tmp_path):
+    with pytest.raises(ValueError, match="health requires mail receivers"):
+        type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock(),
+                      health_config=WorkerHealthConfig())
+
+
 def test_failure_mail_is_sent_as_written_without_health(wrapper):
     wrapper._notify_worker_failure("unknown page key: p1, contains_keyword=True")
     subject, body, _ = wrapper.mail_sender.send.call_args.args
@@ -283,10 +291,10 @@ def test_failure_mail_is_sent_as_written_without_health(wrapper):
 
 
 def test_mail_sender_subclass_filters_all_worker_mail(wrapper):
-    from doc_api.tools.mail.mail_sender import MailSender
+    from doc_api.tools.mail_sender import MailSender
 
     class RedactingMailSender(MailSender):
-        def send(self, subject, body, receiver_mails=None):
+        def send(self, subject, body, receiver, headers=None):
             self.sent = (subject.replace("p1", "[id]"), body.replace("p1", "[id]"))
             return True
     wrapper.mail_sender = RedactingMailSender(server="smtp.example.org", sender_mail="worker@example.org")
@@ -331,7 +339,8 @@ def test_default_subject_for_alive_and_failure(wrapper):
 
 def test_all_worker_mail_uses_constructor_identity_hostname_and_subject(wrapper, tmp_path):
     worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path),
-                           mail_sender=mock.Mock(), identity="OCR production", hostname="host-override",
+                           mail_sender=mock.Mock(), mail_receivers=["admin@example.org"],
+                           identity="OCR production", hostname="host-override",
                            mail_subject="{status} | {identity} | {hostname} | {time:%Y-%m-%d}",
                            health_config=WorkerHealthConfig())
     worker.health.send_alive()

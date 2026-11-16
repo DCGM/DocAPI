@@ -741,9 +741,13 @@ checker runs and server restarts. A five-minute claim timeout recovers interrupt
 processes. SMTP has no transactional acknowledgement with PostgreSQL: a hard crash
 after SMTP acceptance but before recording success can still cause a duplicate.
 Graceful cancellation waits for an in-flight SMTP attempt and records its result.
-Flood limits count SMTP attempts per channel/recipient/subject/hour within each
-server process; suppressed deliveries wait until the next hour without consuming
-an SMTP attempt. All tests mock SMTP.
+Each channel has one sender per server process. Its send receiver limit counts SMTP
+attempts per recipient/subject per sliding window, and its send server limit counts all its SMTP
+attempts per sliding window; held-back deliveries wait without consuming an SMTP
+attempt. Tests mock SMTP or use the `local_smtp` fixture (repo-root
+`conftest.py`): an aiosmtpd server on 127.0.0.1 that keeps what it receives;
+over TLS its certificate is trusted through the CA file setting.
+Any other SMTP connection fails the test.
 
 - [x] post keys 201 email settings. [`test_admin.py::test_post_keys_201_email_settings`](test_admin.py).
 - [x] patch key 200 email settings. [`test_admin.py::test_patch_key_200_email_settings`](test_admin.py).
@@ -759,7 +763,8 @@ an SMTP attempt. All tests mock SMTP.
 - [x] get job 200 final reports. [`test_user.py::test_get_job_200_final_reports`](test_user.py).
 - [x] adapter final reports. [`test_adapter.py::test_adapter_final_reports`](test_adapter.py).
 - [x] upgrade email and final reports. [`test_migrations.py::test_upgrade_email_and_final_reports`](test_migrations.py).
-- [x] recipient flood limits. [`test_job_mail.py::test_recipient_flood_limits`](test_job_mail.py).
+- [x] the send receiver limit: one NOT SENT notice, then the report waits until the window has room. [`test_job_mail.py::test_send_receiver_limit_defers_job_mail_until_the_window_has_room`](test_job_mail.py).
+- [x] the channel's send server limit defers job mail until its window has room; the receiver gets a NOT SENT notice from the reserve. [`test_job_mail.py::test_send_server_limit_defers_job_mail_until_the_window_has_room`](test_job_mail.py).
 - [x] invalid mail configuration is logged. [`test_job_mail.py::test_invalid_mail_configuration_is_logged`](test_job_mail.py).
 
 - [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_sparse_attempts`](test_worker.py).
@@ -767,7 +772,12 @@ an SMTP attempt. All tests mock SMTP.
 
 - [x] configurable internal-error subjects. [`test_job_mail.py::test_internal_error_subject_template`](test_job_mail.py).
 - [x] internal-error mail is sent in a thread; the 500 and the event loop do not wait for SMTP. [`test_job_mail.py::test_internal_error_mail_does_not_hold_the_event_loop`](test_job_mail.py).
-- [x] the hourly internal-error flood limit applies to mail sent in the background. [`test_job_mail.py::test_internal_error_mail_flood_limit_applies_in_background`](test_job_mail.py).
+- [x] the internal-error send receiver limit applies to mail sent in the background, ends with one NOT SENT notice and lets alerts through again once the window has room. [`test_job_mail.py::test_internal_error_mail_send_receiver_limit_applies_in_background`](test_job_mail.py).
+- [x] internal-error mail is prepared only when the internal channel has a sender. [`test_job_mail.py::test_internal_error_mail_needs_an_internal_sender`](test_job_mail.py).
+- [x] internal-error mail needs internal receivers. [`test_job_mail.py::test_internal_error_mail_needs_internal_receivers`](test_job_mail.py).
+- [x] internal-error mail over the send server limit is only logged. [`test_job_mail.py::test_internal_error_mail_over_the_send_server_limit_is_only_logged`](test_job_mail.py).
+- [x] job reports reach a local SMTP server over STARTTLS through the job-mail checker. [`test_job_mail.py::test_job_reports_reach_a_local_smtp_server`](test_job_mail.py).
+- [x] an unhandled-error alert reaches a local SMTP server over SSL, a separate email to each admin. [`test_job_mail.py::test_an_unhandled_error_alert_reaches_a_local_smtp_server`](test_job_mail.py).
 - [x] admin subjects use the admin server name by default. [`test_job_mail.py::test_admin_subject_default_uses_admin_server_name`](test_job_mail.py).
 - [x] configurable subject placeholders and subsets. [`test_job_mail.py::test_subject_template`](test_job_mail.py).
 - [x] absent optional subject values. [`test_job_mail.py::test_subject_template_missing_optional_values`](test_job_mail.py).
@@ -799,7 +809,7 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 - [x] notification preparation and restart are idempotent. [`test_job_mail.py::test_notification_preparation_and_restart_are_idempotent`](test_job_mail.py).
 - [x] concurrent mail checkers claim once. [`test_job_mail.py::test_concurrent_mail_checkers_claim_once`](test_job_mail.py).
 - [x] mail retry limit and backoff. [`test_job_mail.py::test_mail_retry_limit_and_backoff`](test_job_mail.py).
-- [x] mail flood deferral does not consume attempt. [`test_job_mail.py::test_mail_flood_deferral_does_not_consume_attempt`](test_job_mail.py).
+- [x] deferral by the mail limits does not consume an attempt. [`test_job_mail.py::test_mail_limit_deferral_does_not_consume_attempt`](test_job_mail.py).
 - [x] mail recovers expired claim and rejects stale result. [`test_job_mail.py::test_mail_recovers_expired_claim_and_rejects_stale_result`](test_job_mail.py).
 - [x] mail shutdown finishes inflight delivery. [`test_job_mail.py::test_mail_shutdown_finishes_inflight_delivery`](test_job_mail.py).
 - [x] mail checker runs without requests. [`test_job_mail.py::test_mail_checker_runs_without_requests`](test_job_mail.py).
@@ -1661,7 +1671,9 @@ Additional existing configuration checks:
 - [x] [`test_job_mail.py::test_default_subjects`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_job_mail_passes_smtp_security_and_username`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_mail_sender_per_channel`](test_job_mail.py).
-- [x] [`test_job_mail.py::test_mail_logger_uses_the_internal_sender_and_flood_level`](test_job_mail.py).
+- [x] [`test_job_mail.py::test_mail_limits_must_be_valid`](test_job_mail.py).
+- [x] mail limits under their old names fail at startup instead of being ignored. [`test_job_mail.py::test_mail_limits_under_their_old_names_are_rejected`](test_job_mail.py).
+- [x] an unreadable mail CA file fails at startup. [`test_job_mail.py::test_an_unreadable_mail_ca_file_fails_at_startup`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_mail_timeout_must_be_finite_positive`](test_job_mail.py).
 - [x] [`test_run.py::test_http_keep_alive_timeout_configuration`](test_run.py).
 - [x] [`test_run.py::test_http_keep_alive_timeout_rejects_invalid_values`](test_run.py).

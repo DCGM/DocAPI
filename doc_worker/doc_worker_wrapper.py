@@ -15,7 +15,7 @@ from collections import Counter
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Mapping, Optional, Union
+from typing import List, Mapping, Optional, Sequence, Union
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
@@ -27,7 +27,7 @@ import requests
 from doc_api.adapter import Adapter, AdapterResponse
 from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
-from doc_api.tools.mail.mail_sender import MailSender
+from doc_api.tools.mail_sender import MailSender
 
 
 logger = logging.getLogger(__name__)
@@ -162,6 +162,7 @@ class DocWorkerWrapper(ABC):
                  prefer_alto_url: bool = False,
                  prefer_page_url: bool = False,
                  mail_sender: Optional[MailSender] = None,
+                 mail_receivers: Sequence[str] = (),
                  identity: Optional[str] = None,
                  hostname: Optional[str] = None,
                  mail_subject: str = "[{identity}] {status} ({hostname})",
@@ -192,11 +193,14 @@ class DocWorkerWrapper(ABC):
             mail_sender: Optional mail sender that send_mail() and the wrapper's own
                 mail use. Mail is sent as written; pass a MailSender subclass whose
                 send() filters subject and body to mask or redact it.
+            mail_receivers: Who send_mail() and the wrapper's own mail go to by
+                default; each gets a separate email.
             identity: Worker identity used in all wrapper emails; defaults to the class name.
             hostname: Host label used in all wrapper emails; defaults to socket.gethostname().
             mail_subject: Python format string with identity, hostname, status (ALIVE/FAILURE),
                 and time (UTC datetime, supporting date format specifications) placeholders.
-            health_config: Opt-in startup and periodic alive mail. Requires mail_sender.
+            health_config: Opt-in startup and periodic alive mail. Requires mail_sender
+                and mail_receivers.
                 None disables alive reports. Explicit worker failures are mailed
                 whenever mail_sender is configured, independently of health_config.
             error_messages: Overrides keyed by DEFAULT_WORKER_ERRORS names. Each
@@ -205,6 +209,10 @@ class DocWorkerWrapper(ABC):
         """
         if health_config is not None and mail_sender is None:
             message = "Worker health requires a mail sender."
+            logger.warning(message)
+            raise ValueError(message)
+        if health_config is not None and not mail_receivers:
+            message = "Worker health requires mail receivers."
             logger.warning(message)
             raise ValueError(message)
         self.identity = type(self).__name__ if identity is None else identity
@@ -255,6 +263,7 @@ class DocWorkerWrapper(ABC):
 
         self.job_history = JobHistory(job_history_path) if job_history_path is not None else None
         self.mail_sender = mail_sender
+        self.mail_receivers = list(mail_receivers)
         self.health = WorkerHealth(self, health_config) if health_config is not None else None
 
     @abstractmethod
@@ -1013,22 +1022,29 @@ class DocWorkerWrapper(ABC):
             logger.error(f"Failed to release lease. Status: {release_response.status}, Code: {release_response.code}")
             return False
 
-    def send_mail(self, subject: str, body: str, receiver_mails: Optional[List[str]] = None) -> bool:
+    def send_mail(self, subject: str, body: str, receiver_mails: Optional[Sequence[str]] = None) -> bool:
         """
-        Send an email with the worker's mail sender, logging it with its sender and receivers.
+        Send an email with the worker's mail sender, a separate one to each
+        receiver; the sender logs each with its sender and receiver.
 
         Args:
             subject: Subject of the email
             body: Plain text body of the email
-            receiver_mails: Receivers of the email, the mail sender's receivers by default
+            receiver_mails: Receivers of the email, the worker's mail_receivers by default
 
         Returns:
-            True if the email was sent; False if it was not, also when no mail sender is configured
+            True if every receiver was sent the email; False otherwise, also when
+            no mail sender or no receiver is configured
         """
         if self.mail_sender is None:
             logger.warning(f"Not sending email {subject!r}: the worker has no mail sender")
             return False
-        return self.mail_sender.send(subject, body, receiver_mails)
+        receivers = self.mail_receivers if receiver_mails is None else list(receiver_mails)
+        if not receivers:
+            logger.warning(f"Not sending email {subject!r}: the worker has no mail receivers")
+            return False
+        results = [self.mail_sender.send(subject, body, receiver) for receiver in receivers]
+        return all(results)
 
     def _notify_worker_failure(self, message: str, *, exception: Optional[BaseException] = None) -> None:
         """Alert when a failure cannot be communicated through job finalization."""

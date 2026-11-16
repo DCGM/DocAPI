@@ -303,6 +303,7 @@ def test_interrupted_or_crashed_pipeline_is_recorded(tmp_path, exception, status
 def test_history_failure_does_not_change_success_and_mails_worker_failure(tmp_path):
     worker = Worker(tmp_path, job_history_path=str(tmp_path / 'history.jsonl'))
     worker.mail_sender = mock.Mock()
+    worker.mail_receivers = ["admin@example.org"]
     worker.job_history.record = mock.Mock(side_effect=OSError('disk full'))
     assert worker.run_job_pipeline().id == 'job-1'
     worker.mail_sender.send.assert_called_once()
@@ -345,6 +346,7 @@ def test_reporting_failure_preserves_pipeline_response_and_is_recorded_separatel
     path = tmp_path / 'history.jsonl'
     worker = Worker(tmp_path, process=lambda result_dir: original, job_history_path=str(path), cleanup_job_dir=True)
     worker.mail_sender = mock.Mock()
+    worker.mail_receivers = ["admin@example.org"]
     report = (worker.adapter.patch_job_finish if original.status == WorkerResponseStatus.OK else
               worker.adapter.patch_job_error if original.status == WorkerResponseStatus.ERROR else
               worker.adapter.patch_job_fail)

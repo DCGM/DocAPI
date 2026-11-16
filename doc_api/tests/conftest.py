@@ -19,6 +19,7 @@ import pytest_asyncio
 
 from doc_api.api import main
 from doc_api.api.checkers import cleanup, job_readiness
+from doc_api.api import mail_senders
 from doc_api.api import database as db_module
 from doc_api.api.main import app
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -64,6 +65,13 @@ async def isolated_database(monkeypatch):
                 await admin.execute(f'DROP DATABASE "{database_name}" WITH (FORCE)')
         finally:
             await admin.close()
+
+
+@pytest.fixture(autouse=True)
+def fresh_mail_senders(monkeypatch):
+    # Senders and their limits live for the server process; each test builds new
+    # ones from its own settings on first use.
+    monkeypatch.setattr(mail_senders, "_senders", {})
 
 
 @pytest.fixture
@@ -901,21 +909,18 @@ def job_mail_outbox(monkeypatch):
     from email import policy
     from email.parser import Parser
     from unittest.mock import MagicMock
-    from doc_api.api.checkers import job_mail
-
     for channel in ("INTERNAL", "EXTERNAL"):
         monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", "smtp.example.com")
         monkeypatch.setattr(config, f"{channel}_MAIL_SENDER_MAIL", f"{channel.lower()}@example.com")
         monkeypatch.setattr(config, f"{channel}_MAIL_PASSWORD", None)
-        monkeypatch.setattr(config, f"{channel}_MAIL_FLOOD_LEVEL", 0)
+        monkeypatch.setattr(config, f"{channel}_MAIL_SEND_RECEIVER_LIMIT", 0)
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
-    monkeypatch.setattr(job_mail, "_flood_counts", {})
     messages = []
     smtp = MagicMock()
     smtp.return_value.sendmail.side_effect = (
         lambda sender, recipients, text: messages.append(
             (sender, recipients, Parser(policy=policy.default).parsestr(text))))
-    monkeypatch.setattr("doc_api.tools.mail.mail_sender.smtplib.SMTP", smtp)
+    monkeypatch.setattr("doc_api.tools.mail_sender.smtplib.SMTP", smtp)
     return messages
 
 
