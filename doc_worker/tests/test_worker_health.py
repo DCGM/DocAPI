@@ -180,7 +180,7 @@ def test_wrapper_alerts_when_job_error_cannot_reach_docapi(wrapper, raises):
     if raises:
         wrapper.adapter.patch_job_error.side_effect = OSError("unavailable")
     else:
-        wrapper.adapter.patch_job_error.return_value = types.SimpleNamespace(is_success=False, status=503, code=None)
+        wrapper.adapter.patch_job_error.return_value = types.SimpleNamespace(is_success=False, status=500, code=None)
     wrapper._report_job_response(WorkerResponse.error(final_log="technical"))
     wrapper.mail_sender.send.assert_called_once()
     if raises:
@@ -195,7 +195,7 @@ def test_wrapper_alerts_when_polling_fails_without_a_job(wrapper, raises):
         wrapper.adapter.post_job_lease.side_effect = OSError("DocAPI unreachable")
     else:
         wrapper.adapter.post_job_lease.return_value = types.SimpleNamespace(
-            is_success=False, data=None, status=503, code=None, response=None)
+            is_success=False, data=None, status=500, code=None, response=None)
     with mock.patch.object(wrapper, "_report_job_response") as report:
         assert wrapper.run_job_pipeline() is None
     report.assert_not_called()
@@ -203,7 +203,7 @@ def test_wrapper_alerts_when_polling_fails_without_a_job(wrapper, raises):
     wrapper.mail_sender.send.assert_called_once()
     message = wrapper.mail_sender.send.call_args.args[1]
     assert ("Failed to request job" if raises else "Failed to request job lease") in message
-    assert ("DocAPI unreachable" if raises else "503") in message
+    assert ("DocAPI unreachable" if raises else "500") in message
     assert "without a job ID" not in message
     assert wrapper.current_job is None and wrapper.current_lease is None
 

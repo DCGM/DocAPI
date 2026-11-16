@@ -353,7 +353,7 @@ def test_reporting_failure_preserves_pipeline_response_and_is_recorded_separatel
     if raises:
         report.side_effect = OSError('report unavailable')
     else:
-        report.return_value = types.SimpleNamespace(is_success=False, status=503, code=None, response=None)
+        report.return_value = types.SimpleNamespace(is_success=False, status=500, code=None, response=None)
     assert worker.run_job_pipeline() is None
     report.assert_called_once()
     assert (worker.adapter.patch_job_finish.call_count + worker.adapter.patch_job_error.call_count +

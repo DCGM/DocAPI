@@ -998,12 +998,12 @@ downloads, and failed source requests.
 ### Optional worker health mail
 
 The wrapper accepts `health_config=WorkerHealthConfig(...)` from
-`doc_worker.doc_worker_wrapper`, together with a `mail_sender`. Constructor arguments `identity` (class name by default), `hostname` (automatic
+`doc_worker.doc_worker_wrapper`, together with a `mail_sender` and `mail_receivers`. Constructor arguments `identity` (class name by default), `hostname` (automatic
 by default), and `mail_subject` apply to both alive and failure emails. The subject
 default is `[{identity}] {status} ({hostname})`; supported placeholders are
 `identity`, `hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
 Startup uses the same
-alive report as periodic checks. Configuring health without a mail sender logs
+alive report as periodic checks. Configuring health without a mail sender or receivers logs
 a warning and rejects initialization before creating directories or polling. Reports use short aligned rows and separate
 time-window sections for mobile reading. Lifecycle mail is
 opt-in and independent of job final reports. Defaults are an immediate alive report at startup, daily
@@ -1015,9 +1015,26 @@ return, rather than guaranteeing that processing is progressing.
 - [x] Wrapper lifecycle integration, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 - [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
 
-Explicit worker failures are mailed whenever a mail sender is configured, even
-without health reports. Each failure sends an alert with available exception
-details and tracebacks; secrets are masked and SMTP failures are contained.
+Explicit worker failures are mailed whenever a mail sender and receivers are
+configured, even without health reports. Each failure sends an alert with
+available exception details and tracebacks, as written; SMTP failures are
+contained.
+
+### Worker outage mail
+
+A DocAPI request that fails to connect, times out or gets a 502, 503 or 504
+starts an outage; the next request that reaches DocAPI ends it. Failed requests
+in an outage are only logged:
+
+- `DISCONNECTED` is mailed once the outage has lasted `disconnected_grace_seconds` while the worker is idle (60 s by default), or at once during a job.
+- `STILL DISCONNECTED` follows every `disconnected_mail_interval_seconds` (one hour by default).
+- `RECONNECTED` is mailed when DocAPI can be reached again.
+
+A job outcome that could not be reported is reported first after reconnecting,
+before the worker polls again; a report the server no longer accepts changes
+nothing. Other errors keep the usual failure mail.
+
+- [x] Grace period, reminders, reconnect mail, gateway errors, errors that are not outages, lost outcome reports and invalid settings. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
 
 ### Persistent worker job history
 
