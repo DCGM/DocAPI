@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 import requests
 
-from doc_api.adapter import Adapter, AdapterResponse
+from doc_api.adapter import Adapter, AdapterResponse, response_code
 from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
 from doc_api.tools.mail_sender import MailSender
@@ -189,7 +189,8 @@ class DocWorkerWrapper(ABC):
                 is sent while DocAPI stays unreachable.
 
         DocAPI is unreachable when a request to it fails to connect or times out,
-        or gets a 502, 503 or 504. Failed requests in an outage are logged, not
+        or gets a 502, 503 or 504, or a 404 without a DocAPI app code, which a
+        proxy in front of DocAPI sends when it has no route to it. Failed requests in an outage are logged, not
         mailed one by one: the worker mails DISCONNECTED, a reminder per interval
         and RECONNECTED. A job outcome that could not be reported is reported
         once DocAPI is reachable again, before the worker polls for a new job.
@@ -323,7 +324,7 @@ class DocWorkerWrapper(ABC):
             self._notify_worker_failure(f"Could not report the outcome of job {job_id} to DocAPI",
                                         exception=exception)
             return False
-        if getattr(result, "status", None) in UNREACHABLE_STATUSES:
+        if _is_unreachable_status(getattr(result, "status", None), getattr(result, "code", None)):
             return self._hold_lost_report(job_id, response)
         if not result.is_success:
             self._notify_worker_failure(f"Could not report the outcome of job {job_id} to DocAPI "
@@ -1092,8 +1093,7 @@ class DocWorkerWrapper(ABC):
             logger.exception("Could not send worker mail")
 
     def _server_unreachable(self, request: str, error: str) -> None:
-        """A request could not reach DocAPI (no connection, a timeout or a
-        502/503/504): start or continue the outage, and mail DISCONNECTED or a
+        """A request could not reach DocAPI (see _is_unreachable_status): start or continue the outage, and mail DISCONNECTED or a
         STILL DISCONNECTED reminder when due."""
         logger.warning("DocAPI unreachable: %s: %s", request, error)
         now, now_monotonic = datetime.now(timezone.utc), time.monotonic()
@@ -1153,7 +1153,7 @@ class DocWorkerWrapper(ABC):
             logger.exception("Could not report the outcome of job %s to DocAPI", lost.job_id)
             note = f"{lost.job_id}: its {lost.response.status.value} outcome could not be reported: {exception}"
         else:
-            if getattr(result, "status", None) in UNREACHABLE_STATUSES:
+            if _is_unreachable_status(getattr(result, "status", None), getattr(result, "code", None)):
                 return False
             if result.is_success:
                 logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, lost.response.status.value)
@@ -1208,6 +1208,15 @@ class DocWorkerWrapper(ABC):
 UNREACHABLE_STATUSES = frozenset({502, 503, 504})
 
 
+def _is_unreachable_status(status: Optional[int], code: Optional[str]) -> bool:
+    """Whether an HTTP answer came from a proxy in front of DocAPI instead of
+    DocAPI: a 502, 503 or 504, or a 404 without a DocAPI app code, which the
+    proxy sends when it has no route to DocAPI, e.g. while DocAPI is shut down.
+    Every error DocAPI sends itself has a code. Other errors without one, such
+    as a 413 or 429, may be permanent, so they stay ordinary failures."""
+    return status in UNREACHABLE_STATUSES or (status == 404 and code is None)
+
+
 def _is_unreachable_error(error: Optional[BaseException]) -> bool:
     return isinstance(error, (requests.ConnectionError, requests.Timeout))
 
@@ -1218,7 +1227,8 @@ def _is_unreachable(response: Optional[WorkerResponse]) -> bool:
         return False
     adapter_response = response.error_adapter_response
     return (_is_unreachable_error(response.exception)
-            or (adapter_response is not None and adapter_response.status in UNREACHABLE_STATUSES))
+            or (adapter_response is not None
+                and _is_unreachable_status(adapter_response.status, adapter_response.code)))
 
 
 def _now_text(now: datetime) -> str:
@@ -1269,8 +1279,12 @@ class _ReachabilityConnector:
             except (requests.ConnectionError, requests.Timeout) as error:
                 self._worker._server_unreachable(label, f"{type(error).__name__}: {error}")
                 raise
-            if getattr(response, "status_code", None) in UNREACHABLE_STATUSES:
-                self._worker._server_unreachable(label, f"HTTP {response.status_code}")
+            status = getattr(response, "status_code", None)
+            # Only a 404's body is read: its code tells DocAPI's own 404 from a proxy's.
+            code = response_code(response) if status == 404 else None
+            if _is_unreachable_status(status, code):
+                self._worker._server_unreachable(
+                    label, f"HTTP {status}" + (" without a DocAPI code" if status == 404 else ""))
             else:
                 self._worker._server_reached()
             return response
