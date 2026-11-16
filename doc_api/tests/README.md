@@ -954,6 +954,19 @@ and recovery instructions.
 - [x] failed tests drop databases. [`test_test_isolation.py::test_failed_tests_drop_databases`](test_test_isolation.py).
 - [x] readme references current tests. [`test_test_isolation.py::test_readme_references_current_tests`](test_test_isolation.py).
 
+### Connector timeouts
+
+Every `Connector` request has a timeout: `(10, 300)` seconds to connect and to
+wait for the next bytes of a response by default, set per connector or per
+request. `None` waits without limit only when passed on purpose. A worker
+request that times out is a DocAPI outage.
+
+- [x] every request has the connector timeout. [`test_connector.py::test_every_request_has_the_connector_timeout`](test_connector.py).
+- [x] a request can set its own timeout. [`test_connector.py::test_a_request_can_set_its_own_timeout`](test_connector.py).
+- [x] invalid timeouts are rejected. [`test_connector.py::test_invalid_timeouts_are_rejected`](test_connector.py).
+- [x] a connect or read part may be unlimited. [`test_connector.py::test_a_connect_or_read_part_may_be_unlimited`](test_connector.py).
+- [x] a server that never answers times out. [`test_connector.py::test_a_server_that_never_answers_times_out`](test_connector.py).
+
 ### Worker adapter
 
 - [x] adapter failure state. [`test_adapter.py::test_adapter_failure_state`](test_adapter.py).
@@ -1034,7 +1047,7 @@ A job outcome that could not be reported is reported first after reconnecting,
 before the worker polls again; a report the server no longer accepts changes
 nothing. Other errors keep the usual failure mail.
 
-- [x] Grace period, reminders, reconnect mail, gateway errors, errors that are not outages, lost outcome reports and invalid settings. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
+- [x] Grace period, reminders, reconnect mail, gateway errors, a request that times out, errors that are not outages, lost outcome reports and invalid settings. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
 
 ### Persistent worker job history
 
