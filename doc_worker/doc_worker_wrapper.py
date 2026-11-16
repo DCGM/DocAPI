@@ -34,68 +34,10 @@ from doc_api.tools.mail_sender import MailSender
 logger = logging.getLogger(__name__)
 
 
-def _join(*parts: Optional[str]) -> str:
-    return "\n\n".join(part for part in parts if part)
-
-
-# Responses that mean DocAPI is not reachable through its proxy, not that it
-# rejected the request.
-UNREACHABLE_STATUSES = frozenset({502, 503, 504})
-
-
-def _is_unreachable_error(error: Optional[BaseException]) -> bool:
-    return isinstance(error, (requests.ConnectionError, requests.Timeout))
-
-
-def _is_unreachable(response: Optional["WorkerResponse"]) -> bool:
-    """Whether a pipeline response failed because DocAPI could not be reached."""
-    if response is None:
-        return False
-    adapter_response = response.error_adapter_response
-    return (_is_unreachable_error(response.exception)
-            or (adapter_response is not None and adapter_response.status in UNREACHABLE_STATUSES))
-
-
-def _now_text(now: datetime) -> str:
-    return now.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
 class WorkerResponseStatus(Enum):
     OK = "ok"
     ERROR = "error"
     FAIL = "fail"
-
-
-@dataclass(frozen=True)
-class WorkerErrorMessage:
-    """Separate technical and user messages; None suppresses that message.
-
-    download_input messages support {kind} and {filename} placeholders.
-    Exception and API diagnostics are added only to the technical report.
-    """
-    final_log: Optional[str]
-    final_log_user: Optional[str]
-
-
-DEFAULT_WORKER_ERRORS = MappingProxyType({
-    'request_job_lease': WorkerErrorMessage('Failed to request job lease', 'Failed to request job lease'),
-    'get_job_details': WorkerErrorMessage('Failed to get job details', 'Failed to get job details'),
-    'no_current_job': WorkerErrorMessage('No current job set', 'No current job set'),
-    'download_engine_files': WorkerErrorMessage('Failed to download engine files', 'Failed to download engine files'),
-    'download_input': WorkerErrorMessage('Failed to download {kind} for {filename}', 'Failed to download {kind} for {filename}'),
-    'download_meta_json': WorkerErrorMessage('Failed to download meta JSON', 'Failed to download meta JSON'),
-    'job_data_path': WorkerErrorMessage('Failed to get job data path', 'Failed to get job data path'),
-    'no_job_for_result_upload': WorkerErrorMessage('No current job to upload results for', 'No current job to upload results for'),
-    'upload_results': WorkerErrorMessage('Failed to upload results', 'Failed to upload results'),
-    'request_job': WorkerErrorMessage('Failed to request job', 'Failed to request job'),
-    'prepare_engine_files': WorkerErrorMessage('Failed to download or prepare engine files', 'Failed to download or prepare engine files'),
-    'download_job_data': WorkerErrorMessage('Failed to download job data from server', 'Failed to download job data from server'),
-    'create_job_workspace': WorkerErrorMessage('Unable to create job workspace directory', 'Unable to create job workspace directory'),
-    'process_job': WorkerErrorMessage('Processing failed due to an internal error', 'Processing failed due to an internal error'),
-    'package_results': WorkerErrorMessage('Failed to package processing results', 'Failed to package processing results'),
-    'upload_results_to_server': WorkerErrorMessage('Failed to upload results to server', 'Failed to upload results to server'),
-    'unexpected_processing': WorkerErrorMessage('An unexpected error occurred during processing', 'An unexpected error occurred during processing'),
-})
 
 
 @dataclass
@@ -138,83 +80,36 @@ class WorkerResponse:
                    exception=exception, error_adapter_response=error_adapter_response)
 
 
-@dataclass
-class _ServerOutage:
-    """A time when the worker's requests could not reach DocAPI."""
-    started_at: datetime
-    started_monotonic: float
-    job_id: Optional[str]           # The job being processed when it started.
-    failed_requests: int = 0
-    last_request: str = ""
-    last_error: str = ""
-    mailed: bool = False            # DISCONNECTED was sent.
-    last_mail_monotonic: float = 0.0
-    ended_at: Optional[datetime] = None
-    ended_monotonic: Optional[float] = None
-
-
-@dataclass
-class _LostReport:
-    """A job outcome that could not be reported because DocAPI was unreachable."""
-    job_id: str
-    response: "WorkerResponse"
-
-
-class _ReachabilityConnector:
-    """Passes a Connector through and tells the worker whether each DocAPI
-    request reached the server."""
-
-    REQUEST_METHODS = ("get", "post", "put", "patch", "delete")
-
-    def __init__(self, connector: Connector, worker: "DocWorkerWrapper"):
-        self._connector = connector
-        self._worker = worker
-
-    def __getattr__(self, name):
-        attribute = getattr(self._connector, name)
-        if name not in self.REQUEST_METHODS:
-            return attribute
-
-        def request(url, *args, **kwargs):
-            label = f"{name.upper()} {urlsplit(str(url)).path}"
-            try:
-                response = attribute(url, *args, **kwargs)
-            except (requests.ConnectionError, requests.Timeout) as error:
-                self._worker._request_failed(label, f"{type(error).__name__}: {error}")
-                raise
-            if getattr(response, "status_code", None) in UNREACHABLE_STATUSES:
-                self._worker._request_failed(label, f"HTTP {response.status_code}")
-            else:
-                self._worker._request_reached_server()
-            return response
-
-        return request
-
-
 @dataclass(frozen=True)
-class WorkerHealthConfig:
-    """Opt-in lifecycle mail settings for DocWorkerWrapper.
+class WorkerErrorMessage:
+    """Separate technical and user messages; None suppresses that message.
 
-    Requires the wrapper's mail_sender and mail_receivers. An alive interval of
-    zero disables periodic mail. Explicit failure mail is handled independently
-    by the wrapper.
-    These notifications do not replace DocAPI's job outcome notifications.
-
-    Enable when constructing a worker subclass::
-
-        worker = MyWorker(
-            api_url=url, connector=connector, base_dir=data_dir,
-            mail_sender=sender, mail_receivers=["admin@example.org"],
-            identity="OCR worker", health_config=WorkerHealthConfig(),
-        )
-        worker.start()
+    download_input messages support {kind} and {filename} placeholders.
+    Exception and API diagnostics are added only to the technical report.
     """
-    mail_startup: bool = True
-    alive_interval_seconds: float = 86400
+    final_log: Optional[str]
+    final_log_user: Optional[str]
 
-    def __post_init__(self):
-        if not math.isfinite(self.alive_interval_seconds) or self.alive_interval_seconds < 0:
-            raise ValueError("alive_interval_seconds must be a finite, nonnegative number")
+
+DEFAULT_WORKER_ERRORS = MappingProxyType({
+    'request_job_lease': WorkerErrorMessage('Failed to request job lease', 'Failed to request job lease'),
+    'get_job_details': WorkerErrorMessage('Failed to get job details', 'Failed to get job details'),
+    'no_current_job': WorkerErrorMessage('No current job set', 'No current job set'),
+    'download_engine_files': WorkerErrorMessage('Failed to download engine files', 'Failed to download engine files'),
+    'download_input': WorkerErrorMessage('Failed to download {kind} for {filename}', 'Failed to download {kind} for {filename}'),
+    'download_meta_json': WorkerErrorMessage('Failed to download meta JSON', 'Failed to download meta JSON'),
+    'job_data_path': WorkerErrorMessage('Failed to get job data path', 'Failed to get job data path'),
+    'no_job_for_result_upload': WorkerErrorMessage('No current job to upload results for', 'No current job to upload results for'),
+    'upload_results': WorkerErrorMessage('Failed to upload results', 'Failed to upload results'),
+    'request_job': WorkerErrorMessage('Failed to request job', 'Failed to request job'),
+    'prepare_engine_files': WorkerErrorMessage('Failed to download or prepare engine files', 'Failed to download or prepare engine files'),
+    'download_job_data': WorkerErrorMessage('Failed to download job data from server', 'Failed to download job data from server'),
+    'create_job_workspace': WorkerErrorMessage('Unable to create job workspace directory', 'Unable to create job workspace directory'),
+    'process_job': WorkerErrorMessage('Processing failed due to an internal error', 'Processing failed due to an internal error'),
+    'package_results': WorkerErrorMessage('Failed to package processing results', 'Failed to package processing results'),
+    'upload_results_to_server': WorkerErrorMessage('Failed to upload results to server', 'Failed to upload results to server'),
+    'unexpected_processing': WorkerErrorMessage('An unexpected error occurred during processing', 'An unexpected error occurred during processing'),
+})
 
 
 class DocWorkerWrapper(ABC):
@@ -243,7 +138,7 @@ class DocWorkerWrapper(ABC):
                  identity: Optional[str] = None,
                  hostname: Optional[str] = None,
                  mail_subject: str = "[{identity}] {status} ({hostname})",
-                 health_config: Optional[WorkerHealthConfig] = None,
+                 health_config: Optional["WorkerHealthConfig"] = None,
                  error_messages: Optional[Mapping[str, WorkerErrorMessage]] = None,
                  disconnected_grace_seconds: float = 60,
                  disconnected_mail_interval_seconds: float = 3600):
@@ -331,8 +226,8 @@ class DocWorkerWrapper(ABC):
         self.disconnected_grace_seconds = disconnected_grace_seconds
         self.disconnected_mail_interval_seconds = disconnected_mail_interval_seconds
         self._outage_lock = threading.Lock()
-        self._outage: Optional[_ServerOutage] = None
-        self._lost_report: Optional[_LostReport] = None
+        self._outage: Optional["_ServerOutage"] = None
+        self._lost_report: Optional["_LostReport"] = None
         self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self))
 
         # Setup directory structure
@@ -1148,113 +1043,6 @@ class DocWorkerWrapper(ABC):
             logger.error(f"Failed to release lease. Status: {release_response.status}, Code: {release_response.code}")
             return False
 
-    def _request_failed(self, request: str, error: str) -> None:
-        """A request could not reach DocAPI: start or continue the outage, and
-        mail DISCONNECTED or a STILL DISCONNECTED reminder when due."""
-        logger.warning("DocAPI unreachable: %s: %s", request, error)
-        now, now_monotonic = datetime.now(timezone.utc), time.monotonic()
-        job = self.current_job.id if self.current_job is not None else (
-            self.current_lease.id if self.current_lease is not None else None)
-        with self._outage_lock:
-            outage = self._outage
-            if outage is None or outage.ended_at is not None:
-                outage = self._outage = _ServerOutage(now, now_monotonic, None if job is None else str(job))
-            outage.failed_requests += 1
-            outage.last_request, outage.last_error = request, error
-            status = None
-            if not outage.mailed:
-                # A job cannot be recovered mid-processing, so it is mailed at once.
-                if job is not None or now_monotonic - outage.started_monotonic >= self.disconnected_grace_seconds:
-                    status, outage.mailed = "DISCONNECTED", True
-                    if outage.job_id is None and job is not None:
-                        outage.job_id = str(job)
-            elif now_monotonic - outage.last_mail_monotonic >= self.disconnected_mail_interval_seconds:
-                status = "STILL DISCONNECTED"
-            if status is not None:
-                outage.last_mail_monotonic = now_monotonic
-                message = self._outage_message(outage, status, now_monotonic)
-        if status is not None:
-            self._send_worker_mail(status, message)
-
-    def _request_reached_server(self) -> None:
-        """A request reached DocAPI: end the outage. RECONNECTED is mailed now,
-        or after a lost outcome is reported if one is waiting."""
-        with self._outage_lock:
-            outage = self._outage
-            if outage is None or outage.ended_at is not None:
-                return
-            outage.ended_at, outage.ended_monotonic = datetime.now(timezone.utc), time.monotonic()
-            waiting = self._lost_report is not None
-            if not waiting:
-                self._outage = None
-        logger.info("DocAPI is reachable again after %s", _duration(outage.ended_monotonic - outage.started_monotonic))
-        if not waiting:
-            self._mail_reconnected(outage)
-
-    def _mail_reconnected(self, outage: _ServerOutage, lost_job: Optional[str] = None) -> None:
-        if outage.mailed or lost_job is not None:
-            self._send_worker_mail("RECONNECTED", self._outage_message(outage, "RECONNECTED", lost_job=lost_job))
-
-    def _settle_lost_report(self) -> bool:
-        """Report an outcome lost in an outage; False while DocAPI is still
-        unreachable, so the worker does not poll for a new job meanwhile."""
-        lost = self._lost_report
-        if lost is None:
-            return True
-        try:
-            result = self._send_job_report(lost.response, lost.job_id)
-        except Exception as exception:
-            if _is_unreachable_error(exception):
-                return False
-            logger.exception("Could not report the outcome of job %s to DocAPI", lost.job_id)
-            note = f"{lost.job_id}: its {lost.response.status.value} outcome could not be reported: {exception}"
-        else:
-            if getattr(result, "status", None) in UNREACHABLE_STATUSES:
-                return False
-            if result.is_success:
-                logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, lost.response.status.value)
-                note = f"{lost.job_id}: reported as {lost.response.status.value} after the outage"
-            else:
-                # The server requeued or failed the job meanwhile; nothing changes.
-                logger.warning("DocAPI did not accept the outcome of job %s after the outage. Status: %s, Code: %s",
-                               lost.job_id, result.status, result.code)
-                note = (f"{lost.job_id}: its {lost.response.status.value} outcome was not accepted "
-                        f"(status {result.status}, code {result.code}); DocAPI had already requeued or "
-                        f"failed the job")
-        with self._outage_lock:
-            self._lost_report = None
-            outage = self._outage
-            if outage is not None and outage.ended_at is not None:
-                self._outage = None
-            else:
-                outage = None
-        if outage is not None:
-            self._mail_reconnected(outage, lost_job=note)
-        return True
-
-    def _outage_message(self, outage: _ServerOutage, status: str, now_monotonic: Optional[float] = None,
-                        *, lost_job: Optional[str] = None) -> str:
-        if status == "RECONNECTED":
-            lines = ["DocAPI is reachable again.", "",
-                     _row("from", _now_text(outage.started_at)),
-                     _row("to", _now_text(outage.ended_at)),
-                     _row("lasted", _duration(outage.ended_monotonic - outage.started_monotonic)),
-                     _row("failed", f"{outage.failed_requests} requests"),
-                     _row("last error", outage.last_error)]
-            if lost_job is not None:
-                lines.append(_row("job", lost_job))
-            return "\n".join(lines)
-        lines = ["DocAPI cannot be reached." if status == "DISCONNECTED" else "DocAPI is still unreachable.", "",
-                 _row("since", _now_text(outage.started_at))]
-        if status != "DISCONNECTED":
-            lines += [_row("for", _duration(now_monotonic - outage.started_monotonic)),
-                      _row("failed", f"{outage.failed_requests} requests")]
-        lines += [_row("request", outage.last_request), _row("error", outage.last_error)]
-        if outage.job_id is not None:
-            lines.append(_row("job", f"{outage.job_id}: it cannot be finished; its outcome is reported "
-                                     f"once DocAPI is reachable again"))
-        return "\n".join(lines)
-
     def send_mail(self, subject: str, body: str, receiver_mails: Optional[Sequence[str]] = None) -> bool:
         """
         Send an email with the worker's mail sender, a separate one to each
@@ -1302,6 +1090,192 @@ class DocWorkerWrapper(ABC):
         except Exception:
             # Alert delivery must not interrupt processing or cause another alert.
             logger.exception("Could not send worker mail")
+
+    def _server_unreachable(self, request: str, error: str) -> None:
+        """A request could not reach DocAPI (no connection, a timeout or a
+        502/503/504): start or continue the outage, and mail DISCONNECTED or a
+        STILL DISCONNECTED reminder when due."""
+        logger.warning("DocAPI unreachable: %s: %s", request, error)
+        now, now_monotonic = datetime.now(timezone.utc), time.monotonic()
+        job = self.current_job.id if self.current_job is not None else (
+            self.current_lease.id if self.current_lease is not None else None)
+        with self._outage_lock:
+            outage = self._outage
+            if outage is None or outage.ended_at is not None:
+                outage = self._outage = _ServerOutage(now, now_monotonic, None if job is None else str(job))
+            outage.failed_requests += 1
+            outage.last_request, outage.last_error = request, error
+            status = None
+            if not outage.mailed:
+                # A job cannot be recovered mid-processing, so it is mailed at once.
+                if job is not None or now_monotonic - outage.started_monotonic >= self.disconnected_grace_seconds:
+                    status, outage.mailed = "DISCONNECTED", True
+                    if outage.job_id is None and job is not None:
+                        outage.job_id = str(job)
+            elif now_monotonic - outage.last_mail_monotonic >= self.disconnected_mail_interval_seconds:
+                status = "STILL DISCONNECTED"
+            if status is not None:
+                outage.last_mail_monotonic = now_monotonic
+                message = self._outage_message(outage, status, now_monotonic)
+        if status is not None:
+            self._send_worker_mail(status, message)
+
+    def _server_reached(self) -> None:
+        """A request reached DocAPI: end the outage. RECONNECTED is mailed now,
+        or after a lost outcome is reported if one is waiting."""
+        with self._outage_lock:
+            outage = self._outage
+            if outage is None or outage.ended_at is not None:
+                return
+            outage.ended_at, outage.ended_monotonic = datetime.now(timezone.utc), time.monotonic()
+            waiting = self._lost_report is not None
+            if not waiting:
+                self._outage = None
+        logger.info("DocAPI is reachable again after %s", _duration(outage.ended_monotonic - outage.started_monotonic))
+        if not waiting:
+            self._mail_reconnected(outage)
+
+    def _mail_reconnected(self, outage: "_ServerOutage", lost_job: Optional[str] = None) -> None:
+        if outage.mailed or lost_job is not None:
+            self._send_worker_mail("RECONNECTED", self._outage_message(outage, "RECONNECTED", lost_job=lost_job))
+
+    def _settle_lost_report(self) -> bool:
+        """Report an outcome lost in an outage; False while DocAPI is still
+        unreachable, so the worker does not poll for a new job meanwhile."""
+        lost = self._lost_report
+        if lost is None:
+            return True
+        try:
+            result = self._send_job_report(lost.response, lost.job_id)
+        except Exception as exception:
+            if _is_unreachable_error(exception):
+                return False
+            logger.exception("Could not report the outcome of job %s to DocAPI", lost.job_id)
+            note = f"{lost.job_id}: its {lost.response.status.value} outcome could not be reported: {exception}"
+        else:
+            if getattr(result, "status", None) in UNREACHABLE_STATUSES:
+                return False
+            if result.is_success:
+                logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, lost.response.status.value)
+                note = f"{lost.job_id}: reported as {lost.response.status.value} after the outage"
+            else:
+                # The server requeued or failed the job meanwhile; nothing changes.
+                logger.warning("DocAPI did not accept the outcome of job %s after the outage. Status: %s, Code: %s",
+                               lost.job_id, result.status, result.code)
+                note = (f"{lost.job_id}: its {lost.response.status.value} outcome was not accepted "
+                        f"(status {result.status}, code {result.code}); DocAPI had already requeued or "
+                        f"failed the job")
+        with self._outage_lock:
+            self._lost_report = None
+            outage = self._outage
+            if outage is not None and outage.ended_at is not None:
+                self._outage = None
+            else:
+                outage = None
+        if outage is not None:
+            self._mail_reconnected(outage, lost_job=note)
+        return True
+
+    def _outage_message(self, outage: "_ServerOutage", status: str, now_monotonic: Optional[float] = None,
+                        *, lost_job: Optional[str] = None) -> str:
+        if status == "RECONNECTED":
+            lines = ["DocAPI is reachable again.", "",
+                     _row("from", _now_text(outage.started_at)),
+                     _row("to", _now_text(outage.ended_at)),
+                     _row("lasted", _duration(outage.ended_monotonic - outage.started_monotonic)),
+                     _row("failed", f"{outage.failed_requests} requests"),
+                     _row("last error", outage.last_error)]
+            if lost_job is not None:
+                lines.append(_row("job", lost_job))
+            return "\n".join(lines)
+        lines = ["DocAPI cannot be reached." if status == "DISCONNECTED" else "DocAPI is still unreachable.", "",
+                 _row("since", _now_text(outage.started_at))]
+        if status != "DISCONNECTED":
+            lines += [_row("for", _duration(now_monotonic - outage.started_monotonic)),
+                      _row("failed", f"{outage.failed_requests} requests")]
+        lines += [_row("request", outage.last_request), _row("error", outage.last_error)]
+        if outage.job_id is not None:
+            lines.append(_row("job", f"{outage.job_id}: it cannot be finished; its outcome is reported "
+                                     f"once DocAPI is reachable again"))
+        return "\n".join(lines)
+
+
+# --- DocAPI outages: the wrapper's _server_unreachable/_server_reached and
+# _settle_lost_report use these. ---
+
+# Responses that mean DocAPI is not reachable through its proxy, not that it
+# rejected the request.
+UNREACHABLE_STATUSES = frozenset({502, 503, 504})
+
+
+def _is_unreachable_error(error: Optional[BaseException]) -> bool:
+    return isinstance(error, (requests.ConnectionError, requests.Timeout))
+
+
+def _is_unreachable(response: Optional[WorkerResponse]) -> bool:
+    """Whether a pipeline response failed because DocAPI could not be reached."""
+    if response is None:
+        return False
+    adapter_response = response.error_adapter_response
+    return (_is_unreachable_error(response.exception)
+            or (adapter_response is not None and adapter_response.status in UNREACHABLE_STATUSES))
+
+
+def _now_text(now: datetime) -> str:
+    return now.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+@dataclass
+class _ServerOutage:
+    """A time when the worker's requests could not reach DocAPI."""
+    started_at: datetime
+    started_monotonic: float
+    job_id: Optional[str]           # The job being processed when it started.
+    failed_requests: int = 0
+    last_request: str = ""
+    last_error: str = ""
+    mailed: bool = False            # DISCONNECTED was sent.
+    last_mail_monotonic: float = 0.0
+    ended_at: Optional[datetime] = None
+    ended_monotonic: Optional[float] = None
+
+
+@dataclass
+class _LostReport:
+    """A job outcome that could not be reported because DocAPI was unreachable."""
+    job_id: str
+    response: WorkerResponse
+
+
+class _ReachabilityConnector:
+    """Passes a Connector through and tells the worker whether each DocAPI
+    request reached the server."""
+
+    REQUEST_METHODS = ("get", "post", "put", "patch", "delete")
+
+    def __init__(self, connector: Connector, worker: DocWorkerWrapper):
+        self._connector = connector
+        self._worker = worker
+
+    def __getattr__(self, name):
+        attribute = getattr(self._connector, name)
+        if name not in self.REQUEST_METHODS:
+            return attribute
+
+        def request(url, *args, **kwargs):
+            label = f"{name.upper()} {urlsplit(str(url)).path}"
+            try:
+                response = attribute(url, *args, **kwargs)
+            except (requests.ConnectionError, requests.Timeout) as error:
+                self._worker._server_unreachable(label, f"{type(error).__name__}: {error}")
+                raise
+            if getattr(response, "status_code", None) in UNREACHABLE_STATUSES:
+                self._worker._server_unreachable(label, f"HTTP {response.status_code}")
+            else:
+                self._worker._server_reached()
+            return response
+
+        return request
 
 
 class JobHistory:
@@ -1487,8 +1461,34 @@ class JobHistory:
         return result
 
 
+@dataclass(frozen=True)
+class WorkerHealthConfig:
+    """Opt-in lifecycle mail settings for DocWorkerWrapper.
+
+    Requires the wrapper's mail_sender and mail_receivers. An alive interval of
+    zero disables periodic mail. Explicit failure mail is handled independently
+    by the wrapper.
+    These notifications do not replace DocAPI's job outcome notifications.
+
+    Enable when constructing a worker subclass::
+
+        worker = MyWorker(
+            api_url=url, connector=connector, base_dir=data_dir,
+            mail_sender=sender, mail_receivers=["admin@example.org"],
+            identity="OCR worker", health_config=WorkerHealthConfig(),
+        )
+        worker.start()
+    """
+    mail_startup: bool = True
+    alive_interval_seconds: float = 86400
+
+    def __post_init__(self):
+        if not math.isfinite(self.alive_interval_seconds) or self.alive_interval_seconds < 0:
+            raise ValueError("alive_interval_seconds must be a finite, nonnegative number")
+
+
 class WorkerHealth:
-    def __init__(self, worker: "DocWorkerWrapper", config: WorkerHealthConfig):
+    def __init__(self, worker: DocWorkerWrapper, config: WorkerHealthConfig):
         self.worker = worker
         self.mail_startup = config.mail_startup
         self.alive_interval = config.alive_interval_seconds
@@ -1561,6 +1561,11 @@ class WorkerHealth:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1)
+
+
+def _join(*parts: Optional[str]) -> str:
+    """Join the nonempty text parts with blank lines."""
+    return "\n\n".join(part for part in parts if part)
 
 
 def _row(label: str, value: str, indent: str = "") -> str:
