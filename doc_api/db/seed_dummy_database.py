@@ -1,7 +1,7 @@
 """Insert synthetic finished jobs into an existing, migrated PostgreSQL database.
 
 Run from the repository root with server dependencies installed:
-    python -m scripts.seed_dummy_database postgresql://postgres:postgres@localhost:5433/doc_api_db
+    python -m doc_api.db.seed_dummy_database postgresql://postgres:postgres@localhost:5433/doc_api_db
 
 Only DONE/FAILED jobs are inserted. No files or runnable work are created, and no
 mail is sent: each job gets one notification record already marked sent, so the

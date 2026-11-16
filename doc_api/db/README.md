@@ -3,7 +3,7 @@
 Run from the repository root using a Python environment with the server dependencies installed:
 
 ```sh
-python -m scripts.seed_dummy_database 'postgresql://postgres:postgres@localhost:5433/doc_api_db'
+python -m doc_api.db.seed_dummy_database 'postgresql://postgres:postgres@localhost:5433/doc_api_db'
 ```
 
 The database must already have the current schema. The default dataset contains
@@ -32,7 +32,7 @@ are not changed by this option.
 To remove **all filler runs** from the specified database:
 
 ```sh
-python -m scripts.seed_dummy_database 'postgresql://postgres:postgres@localhost:5433/doc_api_db' --clear
+python -m doc_api.db.seed_dummy_database 'postgresql://postgres:postgres@localhost:5433/doc_api_db' --clear
 ```
 
 Cleanup deletes records with the reserved UUID prefix, plus their image records
