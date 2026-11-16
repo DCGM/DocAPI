@@ -2,9 +2,9 @@ import json
 
 import pytest
 from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
 
-from doc_api.api.cruds.user_cruds import JobDefinition
+from doc_api.api.routes.user_routes import check_image_extensions
+from doc_api.api.schemas.base_objects import JobDefinition
 from doc_api.api.main import validation_handler
 from doc_api.api.schemas.responses import AppCode
 from doc_api.config import Config, config
@@ -32,13 +32,13 @@ def test_job_image_extension_options(monkeypatch, required, allowed, name):
         valid = not required or name in {"page.jpg", "PAGE.PNG", " page.jpg ", "page.custom"}
         error_type = "image_extension_required"
 
-    payload = {"images": [{"name": name, "order": 0}]}
+    job_definition = JobDefinition.model_validate({"images": [{"name": name, "order": 0}]})
     if valid:
-        assert JobDefinition.model_validate(payload).images[0].name == name
+        check_image_extensions(job_definition)
     else:
-        with pytest.raises(ValidationError) as exc:
-            JobDefinition.model_validate(payload)
-        assert exc.value.errors()[0]["loc"] == ("images", 0, "name")
+        with pytest.raises(RequestValidationError) as exc:
+            check_image_extensions(job_definition)
+        assert exc.value.errors()[0]["loc"] == ("body", "images", 0, "name")
         assert exc.value.errors()[0]["type"] == error_type
 
 
@@ -55,13 +55,10 @@ def test_image_extension_defaults(monkeypatch):
 async def test_extension_error_response(monkeypatch, allowed):
     monkeypatch.setattr(config, "REQUIRE_IMAGE_EXTENSION", True)
     monkeypatch.setattr(config, "ALLOWED_IMAGE_EXTENSIONS", allowed)
-    with pytest.raises(ValidationError) as exc:
-        JobDefinition(images=[{"name": "page", "order": 0}])
+    with pytest.raises(RequestValidationError) as exc:
+        check_image_extensions(JobDefinition(images=[{"name": "page", "order": 0}]))
 
-    errors = exc.value.errors()
-    for error in errors:
-        error["loc"] = ("body",) + error["loc"]
-    response = await validation_handler(None, RequestValidationError(errors))
+    response = await validation_handler(None, exc.value)
     body = json.loads(response.body)
     assert response.status_code == 422
     assert body["code"] == AppCode.REQUEST_VALIDATION_ERROR.value

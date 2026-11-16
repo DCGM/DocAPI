@@ -1,11 +1,8 @@
 import logging
-import os.path
 from datetime import datetime, timezone
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
-from pydantic_core import PydanticCustomError
 from sqlalchemy import select, exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,56 +10,12 @@ from doc_api.api.database import DBError
 from doc_api.api.schemas.responses import AppCode
 from doc_api.db import model
 from doc_api.api.schemas import base_objects
-from doc_api.config import config
 
 
 logger = logging.getLogger(__name__)
 
 
-class ImageForJobDefinition(BaseModel):
-    name: str = Field(description="Image filename. The server may require an extension or restrict allowed extensions.")
-    order: int = Field(ge=0, le=2_147_483_647, strict=True)
-    image_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
-    alto_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
-    page_url: Optional[AnyHttpUrl] = Field(None, description="Optional HTTP(S) URL downloaded directly by the worker.")
-
-    model_config = ConfigDict(extra="forbid")
-
-    @field_validator("name")
-    @classmethod
-    def validate_extension(cls, name: str) -> str:
-        if not config.ALLOWED_IMAGE_EXTENSIONS and not config.REQUIRE_IMAGE_EXTENSION:
-            return name
-        _, extension = os.path.splitext(name.strip())
-        if config.ALLOWED_IMAGE_EXTENSIONS:
-            if extension.lower() not in config.ALLOWED_IMAGE_EXTENSIONS:
-                raise PydanticCustomError(
-                    "image_extension_not_allowed",
-                    "Image name must use one of these extensions: {extensions}.",
-                    {"extensions": ", ".join(sorted(config.ALLOWED_IMAGE_EXTENSIONS))},
-                )
-        elif not extension or extension == ".":
-            raise PydanticCustomError(
-                "image_extension_required",
-                "Image name must include a filename extension (e.g. page.jpg).",
-            )
-        return name
-
-
-class JobDefinition(BaseModel):
-    images: List[ImageForJobDefinition]
-    meta_json_required: bool = False
-    alto_required: bool = False
-    page_required: bool = False
-
-    engine_name: Optional[str] = None
-    engine_version: Optional[str] = None
-    engine_settings: Optional[dict] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
-async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: JobDefinition, active_engine: bool = False) -> Tuple[Optional[model.Job], AppCode]:
+async def create_job(*, db: AsyncSession, key_id: UUID, job_definition: base_objects.JobDefinition, active_engine: bool = False) -> Tuple[Optional[model.Job], AppCode]:
     try:
         async with db.begin():
             result = await db.execute(

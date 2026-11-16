@@ -11,6 +11,7 @@ import fastapi
 import cv2
 import numpy as np
 from fastapi import Depends, UploadFile, status, Request, Body, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 
 from aiofiles import os as aiofiles_os
@@ -41,6 +42,29 @@ from uuid import UUID
 
 
 logger = logging.getLogger(__name__)
+
+
+def check_image_extensions(job_definition: base_objects.JobDefinition) -> None:
+    """Reject image names whose extension the server settings do not allow.
+
+    The errors have the form of schema validation errors and are raised as a
+    RequestValidationError, so the client gets the usual 422 response.
+    """
+    errors = []
+    for index, image in enumerate(job_definition.images):
+        _, extension = os.path.splitext(image.name.strip())
+        location = ("body", "images", index, "name")
+        if config.ALLOWED_IMAGE_EXTENSIONS:
+            if extension.lower() not in config.ALLOWED_IMAGE_EXTENSIONS:
+                extensions = ", ".join(sorted(config.ALLOWED_IMAGE_EXTENSIONS))
+                errors.append({"type": "image_extension_not_allowed", "loc": location, "input": image.name,
+                               "msg": f"Image name must use one of these extensions: {extensions}.",
+                               "ctx": {"extensions": extensions}})
+        elif config.REQUIRE_IMAGE_EXTENSION and (not extension or extension == "."):
+            errors.append({"type": "image_extension_required", "loc": location, "input": image.name,
+                           "msg": "Image name must include a filename extension (e.g. page.jpg)."})
+    if errors:
+        raise RequestValidationError(errors)
 
 
 POST_JOB_RESPONSES = {
@@ -109,10 +133,11 @@ POST_JOB_RESPONSES = {
     responses=make_responses(POST_JOB_RESPONSES))
 async def post_job(
         request: Request,
-        job_definition: user_cruds.JobDefinition = Body(..., openapi_examples=config.JOB_DEFINITION_EXAMPLES),
+        job_definition: base_objects.JobDefinition = Body(..., openapi_examples=config.JOB_DEFINITION_EXAMPLES),
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
+    check_image_extensions(job_definition)
     duplicates_name = [item for item, count in Counter([x.name for x in job_definition.images]).items() if count > 1]
     if duplicates_name:
         raise DocAPIClientErrorException(
