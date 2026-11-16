@@ -13,19 +13,27 @@ from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 
 
 class FakeResponse:
-    def __init__(self, status_code, payload=None):
+    def __init__(self, status_code, payload=None, content_type="application/json"):
         self.status_code = status_code
         self._payload = payload
-        self.headers = {"Content-Type": "application/json"}
+        self.headers = {"Content-Type": content_type}
         self.text = str(payload)
 
     def json(self):
+        if not self.headers["Content-Type"].startswith("application/json"):
+            raise ValueError("not JSON")
         return self._payload
 
 
+# What a reverse proxy answers when it has no route to DocAPI, e.g. while
+# DocAPI is shut down.
+PROXY_404 = FakeResponse(404, "404 page not found", content_type="text/plain; charset=utf-8")
+DOCAPI_404 = FakeResponse(404, {"status": 404, "code": "JOB_NOT_FOUND", "detail": "Job not found"})
+
+
 class FakeServer:
-    """A connector whose server is up, down (no connection) or answers with
-    one status for every request."""
+    """A connector whose server is up, down (no connection), or answers every
+    request with one status or one FakeResponse."""
 
     def __init__(self):
         self.state = "up"
@@ -38,6 +46,8 @@ class FakeServer:
             raise requests.ConnectionError("Connection refused")
         if isinstance(self.state, int):
             return FakeResponse(self.state)
+        if isinstance(self.state, FakeResponse):
+            return self.state
         if method == "PATCH":
             return FakeResponse(self.report_status, {"status": self.report_status, "code": "JOB_UPDATED",
                                                      "detail": "updated"})
@@ -138,9 +148,39 @@ def test_gateway_errors_count_as_an_outage(worker, server, clock, status):
     assert f"HTTP {status}" in _mails(worker)[0][1]
 
 
-@pytest.mark.parametrize("status", [401, 500])
-def test_other_errors_are_not_an_outage(worker, server, status):
-    server.state = status
+def test_a_proxy_404_counts_as_an_outage(worker, server, clock):
+    server.state = PROXY_404
+    for step in (0, 30, 30):
+        clock[0] += step
+        assert worker.run_job_pipeline() is None
+    # No FAILURE: one DISCONNECTED once the grace period is over.
+    assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
+    assert "HTTP 404 without a DocAPI code" in _mails(worker)[0][1]
+
+    server.state = "up"
+    worker.run_job_pipeline()
+    assert _subjects(worker)[-1] == "[OCR worker] RECONNECTED (host)"
+
+
+def test_a_proxy_404_within_the_grace_period_sends_nothing(worker, server, clock):
+    server.state = PROXY_404
+    worker.run_job_pipeline()
+    clock[0] += 59
+    worker.run_job_pipeline()
+    server.state = "up"
+    worker.run_job_pipeline()
+    assert _subjects(worker) == []
+
+
+@pytest.mark.parametrize("response", [
+    DOCAPI_404,  # DocAPI's own 404 has a code.
+    FakeResponse(401), FakeResponse(500),
+    # Errors without a code other than 404 may be permanent.
+    FakeResponse(413, "Request Entity Too Large", content_type="text/html"),
+    FakeResponse(429, "Too Many Requests", content_type="text/plain"),
+])
+def test_other_errors_are_not_an_outage(worker, server, response):
+    server.state = response
     worker.run_job_pipeline()
     # The usual failure mail, at once and without the grace period.
     assert _subjects(worker) == ["[OCR worker] FAILURE (host)"]
@@ -194,9 +234,23 @@ def test_an_outcome_the_server_no_longer_accepts_changes_nothing(worker, server)
     assert server.calls == [("POST", "jobs/lease")]
 
 
-def test_only_unreachable_reports_are_held(worker, server):
+def test_an_outcome_report_answered_by_the_proxy_is_held(worker, server):
     worker.current_job = types.SimpleNamespace(id="job-1")
-    server.state = 500
+    server.state = PROXY_404
+    assert worker._report_job_response(WorkerResponse.ok(final_log="all pages")) is False
+    worker.current_job = None
+    assert worker._lost_report is not None
+    assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
+
+    server.state = "up"
+    worker.run_job_pipeline()
+    assert "job-1: reported as ok after the outage" in _mails(worker)[-1][1]
+
+
+@pytest.mark.parametrize("status", [500, 404])
+def test_only_unreachable_reports_are_held(worker, server, status):
+    worker.current_job = types.SimpleNamespace(id="job-1")
+    server.state = DOCAPI_404 if status == 404 else status
     assert worker._report_job_response(WorkerResponse.error(final_log="failed")) is False
     assert worker._lost_report is None
     assert _subjects(worker) == ["[OCR worker] FAILURE (host)"]

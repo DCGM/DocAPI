@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 # Define a generic type variable for the data
 T = TypeVar('T')
 
+
+def response_code(response: Any) -> Optional[str]:
+    """The DocAPI app code of an HTTP response, or None when it has none.
+
+    Only JSON responses can contain a DocAPI response envelope; other bodies,
+    such as downloads, which may be huge or already consumed by streaming, are
+    not read.
+    """
+    headers = getattr(response, "headers", None) or {}
+    media_type = headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not (media_type.startswith("application/") and media_type.endswith("+json")):
+        return None
+    try:
+        response_json = response.json()
+    except ValueError:
+        return None  # Malformed JSON has no API code.
+    return response_json.get("code") if isinstance(response_json, dict) else None
+
+
 class AdapterResponse(Generic[T]):
     """
     Represents a standardized response from adapter methods.    
@@ -36,17 +55,7 @@ class AdapterResponse(Generic[T]):
         
         self.code = code
         if code is None and response is not None:
-            # Download bodies may be huge or already consumed by streaming.
-            # Only JSON responses can contain a DocAPI response envelope.
-            media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-            if media_type == "application/json" or (media_type.startswith("application/") and media_type.endswith("+json")):
-                try:
-                    response_json = response.json()
-                except ValueError:
-                    pass  # Malformed JSON has no API code.
-                else:
-                    if isinstance(response_json, dict):
-                        self.code = response_json.get("code")
+            self.code = response_code(response)
         
         # Automatically decide whether to keep the response object
         # Only keep it for debugging if the operation failed
