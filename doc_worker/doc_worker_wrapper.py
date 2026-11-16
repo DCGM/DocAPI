@@ -119,15 +119,16 @@ class WorkerResponse:
 class WorkerHealthConfig:
     """Opt-in lifecycle mail settings for DocWorkerWrapper.
 
-    Requires the wrapper's mail_sender. An alive interval of zero disables
-    periodic mail. Explicit failure mail is handled independently by the wrapper.
+    Requires the wrapper's mail_sender and mail_receivers. An alive interval of
+    zero disables periodic mail. Explicit failure mail is handled independently
+    by the wrapper.
     These notifications do not replace DocAPI's job outcome notifications.
 
     Enable when constructing a worker subclass::
 
         worker = MyWorker(
             api_url=url, connector=connector, base_dir=data_dir,
-            mail_sender=sender,
+            mail_sender=sender, mail_receivers=["admin@example.org"],
             identity="OCR worker", health_config=WorkerHealthConfig(),
         )
         worker.start()
@@ -202,7 +203,8 @@ class DocWorkerWrapper(ABC):
             health_config: Opt-in startup and periodic alive mail. Requires mail_sender
                 and mail_receivers.
                 None disables alive reports. Explicit worker failures are mailed
-                whenever mail_sender is configured, independently of health_config.
+                whenever mail_sender and mail_receivers are configured,
+                independently of health_config.
             error_messages: Overrides keyed by DEFAULT_WORKER_ERRORS names. Each
                 WorkerErrorMessage sets technical and user text independently.
                 Omitted entries retain their existing English defaults.
@@ -264,6 +266,8 @@ class DocWorkerWrapper(ABC):
         self.job_history = JobHistory(job_history_path) if job_history_path is not None else None
         self.mail_sender = mail_sender
         self.mail_receivers = list(mail_receivers)
+        if mail_sender is not None and not self.mail_receivers:
+            logger.warning("Worker mail is off: the worker has a mail sender but no mail receivers")
         self.health = WorkerHealth(self, health_config) if health_config is not None else None
 
     @abstractmethod
@@ -893,8 +897,9 @@ class DocWorkerWrapper(ABC):
         """Poll and process jobs, with optional startup and periodic mail.
 
         KeyboardInterrupt shuts down gracefully. Unexpected failures are logged
-        and re-raised after attempting a failure email when a mailer is configured. A hard
-        kill or host failure requires an external monitor.
+        and re-raised after attempting a failure email when a mail sender and
+        receivers are configured. A hard kill or host failure requires an
+        external monitor.
         """
         logger.info(f"Worker started, polling for jobs every {self.polling_interval} seconds")
         try:
@@ -1054,8 +1059,9 @@ class DocWorkerWrapper(ABC):
         self._send_worker_mail("FAILURE", message)
 
     def _send_worker_mail(self, status: str, message: str) -> None:
-        """Send worker mail with consistent identity, host and subject."""
-        if self.mail_sender is None:
+        """Send worker mail with consistent identity, host and subject; without a
+        mail sender or receivers, worker mail is off and nothing is sent."""
+        if self.mail_sender is None or not self.mail_receivers:
             return
         now = datetime.now(timezone.utc)
         try:
@@ -1267,6 +1273,10 @@ class WorkerHealth:
     def start(self):
         if self.worker.mail_sender is None:
             message = "Worker health requires a mail sender."
+            logger.warning(message)
+            raise ValueError(message)
+        if not self.worker.mail_receivers:
+            message = "Worker health requires mail receivers."
             logger.warning(message)
             raise ValueError(message)
         if self.mail_startup:
