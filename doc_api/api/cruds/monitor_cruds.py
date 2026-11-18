@@ -73,7 +73,7 @@ async def get_stats(*, db: AsyncSession, top: int = 10, top_by: str = 'job_count
                 func.sum(f.runtime_seconds).label('runtime_seconds'),
                 func.coalesce(func.sum(f.attempt_count), 0).label('attempt_count'),
                 func.coalesce(func.sum(f.attempt_count * f.image_count), 0).label('attempt_image_count')]
-    for state in (ProcessingState.DONE, ProcessingState.FAILED):
+    for state in (ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.CANCELLED):
         measures.extend([
             func.count().filter(f.state == state).label(state.value + '_job_count'),
             func.coalesce(func.sum(f.image_count).filter(f.state == state), 0).label(state.value + '_image_count'),
@@ -109,7 +109,7 @@ async def get_stats(*, db: AsyncSession, top: int = 10, top_by: str = 'job_count
 
 
 async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset: int = 0, finished_within_seconds: int = 60,
-                          owner_id: UUID | None = None, worker_id: UUID | None = None,
+                          from_last_change: datetime | None = None, owner_id: UUID | None = None, worker_id: UUID | None = None,
                           engine_name: str | None = None, engine_version: str | None = None,
                           state: ProcessingState | None = None):
     owner, worker = aliased(model.Key), aliased(model.Key)
@@ -134,11 +134,16 @@ async def get_recent_jobs(*, db: AsyncSession, limit: int | None = None, offset:
         query = query.where(model.Engine.name == engine_name)
     if engine_version is not None:
         query = query.where(model.Engine.version == engine_version)
-    included = [pending, job.state == ProcessingState.NEW]
+    # PROCESSING and QUEUED jobs always show. NEW and finished jobs show only
+    # within the period, so forgotten NEW jobs do not stay listed forever.
+    recent = job.last_change >= from_last_change if from_last_change is not None else true()
+    included = [pending, and_(job.state == ProcessingState.NEW, recent)]
     if finished_within_seconds:
         included.append(and_(
-            job.state.in_([ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR]),
+            job.state.in_([ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR,
+                           ProcessingState.CANCELLED]),
             job.finished_date >= datetime.now(timezone.utc) - timedelta(seconds=finished_within_seconds),
+            recent,
         ))
     if state is not None:
         query = query.where(job.state == state)

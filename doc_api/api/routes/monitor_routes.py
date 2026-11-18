@@ -148,7 +148,7 @@ async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries
 
     def totals(row):
         values = {}
-        for state in ('done', 'failed'):
+        for state in ('done', 'failed', 'cancelled'):
             count = row[state + '_job_count']
             values[state] = base_objects.MonitorTotals(
                 job_count=count, image_count=row[state + '_image_count'],
@@ -183,17 +183,20 @@ async def get_stats(top: Annotated[int, Query(ge=0, description='Maximum entries
                     openapi_extra={'x-order': 407},
                     description='Users and read-only keys see only their own jobs, without key labels; identity filters require management access. '
                                 'List PROCESSING and QUEUED jobs oldest first within each group, followed by NEW and '
-                                'recent DONE, FAILED and ERROR jobs newest creation first. '
+                                'recent DONE, FAILED, ERROR and CANCELLED jobs newest creation first. '
                                 'limit and offset apply to the whole list; omit limit for all matches. '
                                 'X-Total-Count and X-Has-More describe pagination. Body totals count all matching '
                                 'PROCESSING, QUEUED and NEW jobs and images before pagination. '
                                 'Optional state restricts results to PROCESSING, QUEUED or NEW. '
                                 'finished_within_seconds defaults to 60; zero disables finished-job retention. '
+                                'from_last_change limits NEW and finished jobs to those changed since then; '
+                                'PROCESSING and QUEUED jobs are always listed. '
                                 'Owner, latest worker, engine and version filters apply before totals and pagination.',
                     response_model=DocAPIResponseOK[base_objects.MonitorProcessing], responses=make_responses(JOBS_RESPONSES))
 async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
                           offset: Annotated[int, Query(ge=0)] = 0,
                           finished_within_seconds: Annotated[int, Query(ge=0, le=86400)] = 60,
+                          from_last_change: base_objects.UTCDateTime | None = None,
                           state: Literal['processing', 'queued', 'new'] | None = None,
                           owner_id: UUID | None = None, worker_id: UUID | None = None,
                           engine_name: str | None = None, engine_version: str | None = None,
@@ -203,7 +206,8 @@ async def get_recent_jobs(limit: Annotated[int | None, Query(ge=1)] = None,
     if key.role not in MANAGEMENT_ROLES:
         owner_id = key.id
     rows, total, totals, image_totals = await monitor_cruds.get_recent_jobs(db=db, limit=limit, offset=offset,
-                                              finished_within_seconds=finished_within_seconds, state=state,
+                                              finished_within_seconds=finished_within_seconds,
+                                              from_last_change=from_last_change, state=state,
                                               owner_id=owner_id, worker_id=worker_id,
                                               engine_name=engine_name, engine_version=engine_version)
     if key.role not in MANAGEMENT_ROLES:

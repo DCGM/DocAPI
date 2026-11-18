@@ -785,11 +785,12 @@ class MonitorTotals(BaseModel):
 class MonitorStateStats(BaseModel):
     done: MonitorTotals
     failed: MonitorTotals
+    cancelled: MonitorTotals
     attempts: MonitorTotals
 
 
 class MonitorGroupStats(MonitorStateStats):
-    """Totals cover all matching states, independently of the DONE/FAILED breakdown."""
+    """Totals cover all matching states, independently of the DONE/FAILED/CANCELLED breakdown."""
     total: MonitorTotals
 
 

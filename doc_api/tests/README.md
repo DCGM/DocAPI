@@ -1581,11 +1581,11 @@ Routes authenticate and validate inputs;
 `monitor_cruds.py` performs read-only queries without authentication decisions.
 Summary queries exclude job definitions, logs and credentials. Processing shows all
 PROCESSING jobs followed by all QUEUED jobs, oldest creation first in each group,
-then NEW and recently finished jobs, newest creation first. The limit applies to the whole list, with standard limit/offset pagination (omit limit for all matching jobs). The response contains jobs plus PROCESSING/QUEUED/NEW totals across all matching records, and X-Total-Count/X-Has-More headers, from one database snapshot. DONE, FAILED and ERROR jobs also remain visible for a configurable finish-time window (60 seconds by default; zero disables it), independently of the page size. The browser provides a persistent Keep finished selector. Jobs uses
+then NEW and recently finished jobs, newest creation first. The limit applies to the whole list, with standard limit/offset pagination (omit limit for all matching jobs). The response contains jobs plus PROCESSING/QUEUED/NEW totals across all matching records, and X-Total-Count/X-Has-More headers, from one database snapshot. DONE, FAILED, ERROR and CANCELLED jobs also remain visible for a configurable finish-time window (60 seconds by default; zero disables it), independently of the page size. The browser provides a persistent Keep finished selector. A Period selector (24h default, 7d, one calendar month or all time) is translated to from_last_change and limits NEW and finished jobs by their last change; PROCESSING and QUEUED jobs are always listed, and a finished job must fall within both Period and Keep finished. Jobs uses
 the standard `/v1/jobs` endpoint with label filters and supports server-side pagination and timestamp sorting, with total counts in response headers.
 Finished combines totals above a paginated jobs table. Both requests share owner/worker label,
-engine/version, multiple states and inclusive date filters. The default state selection is DONE and FAILED;
-the selector can narrow it to either state. Period offers 24h (default), 7d, one calendar month or all time,
+engine/version, multiple states and inclusive date filters. The default state selection is DONE, FAILED and
+CANCELLED; the selector can narrow it to one state. Cards and the header show DONE, FAILED and CANCELLED. Period offers 24h (default), 7d, one calendar month or all time,
 translated to from_finished_date by the browser. Totals cover every matching job regardless of the selected
 page or sort order. The table sorts by finish time and shows finish timestamps and elapsed runtime.
 Runtime spans first start to finish, including retry waits; missing or reversed timestamps show Unavailable.
@@ -1624,10 +1624,10 @@ The four date lower bounds are inclusive and normalize timestamps to UTC; there 
 separate backend period parameter. Aggregate and table queries use the same filter selection.
 Both endpoints accept repeated state parameters, for example state=done&state=failed.
 Result availability uses DONE state and an unset results removal timestamp, without checking files; its filter is available only on the standard jobs endpoint.
-DONE/FAILED totals count jobs, retained image counts and elapsed first-start-to-finish
+DONE/FAILED/CANCELLED totals count jobs, retained image counts and elapsed first-start-to-finish
 time, including retry waits. Missing or reversed timestamps do not contribute runtime.
-Attempts count all outcomes and in-progress attempts, excluding released leases;
-image estimates multiply the job's image count by attempts. Worker filtering uses
+Attempts appear as a note below the counters and as the last column of the breakdown tables. They count all outcomes and in-progress attempts,
+excluding released leases; image estimates multiply the job's image count by attempts. Worker filtering uses
 the latest assignment; per-attempt runtime and historical attribution are unavailable.
 Hostname, addresses and uptime refer to the serving API process/environment by default.
 Only hostname and addresses can be overridden; uptime remains process uptime.
@@ -1660,6 +1660,7 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_get_monitor_database_200_idle`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_database_200_lock_wait`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200`](test_monitor.py).
+- [x] CANCELLED totals, overall and per group. [`test_monitor.py::test_get_monitor_stats_200_cancelled`](test_monitor.py).
 - [x] Statistics match the standard jobs filters, including result files and pagination independence. [`test_monitor.py::test_get_monitor_stats_matches_jobs`](test_monitor.py).
 - [x] Matching OpenAPI filter contracts. [`test_monitor.py::test_get_monitor_stats_filter_contract`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_stats_200_filters`](test_monitor.py).
@@ -1669,6 +1670,7 @@ Automated monitoring and presentation checks:
 - [x] [`test_monitor.py::test_get_monitor_jobs_removed`](test_monitor.py).
 - [x] [`test_monitor.py::test_recent_activity_includes_all_pending`](test_monitor.py).
 - [x] [`test_monitor.py::test_processing_finished_grace_period`](test_monitor.py).
+- [x] Period limits NEW and finished jobs by last change, never PROCESSING or QUEUED. [`test_monitor.py::test_processing_period_limits_new_and_finished`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_jobs_owner_worker_filters`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_200_activity`](test_monitor.py).
 - [x] [`test_monitor.py::test_get_monitor_workers_excludes_management_assignments`](test_monitor.py).
