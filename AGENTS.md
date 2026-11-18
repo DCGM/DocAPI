@@ -36,12 +36,12 @@ tests are skipped. See `doc_api/tests/README.md` for details.
 
 ```sh
 export TEST_DATABASE_URL='postgresql+asyncpg://test_user:password@localhost:5432/postgres'
-python -m pytest doc_worker/tests doc_api/tests/test_job_mail.py   # while developing
-python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a pull request
+python -m pytest doc_worker/tests doc_api/tests/test_job_mail.py   # the files a change affects
+python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a release
 ```
 
-- While developing, run the test files the change affects. Run the full suite
-  before a pull request, or when asked.
+- For a change and its pull request, run only the test files the change
+  affects. Run the full suite before every new release, or when asked.
 - Every test in `doc_api/tests` is listed in `doc_api/tests/README.md`, and
   `test_readme_references_current_tests` fails otherwise. Update the README
   together with the tests.
