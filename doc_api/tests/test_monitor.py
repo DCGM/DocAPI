@@ -157,7 +157,8 @@ async def test_get_monitor_stats_matches_jobs(client, monitor_headers, job_facto
                await engine_factory(name='Alpha', version='2'),
                await engine_factory(name='Beta', version='1')]
     states = [ProcessingState.DONE, ProcessingState.DONE, ProcessingState.FAILED,
-              ProcessingState.PROCESSING, ProcessingState.NEW, ProcessingState.ERROR]
+              ProcessingState.PROCESSING, ProcessingState.NEW, ProcessingState.ERROR,
+              ProcessingState.CANCELLED]
     ids = [await job_factory(state) for state in states]
     now = datetime.now(timezone.utc).replace(microsecond=0)
     async with db_sessions.begin() as db:
@@ -195,7 +196,7 @@ async def test_get_monitor_stats_matches_jobs(client, monitor_headers, job_facto
                                     params={**params, 'limit': 1, 'offset': 999, 'sort_order': 'asc'})
         assert response.status_code == 200, response.text
         stats = response.json()['data']
-        for state in ['done', 'failed']:
+        for state in ['done', 'failed', 'cancelled']:
             matching = [job for job in jobs if job['state'] == state]
             assert stats[state]['job_count'] == len(matching), params
             assert stats[state]['image_count'] == sum(job['image_count'] for job in matching), params
@@ -231,7 +232,35 @@ async def test_get_monitor_stats_200(client, monitor_headers, monitor_jobs):
     assert 'period' not in stats
     assert stats['done'] == {'job_count': 1, 'image_count': 12, 'runtime_seconds': 600}
     assert stats['failed'] == {'job_count': 1, 'image_count': 5, 'runtime_seconds': 120}
+    assert stats['cancelled'] == {'job_count': 0, 'image_count': 0, 'runtime_seconds': 0}
     assert stats['attempts'] == {'job_count': 7, 'image_count': 53, 'runtime_seconds': None}
+
+
+@pytest.mark.asyncio
+async def test_get_monitor_stats_200_cancelled(client, admin_headers, job_factory, engine_factory, db_sessions):
+    engine = await engine_factory(name='Alpha', version='1')
+    now = datetime.now(timezone.utc)
+    for state, images, runtime in [(ProcessingState.CANCELLED, 4, 30), (ProcessingState.CANCELLED, 6, None),
+                                   (ProcessingState.DONE, 2, 10)]:
+        job_id = await job_factory(state)
+        async with db_sessions.begin() as db:
+            job = await db.get(model.Job, job_id)
+            job.engine_id = engine.id
+            job.image_count = images
+            job.finished_date = now
+            job.started_date = now - timedelta(seconds=runtime) if runtime is not None else None
+    response = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    # A job cancelled before it started has no runtime and adds none.
+    assert data['cancelled'] == {'job_count': 2, 'image_count': 10, 'runtime_seconds': 30}
+    assert data['done'] == {'job_count': 1, 'image_count': 2, 'runtime_seconds': 10}
+    for category in ('owners', 'workers', 'engines', 'engine_versions'):
+        assert data[category][0]['cancelled'] == data['cancelled']
+        assert data[category][0]['total']['job_count'] == 3
+    only = await client.get('/v1/monitor/jobs/statistics', headers=admin_headers, params={'state': 'cancelled'})
+    assert only.json()['data']['cancelled']['job_count'] == 2
+    assert only.json()['data']['done']['job_count'] == 0
 
 
 @pytest.mark.parametrize('field', ['owner_label', 'worker_label'])
@@ -406,7 +435,7 @@ async def test_recent_activity_includes_all_pending(client, monitor_headers, job
 async def test_processing_finished_grace_period(client, monitor_headers, job_factory, db_sessions, reader_owner):
     now = datetime.now(timezone.utc)
     recent, older = [], []
-    for state in [ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR]:
+    for state in [ProcessingState.DONE, ProcessingState.FAILED, ProcessingState.ERROR, ProcessingState.CANCELLED]:
         for seconds, target in [(20, recent), (120, older)]:
             job_id = await job_factory(state)
             target.append(str(job_id))
@@ -416,9 +445,6 @@ async def test_processing_finished_grace_period(client, monitor_headers, job_fac
                 job.finished_date = now - timedelta(seconds=seconds)
                 job.last_change = now  # Retention uses finish time, not last change.
     missing_finish = await job_factory(ProcessingState.ERROR)
-    cancelled = await job_factory(ProcessingState.CANCELLED)
-    async with db_sessions.begin() as db:
-        (await db.get(model.Job, cancelled)).finished_date = now
     new_jobs = [str(await job_factory(ProcessingState.NEW)) for _ in range(3)]
     for seconds, expected in [(None, recent), (0, []), (300, recent + older)]:
         params = {}
@@ -432,7 +458,6 @@ async def test_processing_finished_grace_period(client, monitor_headers, job_fac
         assert {row['id'] for row in rows if row['state'] != 'new'} == set(expected)
         assert sum(row['id'] in new_jobs for row in rows) == 3
         assert str(missing_finish) not in {row['id'] for row in rows}
-        assert str(cancelled) not in {row['id'] for row in rows}
     response = await client.get('/v1/monitor/jobs/processing',
                                 params={'owner_id': str(UUID(int=0))}, headers=monitor_headers)
     assert response.json()['data'] == {'jobs': [], 'totals': {'processing': 0, 'queued': 0, 'new': 0},
@@ -442,6 +467,46 @@ async def test_processing_finished_grace_period(client, monitor_headers, job_fac
         response = await client.get('/v1/monitor/jobs/processing',
                                     params={'finished_within_seconds': seconds}, headers=monitor_headers)
         assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_processing_period_limits_new_and_finished(client, monitor_headers, job_factory, db_sessions):
+    now = datetime.now(timezone.utc)
+    jobs = {}
+    for state in [ProcessingState.PROCESSING, ProcessingState.QUEUED, ProcessingState.NEW,
+                  ProcessingState.DONE, ProcessingState.CANCELLED]:
+        for age in ['recent', 'old']:
+            job_id = await job_factory(state)
+            jobs[state.value, age] = str(job_id)
+            changed = now - (timedelta(minutes=5) if age == 'recent' else timedelta(days=3))
+            async with db_sessions.begin() as db:
+                job = await db.get(model.Job, job_id)
+                job.created_date = changed
+                job.last_change = changed
+                job.image_count = 1
+                # Finished within Keep finished, so only the period decides.
+                job.finished_date = now - timedelta(seconds=10) if state in {
+                    ProcessingState.DONE, ProcessingState.CANCELLED} else None
+    always = {jobs[state, age] for state in ['processing', 'queued'] for age in ['recent', 'old']}
+    for since, limited in [(None, ['recent', 'old']), (now - timedelta(days=1), ['recent']),
+                           (now + timedelta(minutes=1), [])]:
+        params = {'finished_within_seconds': 300}
+        if since is not None:
+            params['from_last_change'] = since.isoformat()
+        response = await client.get('/v1/monitor/jobs/processing', params=params, headers=monitor_headers)
+        assert response.status_code == 200, response.text
+        data = response.json()['data']
+        expected = always | {jobs[state, age] for state in ['new', 'done', 'cancelled'] for age in limited}
+        assert {row['id'] for row in data['jobs']} == expected, since
+        assert data['totals'] == {'processing': 2, 'queued': 2, 'new': len(limited)}
+        assert response.headers['X-Total-Count'] == str(len(expected))
+    response = await client.get('/v1/monitor/jobs/processing', headers=monitor_headers,
+                                params={'from_last_change': (now - timedelta(days=1)).isoformat(),
+                                        'finished_within_seconds': 0})
+    assert {row['id'] for row in response.json()['data']['jobs']} == always | {jobs['new', 'recent']}
+    response = await client.get('/v1/monitor/jobs/processing', headers=monitor_headers,
+                                params={'from_last_change': 'invalid'})
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -678,7 +743,7 @@ async def test_get_monitor_stats_200_group_partitions(client, monitor_headers, m
         groups = data[category]
         assert len(groups) == 1
         assert groups[0]['total'] == {'job_count': 2, 'image_count': 17, 'runtime_seconds': 720}
-        for state in ('done', 'failed', 'attempts'):
+        for state in ('done', 'failed', 'cancelled', 'attempts'):
             assert groups[0][state] == data[state]
     assert data['owners'][0]['id'] is not None
     assert data['workers'][0]['id'] is not None
@@ -728,7 +793,7 @@ async def test_get_monitor_stats_200_group_ranking(client, admin_headers, job_fa
         limited = await stats(top=1, top_by=top_by)
         assert all(len(limited[category]) == 1 for category in ('owners', 'workers', 'engines', 'engine_versions'))
         assert limited['engines'][0]['name'] == expected
-        for state in ('done', 'failed', 'attempts'):
+        for state in ('done', 'failed', 'cancelled', 'attempts'):
             assert limited[state] == all_groups[state]
     filtered = await stats(engine_name='Alpha', engine_version='2', state='failed', top=1)
     assert filtered['engines'][0]['total']['job_count'] == 1

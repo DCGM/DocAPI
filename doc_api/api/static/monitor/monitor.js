@@ -24,6 +24,7 @@ let management = false, updateSectionButtons = () => {};
 const availableLogTabs = () => management ? logTabs : logTabs.filter(([field]) => field.endsWith('_user'));
 let jobOrder = 'desc', jobPage = 0, jobsHasMore = false;
 let processingPage = 0, processingHasMore = false;
+let workersPage = 0, workerRows = [];
 const logTabs = [['log_user', 'User processing'], ['log', 'Processing'],
   ['final_log_user', 'User final'], ['final_log', 'Final']];
 const logTabStorage = 'docapi.monitor.logTab';
@@ -43,6 +44,7 @@ try {
   if (saved?.order === 'asc') jobOrder = 'asc';
   if (Number.isSafeInteger(saved?.page) && saved.page >= 0) jobPage = saved.page;
   if (Number.isSafeInteger(saved?.processingPage) && saved.processingPage >= 0) processingPage = saved.processingPage;
+  if (Number.isSafeInteger(saved?.workersPage) && saved.workersPage >= 0) workersPage = saved.workersPage;
   if (Array.isArray(saved?.logs)) for (const entry of saved.logs) {
     if (Array.isArray(entry) && /^(jobs|recent-jobs)-[0-9a-f-]{36}$/.test(entry[0]) &&
         logTabs.some(([field]) => field === entry[1])) rememberedLogs.set(entry[0], entry[1]);
@@ -50,7 +52,7 @@ try {
 } catch {}
 function saveView() {
   try {
-    localStorage.setItem(viewStorage, JSON.stringify({order: jobOrder, page: jobPage, processingPage, statsGroup, logs: [...rememberedLogs]}));
+    localStorage.setItem(viewStorage, JSON.stringify({order: jobOrder, page: jobPage, processingPage, workersPage, statsGroup, logs: [...rememberedLogs]}));
   } catch {}
 }
 
@@ -399,16 +401,18 @@ function renderStats() {
   if (!stats) return;
   const measure = byId('metric').value;
   const value = state => measure === 'runtime_seconds' ? duration(stats[state][measure]) : stats[state][measure].toLocaleString();
-  byId('stats').replaceChildren(...['done', 'failed', 'attempts'].map(state => {
+  byId('stats').replaceChildren(...['done', 'failed', 'cancelled'].map(state => {
     const card = node('div', undefined, 'stat');
     card.append(node('span', state.toUpperCase()),
       node('strong', value(state)));
     return card;
   }));
+  byId('stats-attempts').textContent = `Attempts ${value('attempts')}`;
   summary('job-statistics', [byId('job-period').selectedOptions[0].text,
     byId('metric').selectedOptions[0].text,
-    node('span', `DONE ${value('done')}`, 'badge job-done'),
-    node('span', `FAILED ${value('failed')}`, 'badge job-failed')]);
+    node('span', `${value('done')} DONE`, 'badge job-done'),
+    node('span', `${value('failed')} FAILED`, 'badge job-failed'),
+    node('span', `${value('cancelled')} CANCELLED`, 'badge job-cancelled')]);
   renderStatsGroups();
 }
 function renderStatsGroups() {
@@ -423,7 +427,7 @@ function renderStatsGroups() {
   if (panel.hidden || !stats) return;
   const measure = byId('metric').value;
   const identityHeaders = {owners: ['Owner'], workers: ['Worker'], engines: ['Engine'], engine_versions: ['Engine', 'Version']}[statsGroup];
-  const headers = [...identityHeaders, 'Total', 'DONE', 'FAILED', 'Attempts'];
+  const headers = [...identityHeaders, 'Total', 'DONE', 'FAILED', 'CANCELLED', 'Attempts'];
   const head = node('tr');
   for (const header of headers) head.append(node('th', header));
   byId('stats-group-head').replaceChildren(head);
@@ -434,7 +438,7 @@ function renderStatsGroups() {
       if (group.id) label.title = group.id;
       identity = [label];
     } else identity = statsGroup === 'engine_versions' ? [group.name ?? 'Unassigned', group.version ?? '—'] : [group.name ?? 'Unassigned'];
-    return [...identity, ...['total', 'done', 'failed', 'attempts'].map(state => {
+    return [...identity, ...['total', 'done', 'failed', 'cancelled', 'attempts'].map(state => {
       const value = group[state][measure];
       return measure === 'runtime_seconds' ? duration(value) : value.toLocaleString();
     })];
@@ -457,7 +461,7 @@ function renderRecentJobs(result) {
       node('strong', totals[state].toLocaleString()));
     return card;
   }));
-  summary('recent-jobs', [byId('recent-metric').selectedOptions[0].text,
+  summary('recent-jobs', [byId('recent-period').selectedOptions[0].text, byId('recent-metric').selectedOptions[0].text,
     node('span', `${totals.processing} PROCESSING`, 'badge job-processing'),
     node('span', `${totals.queued} QUEUED`, 'badge job-queued'),
     node('span', `${totals.new} NEW`, 'badge job-new')]);
@@ -479,6 +483,53 @@ function jobRuntime(job) {
   const seconds = (end - Date.parse(job.started_date)) / 1000;
   return Number.isFinite(seconds) && seconds >= 0 ? duration(seconds) : 'Unavailable';
 }
+// Downloads send the key in a header, never in the URL, so the file is fetched
+// and handed to the browser as a blob.
+async function downloadFile(button, path, fallbackName) {
+  button.disabled = true;
+  try {
+    const response = await fetch(new URL(path, apiBase), {headers: {'X-API-Key': key}, cache: 'no-store'});
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    const name = /filename="?([^";]+)"?/.exec(response.headers.get('Content-Disposition') || '')?.[1] || fallbackName;
+    const url = URL.createObjectURL(await response.blob());
+    const link = node('a');
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    byId('message').textContent = `Download failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+function downloadButton(label, icon, path, fallbackName, available) {
+  const button = node('button');
+  button.type = 'button';
+  button.className = 'job-logs-button icon-button';
+  button.innerHTML = icon;
+  button.title = available ? label : `${label}: not available`;
+  button.setAttribute('aria-label', button.title);
+  button.disabled = !available;
+  button.addEventListener('click', () => downloadFile(button, path, fallbackName));
+  return button;
+}
+const RESULT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M4 19h16"/></svg>';
+const ARTIFACTS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10"/></svg>';
+// The result and, for admins and managers, the artifacts of a finished job.
+function jobFiles(job) {
+  const files = node('span', undefined, 'job-files');
+  files.append(downloadButton(`Download result of job ${job.id}`, RESULT_ICON, `../jobs/${job.id}/result`, `${job.id}.zip`, job.result_available));
+  if (management)
+    files.append(downloadButton(`Download artifacts of job ${job.id}`, ARTIFACTS_ICON, `../admin/jobs/${job.id}/artifacts`,
+      `${job.id}_artifacts.zip`, !job.artifacts_deleted_at));
+  return files;
+}
 function renderJobTable(id, jobs, field, label) {
   const visible = new Set(jobs.map(job => `${id}-${job.id}`));
   for (const entry of rememberedLogs.keys()) if (entry.startsWith(`${id}-`) && !visible.has(entry)) closeLogs(entry);
@@ -486,14 +537,30 @@ function renderJobTable(id, jobs, field, label) {
     const jobId = node('span', job.id.slice(0, 8));
     jobId.title = job.id;
     return [jobId, date(job[field]), jobRuntime(job), node('span', job.state.toUpperCase(), `badge job-${job.state}`), `${Math.round(job.progress * 100)}%`,
-      job.image_count, ...(management ? [job.owner_label, job.worker_label] : []), job.engine_name, job.engine_version, logButton(id, job.id)];
+      job.image_count, ...(management ? [job.owner_label, job.worker_label] : []), job.engine_name, job.engine_version,
+      logButton(id, job.id), ...(id === 'jobs' ? [jobFiles(job)] : [])];
   }),
-    ['Job', label, 'Runtime', 'State', 'Progress', 'Images', ...(management ? ['Owner', 'Worker'] : []), 'Engine', 'Version', 'Logs']);
+    ['Job', label, 'Runtime', 'State', 'Progress', 'Images', ...(management ? ['Owner', 'Worker'] : []), 'Engine', 'Version', 'Logs', ...(id === 'jobs' ? ['Files'] : [])]);
   [...byId(id).children].forEach((row, index) => {
     const viewer = openLogs.get(`${id}-${jobs[index]?.id}`);
     if (viewer) row.after(viewer.row);
     else if (rememberedLogs.has(`${id}-${jobs[index]?.id}`)) row.querySelector('.job-logs-button').click();
   });
+}
+// The API returns every enabled worker; the page shows them one page at a time.
+function renderWorkers() {
+  const limit = Number(byId('workers-limit').value);
+  const pages = Math.max(1, Math.ceil(workerRows.length / limit));
+  workersPage = Math.min(workersPage, pages - 1);
+  byId('workers-page').textContent = `${workersPage + 1}/${pages}`;
+  byId('workers-page').setAttribute('aria-label', `Page ${workersPage + 1} of ${pages}`);
+  byId('workers-previous').disabled = workersPage === 0;
+  byId('workers-next').disabled = workersPage >= pages - 1;
+  table('workers', workerRows.slice(workersPage * limit, (workersPage + 1) * limit).map(worker => [worker.label,
+    node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
+    worker.processing_jobs, date(worker.last_used)]),
+    ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen']);
+  saveView();
 }
 function render(info, totals, jobs, workers, database, recentJobs) {
   stats = totals;
@@ -528,9 +595,8 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   if (jobs && !byId('section-job-statistics-body').hidden) renderJobs(jobs);
   renderRecentJobs(recentJobs);
   if (management) {
-    table('workers', workers.map(worker => [worker.label, node('span', worker.status === 'off' ? 'GONE' : worker.status.toUpperCase(), `badge ${worker.status}`),
-      worker.processing_jobs, date(worker.last_used)]),
-      ['Worker key', 'Activity', 'PROCESSING jobs', 'Last seen']);
+    workerRows = workers;
+    renderWorkers();
     byId('worker-note').textContent = `PROCESSING job → ACTIVE. Otherwise, seen within ${info.worker_offline_after_seconds}s → IDLE; older or never seen → GONE.`;
   }
   const refreshSeconds = info?.refresh_interval_seconds ?? interval / 1000;
@@ -538,6 +604,21 @@ function render(info, totals, jobs, workers, database, recentJobs) {
   interval = refreshSeconds * 1000;
   byId('dashboard').hidden = false;
   byId('sections-toggle').hidden = false;
+}
+// The start of a period ('24h', '7d' or '1m', the same day of the previous
+// month) as an ISO timestamp, or null for all time.
+function periodStart(period) {
+  if (!period) return null;
+  const from = new Date();
+  if (period === '1m') {
+    const day = from.getUTCDate();
+    from.setUTCDate(1);
+    from.setUTCMonth(from.getUTCMonth() - 1);
+    const lastDay = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0)).getUTCDate();
+    from.setUTCDate(Math.min(day, lastDay));
+  }
+  else from.setTime(from.getTime() - (period === '7d' ? 7 : 1) * 86400000);
+  return from.toISOString();
 }
 async function refresh() {
   saveView();
@@ -548,21 +629,10 @@ async function refresh() {
   const signal = controller.signal, current = ++generation;
   const query = new URLSearchParams();
   addFilters(query, 'job-');
-  for (const state of byId('job-state').value ? [byId('job-state').value] : ['done', 'failed'])
+  for (const state of byId('job-state').value ? [byId('job-state').value] : ['done', 'failed', 'cancelled'])
     query.append('state', state);
-  const period = byId('job-period').value;
-  if (period) {
-    const from = new Date();
-    if (period === '1m') {
-      const day = from.getUTCDate();
-      from.setUTCDate(1);
-      from.setUTCMonth(from.getUTCMonth() - 1);
-      const lastDay = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0)).getUTCDate();
-      from.setUTCDate(Math.min(day, lastDay));
-    }
-    else from.setTime(from.getTime() - (period === '7d' ? 7 : 1) * 86400000);
-    query.set('from_finished_date', from.toISOString());
-  }
+  const finishedFrom = periodStart(byId('job-period').value);
+  if (finishedFrom) query.set('from_finished_date', finishedFrom);
   const jobQuery = new URLSearchParams(query);
   const statsQuery = new URLSearchParams(query);
   statsQuery.set('top', byId('stats-top').value);
@@ -573,6 +643,8 @@ async function refresh() {
   jobQuery.set('sort_order', jobOrder);
   const recentQuery = new URLSearchParams({limit: byId('recent-limit').value, offset: processingPage * Number(byId('recent-limit').value), finished_within_seconds: byId('recent-finished-seconds').value});
   addFilters(recentQuery, 'recent-');
+  const changedFrom = periodStart(byId('recent-period').value);
+  if (changedFrom) recentQuery.set('from_last_change', changedFrom);
   if (byId('recent-state').value) recentQuery.set('state', byId('recent-state').value);
   byId('jobs-previous').disabled = true;
   byId('jobs-next').disabled = true;
@@ -662,18 +734,18 @@ function signOut() {
   for (const id of openLogs.keys()) closeLogs(id);
   rememberedLogs.clear();
   const cleared = storeKey('');
-  key = ''; jobPage = 0; processingPage = 0; generation++; clearTimeout(timer); controller?.abort(); stats = undefined;
+  key = ''; jobPage = 0; processingPage = 0; workersPage = 0; workerRows = []; generation++; clearTimeout(timer); controller?.abort(); stats = undefined;
   saveView();
   byId('dashboard').hidden = true; byId('logout').hidden = true; byId('login').hidden = false;
   byId('sections-toggle').hidden = true;
   document.querySelectorAll('.section-summary').forEach(element => element.replaceChildren());
-  for (const id of ['info', 'database', 'stats', 'stats-groups', 'processing-stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
+  for (const id of ['info', 'database', 'stats', 'stats-attempts', 'stats-groups', 'processing-stats', 'jobs', 'recent-jobs', 'workers', 'updated', 'message']) byId(id).replaceChildren();
   if (!cleared) byId('message').textContent = 'Browser storage could not be cleared. Clear site data in your browser to remove the saved key.';
 }
 byId('logout').addEventListener('click', signOut);
 byId('layout').addEventListener('change', () => { document.body.dataset.layout = byId('layout').value; });
 byId('theme').addEventListener('change', () => { document.documentElement.dataset.theme = byId('theme').value; });
-for (const id of ['recent-limit', 'recent-metric', 'recent-state', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
+for (const id of ['recent-limit', 'recent-period', 'recent-metric', 'recent-state', 'recent-finished-seconds', 'recent-owner', 'recent-worker', 'recent-engine-version']) byId(id).addEventListener('change', () => { processingPage = 0; refresh(); });
 for (const prefix of ['job-', 'recent-']) byId(`${prefix}engine`).addEventListener('change', () => {
   byId(`${prefix}engine-version`).value = '';
   engineVersions(prefix);
@@ -700,6 +772,9 @@ for (const id of ['limit', 'job-owner', 'job-worker', 'job-engine-version', 'job
   byId(id).addEventListener('change', () => { jobPage = 0; updateJobOrder(); refresh(); });
 byId('processing-previous').addEventListener('click', () => { if (processingPage > 0) { processingPage--; refresh(); } });
 byId('processing-next').addEventListener('click', () => { if (processingHasMore) { processingPage++; refresh(); } });
+byId('workers-previous').addEventListener('click', () => { if (workersPage > 0) { workersPage--; renderWorkers(); } });
+byId('workers-next').addEventListener('click', () => { workersPage++; renderWorkers(); });
+byId('workers-limit').addEventListener('change', () => { workersPage = 0; renderWorkers(); });
 byId('jobs-previous').addEventListener('click', () => { if (jobPage > 0) { jobPage--; refresh(); } });
 byId('jobs-next').addEventListener('click', () => { jobPage++; refresh(); });
 byId('job-order').addEventListener('click', () => {

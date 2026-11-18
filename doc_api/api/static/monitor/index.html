@@ -43,6 +43,7 @@
     <section data-section="recent-jobs"><h2>Processing</h2>
       <div id="processing-stats" class="stats"></div>
       <div class="controls job-controls">
+        <label>Period <select id="recent-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
         <label>Measure <select id="recent-metric"><option value="job_count">Jobs</option><option value="image_count">Images</option></select></label>
         <label>State <select id="recent-state"><option value="">All relevant</option><option value="processing">PROCESSING</option><option value="queued">QUEUED</option><option value="new">NEW</option></select></label>
         <label>Keep finished <select id="recent-finished-seconds"><option value="0">Off</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
@@ -59,20 +60,29 @@
           <button id="processing-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
         </nav>
         <label><select id="recent-limit" aria-label="Processing jobs per page"><option selected>5</option><option>10</option><option>20</option></select></label>
-        <button type="button" class="icon-button section-info-toggle" aria-label="About Processing" title="About Processing" aria-expanded="false" aria-controls="processing-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="processing-section-info" class="section-info-content muted" hidden><p>Order: oldest PROCESSING jobs, oldest QUEUED jobs, then newest NEW and recently finished jobs. All relevant also includes DONE, FAILED and ERROR jobs for the Keep finished interval.</p><p>Counters cover all matching pages. Runtime includes retry waits, from first start to finish (or now for PROCESSING jobs). Worker filters use the latest assignment.</p></div>
+        <button type="button" class="icon-button section-info-toggle" aria-label="About Processing" title="About Processing" aria-expanded="false" aria-controls="processing-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="processing-section-info" class="section-info-content muted" hidden><p>Order: oldest PROCESSING jobs, oldest QUEUED jobs, then newest NEW and recently finished jobs. All relevant also includes DONE, FAILED, ERROR and CANCELLED jobs for the Keep finished interval.</p><p>PROCESSING and QUEUED jobs are always shown. Period uses last change and limits NEW and finished jobs; a finished job shows only within both Period and Keep finished.</p><p>Counters cover all matching pages. Runtime includes retry waits, from first start to finish (or now for PROCESSING jobs). Worker filters use the latest assignment.</p></div>
       </div>
 
     </section>
     <section data-section="workers"><h2>Workers</h2>
       <div class="table-wrap"><table><thead><tr><th>Worker key</th><th>Activity</th><th>PROCESSING jobs</th><th>Last seen</th></tr></thead><tbody id="workers"></tbody></table></div>
-      <details class="section-info"><summary class="icon-button" aria-label="About Workers" title="About Workers"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></summary><div class="section-info-content muted"><p id="worker-note"></p></div></details>
+      <div class="controls job-controls">
+        <nav class="job-pagination" aria-label="Workers pages">
+          <button id="workers-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
+          <span id="workers-page" aria-live="polite" aria-label="Page 1 of 1">1/1</span>
+          <button id="workers-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
+        </nav>
+        <label><select id="workers-limit" aria-label="Workers per page"><option selected>5</option><option>10</option><option>20</option></select></label>
+        <button type="button" class="icon-button section-info-toggle" aria-label="About Workers" title="About Workers" aria-expanded="false" aria-controls="workers-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="workers-section-info" class="section-info-content muted" hidden><p id="worker-note"></p><p>Counters cover all workers on every page.</p></div>
+      </div>
     </section>
     <section data-section="job-statistics"><h2>Finished</h2>
       <div id="stats" class="stats"></div>
+      <p id="stats-attempts" class="muted stats-note"></p>
       <div class="controls job-controls">
         <label>Period <select id="job-period"><option value="24h">24h</option><option value="7d">7d</option><option value="1m">1m</option><option value="">All time</option></select></label>
         <label>Measure <select id="metric"><option value="job_count">Jobs</option><option value="image_count">Images</option><option value="runtime_seconds">Elapsed runtime</option></select></label>
-        <label>State <select id="job-state"><option value="">All relevant</option><option value="done">DONE</option><option value="failed">FAILED</option></select></label>
+        <label>State <select id="job-state"><option value="">All relevant</option><option value="done">DONE</option><option value="failed">FAILED</option><option value="cancelled">CANCELLED</option></select></label>
         <label class="principal-filter">Owner <select id="job-owner"><option value="">All owners</option></select></label>
         <label class="principal-filter">Worker <select id="job-worker"><option value="">All workers</option></select></label>
         <label>Engine <select id="job-engine"><option value="">All engines</option></select></label>
@@ -89,7 +99,7 @@
         <div class="controls stats-group-controls"><label>Top <select id="stats-top"><option>5</option><option selected>10</option><option>20</option><option value="0">All</option></select></label></div>
         <div class="table-wrap"><table><thead id="stats-group-head"></thead><tbody id="stats-groups"></tbody></table></div>
       </div>
-      <div class="table-wrap"><table class="finished-jobs-table"><thead><tr><th>Job</th><th class="finished-sort-column"><span class="finished-sort-heading">Finished <button id="job-order" type="button" class="icon-button" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M12 4v16m-5-5 5 5 5-5"/></svg></button></span></th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th></tr></thead><tbody id="jobs"></tbody></table></div>
+      <div class="table-wrap"><table class="finished-jobs-table"><thead><tr><th>Job</th><th class="finished-sort-column"><span class="finished-sort-heading">Finished <button id="job-order" type="button" class="icon-button" aria-label="Descending order; switch to ascending" title="Descending; click to reverse"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="sort-arrow" d="M12 4v16m-5-5 5 5 5-5"/></svg></button></span></th><th>Runtime</th><th>State</th><th>Progress</th><th>Images</th><th>Owner</th><th>Worker</th><th>Engine</th><th>Version</th><th>Logs</th><th>Files</th></tr></thead><tbody id="jobs"></tbody></table></div>
       <div class="controls job-controls">
         <nav class="job-pagination" aria-label="Jobs pages">
           <button id="jobs-previous" type="button" class="icon-button" aria-label="Previous page" title="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg></button>
@@ -97,7 +107,7 @@
           <button id="jobs-next" type="button" class="icon-button" aria-label="Next page" title="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button>
         </nav>
         <label><select id="limit" aria-label="Finished jobs per page"><option>5</option><option selected>10</option><option>20</option></select></label>
-        <button type="button" class="icon-button section-info-toggle" aria-label="About Finished" title="About Finished" aria-expanded="false" aria-controls="finished-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="finished-section-info" class="section-info-content muted" hidden><p>All relevant means DONE or FAILED. Period uses finish time; counters cover all matching pages.</p><p>Released leases do not count as attempts. Images in Attempts count once per attempt. Runtime includes retry waits, from first start to finish. Worker filters use the latest assignment. Missing finish times sort last.</p></div>
+        <button type="button" class="icon-button section-info-toggle" aria-label="About Finished" title="About Finished" aria-expanded="false" aria-controls="finished-section-info"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></svg></button><div id="finished-section-info" class="section-info-content muted" hidden><p>All relevant means DONE, FAILED or CANCELLED. Period uses finish time; counters cover all matching pages.</p><p>Attempts, shown below the counters and in the breakdown tables, exclude released leases; their images count once per attempt. Runtime includes retry waits, from first start to finish; jobs cancelled before they started have none. Worker filters use the latest assignment. Missing finish times sort last.</p><p>Files: the result ZIP of DONE jobs whose result was not removed, and for admins and managers the artifacts ZIP. A greyed-out icon means the file is not available.</p></div>
       </div>
 
     </section>

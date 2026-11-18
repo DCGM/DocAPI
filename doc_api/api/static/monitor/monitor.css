@@ -52,6 +52,7 @@ section.collapsed > .section-header { margin-bottom: 0; }
 .muted { color: var(--muted); font-size: .86rem; } #message { color: #b02a20; overflow-wrap: anywhere; }
 dl { display: grid; grid-template-columns: minmax(100px, 150px) 1fr; gap: .35rem 1rem; margin: 0; } dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; margin: 1rem 0; }
+.stats-note { margin: -.4rem 0 1rem; }
 .stats-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: 1rem; }
 .stats-tabs [aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .stats-tabs [aria-selected="false"] { border-color: var(--line); }
@@ -115,6 +116,8 @@ body[data-layout="mobile"] td::before { content: attr(data-label); color: var(--
 
 .job-logs-button.icon-button { width: 24px; height: 20px; min-height: 0; padding: 0; border: 0; }
 .job-logs-button svg { width: 18px; height: 18px; }
+.job-logs-button.icon-button:disabled { opacity: .3; cursor: default; }
+.job-files { display: inline-flex; gap: .4rem; align-items: center; }
 .log-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .6rem; }
 body.mobile-header .log-tabs { gap: .1rem; }
 body.mobile-header .log-tabs button { font-size: .75rem; padding: .4rem .1rem; }
