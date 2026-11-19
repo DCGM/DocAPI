@@ -38,7 +38,7 @@ class Worker(DocWorkerWrapper):
     def get_engine_data_path(self):
         return None
 
-    def process_job(self, job, job_log_file_handler, images_dir, result_dir, **kwargs):
+    def process_job(self, job, images_dir, result_dir, **kwargs):
         return self.process(result_dir)
 
     def on_job_finished(self, job, response, job_dir, duration_s, job_log_file_handler):

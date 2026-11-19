@@ -13,6 +13,7 @@ import math
 import tempfile
 import threading
 from collections import Counter
+from contextlib import ExitStack, contextmanager
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -366,10 +367,41 @@ class DocWorkerWrapper(ABC):
                             f"{', '.join(unused)}; add the parameters, or override subclass_args()")
         return {name.lower(): getattr(config, name) for name in own}
 
+    def job_log_handler(self, path: str) -> logging.FileHandler:
+        """Create the handler that writes a job's log to path, worker.log in the job's directory.
+
+        By default it takes the format of the first root handler that has one, else a
+        format of its own, and lets every level through: what reaches it is decided by
+        the loggers' levels. Override it for another format or level. The wrapper adds a
+        filter that leaves out the health checks, and closes the handler after the job.
+        """
+        handler = logging.FileHandler(path)
+        formatter = next((root_handler.formatter for root_handler in logging.getLogger().handlers
+                          if root_handler.formatter is not None), None)
+        handler.setFormatter(formatter or logging.Formatter("%(asctime)s : %(levelname)s : %(name)s : %(message)s"))
+        handler.setLevel(logging.DEBUG)
+        return handler
+
+    @contextmanager
+    def job_logging(self, job_log_file_handler: logging.FileHandler):
+        """Send everything logged while a job runs into the job's log, worker.log in its directory.
+
+        By default the handler is attached to the root logger from the moment the job is
+        acquired until it is done, after on_job_finished. The log then holds the messages of
+        the wrapper, of the worker's own code and of the libraries it uses, from every thread
+        but the health checks', as far as their loggers' levels let them through. Override it for a different scope,
+        e.g. only some loggers; the handler is closed after this returns.
+        """
+        root_logger = logging.getLogger()
+        root_logger.addHandler(job_log_file_handler)
+        try:
+            yield
+        finally:
+            root_logger.removeHandler(job_log_file_handler)
+
     @abstractmethod
     def process_job(self,
                     job: Job,
-                    job_log_file_handler: logging.FileHandler,
                     images_dir: str,
                     result_dir: str,
                     alto_dir: Optional[str] = None,
@@ -380,10 +412,10 @@ class DocWorkerWrapper(ABC):
         Process the current job data and save results to the specified directory.
         
         This method must be implemented by subclasses to define the actual processing logic.
+        Everything logged meanwhile goes into the job's log (see job_logging).
         
         Args:
             job: The job object containing job metadata
-            job_log_file_handler: File handler for logging job processing into job-specific log file
             images_dir: Directory path containing the downloaded images
             result_dir: Directory path where processing results should be saved
             alto_dir: Optional directory path containing ALTO XML files
@@ -779,6 +811,7 @@ class DocWorkerWrapper(ABC):
         job_started = time.monotonic()
         job_dir = None
         job_log_file_handler = None
+        job_log = ExitStack()
         job_response: Optional[WorkerResponse] = None
         job_response_reported: Optional[bool] = None
         interrupted = False
@@ -787,23 +820,10 @@ class DocWorkerWrapper(ABC):
             job_dir = self.get_job_data_path()
             os.makedirs(job_dir, exist_ok=True)
 
-            # add file handler to logger for this job
-            job_log_path = os.path.join(job_dir, "worker.log")
-            job_log_file_handler = logging.FileHandler(job_log_path)
-            # inherit formatter from root logger (use first root handler that has a formatter)
-            root_logger = logging.getLogger()
-            root_formatter = None
-            for rh in root_logger.handlers:
-                if getattr(rh, "formatter", None):
-                    root_formatter = rh.formatter
-                    break
-            if root_formatter:
-                job_log_file_handler.setFormatter(root_formatter)
-            else:
-                # fallback to a reasonable default formatter if root has none
-                job_log_file_handler.setFormatter(logging.Formatter("%(asctime)s : %(levelname)s : %(name)s : %(message)s"))
-            job_log_file_handler.setLevel(logging.DEBUG)
-            logger.addHandler(job_log_file_handler)
+            job_log_file_handler = self.job_log_handler(os.path.join(job_dir, "worker.log"))
+            # The health checks run beside every job and are not part of it.
+            job_log_file_handler.addFilter(lambda record: record.threadName != WorkerHealth.THREAD_NAME)
+            job_log.enter_context(self.job_logging(job_log_file_handler))
 
             # Log job acquisition summary
             logger.info("")
@@ -876,7 +896,6 @@ class DocWorkerWrapper(ABC):
                 
                 process_response = self.process_job(
                     job=self.current_job,
-                    job_log_file_handler=job_log_file_handler,
                     images_dir=images_dir,
                     result_dir=result_dir,
                     alto_dir=alto_dir,
@@ -961,9 +980,12 @@ class DocWorkerWrapper(ABC):
                             logger.debug(f"Cleaned up job directory: {job_dir}")
                     except Exception:
                         logger.exception("Failed to clean up job directory")
-                # Remove job-specific file handler from logger
+                # The job log ends here: nothing logged later belongs to this job.
+                try:
+                    job_log.close()
+                except Exception:
+                    logger.exception("Failed to stop the job log")
                 if job_log_file_handler is not None:
-                    logger.removeHandler(job_log_file_handler)
                     job_log_file_handler.close()
             finally:
                 if interrupted:
@@ -1643,6 +1665,9 @@ class WorkerHealthConfig:
 
 
 class WorkerHealth:
+    # The thread that checks the worker's health and sends its ALIVE mail.
+    THREAD_NAME = "worker-health"
+
     def __init__(self, worker: DocWorkerWrapper, config: WorkerHealthConfig):
         self.worker = worker
         self.mail_startup = config.mail_startup
@@ -1665,7 +1690,7 @@ class WorkerHealth:
         if self.mail_startup:
             self.send_alive()
         if self.alive_interval > 0:
-            thread = threading.Thread(target=self._run, name="worker-health", daemon=True)
+            thread = threading.Thread(target=self._run, name=self.THREAD_NAME, daemon=True)
             thread.start()
             self._thread = thread
 

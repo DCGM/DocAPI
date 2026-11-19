@@ -20,7 +20,7 @@ job:
 from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 
 class MyWorker(DocWorkerWrapper):
-    def process_job(self, job, job_log_file_handler, images_dir, result_dir,
+    def process_job(self, job, images_dir, result_dir,
                     alto_dir=None, page_xml_dir=None, meta_file=None, engine_dir=None):
         ...  # read the inputs, write the results into result_dir
         return WorkerResponse.ok()
@@ -31,9 +31,8 @@ class MyWorker(DocWorkerWrapper):
   - `alto_dir`, `page_xml_dir`, `meta_file` and `engine_dir` are `None` when the
     job has no such input.
   - Everything written to `result_dir` is zipped and uploaded as the result.
-- **Logging:** `job_log_file_handler` writes the job's `worker.log`. Your own
-  logging gets there only as described in
-  [Logging into the job's log](#logging-into-the-jobs-log).
+- **Logging:** log as usual. Everything logged while the job runs goes into
+  the job's log; see [The job's log](#the-jobs-log).
 - **The outcome:** return one of these.
   - `WorkerResponse.ok()`: the job is done.
   - `WorkerResponse.error(final_log, final_log_user)`: a retryable error.
@@ -53,39 +52,40 @@ class MyWorker(DocWorkerWrapper):
   summary, say), override `on_job_finished`. It is called whether the job
   succeeded or failed.
 
-## Logging into the job's log
+## The job's log
 
-Each job has its own log file, `worker.log` in the job's directory. The wrapper
-writes only its own messages there. To add those of your code and its
-libraries, attach `job_log_file_handler` to the root logger while the job is
-processed:
+Each job has its own log file, `worker.log` in the job's directory. From the
+moment the job is acquired until it is done, the wrapper attaches the job's
+handler to the root logger. The log then holds the messages of the wrapper, of
+your code and of the libraries you use, each once.
 
-```python
-import logging
-
-
-class ThumbnailWorker(DocWorkerWrapper):
-    def process_job(self, job, job_log_file_handler, images_dir, result_dir, **other_inputs):
-        root_logger = logging.getLogger()
-        root_logger.addHandler(job_log_file_handler)
-        try:
-            ...  # everything logged here goes into the job's log
-            return WorkerResponse.ok()
-        finally:
-            root_logger.removeHandler(job_log_file_handler)
-```
-
-- **Always remove it in the `finally`.** The wrapper closes the handler after
-  the job, but a closed handler that is still attached opens the file again,
-  and later messages would land in this job's log.
 - **Set the root level** to what the log should hold, e.g.
   `logging.basicConfig(level=logging.INFO)`. The default, WARNING, drops INFO
   and DEBUG messages before any handler sees them.
+- **Other threads:** messages of other threads during the job go into its log
+  too. Only the wrapper's health checks, which run beside every job, are left
+  out.
 
-Everything logged while the job is processed goes into its log, including the
-messages of other threads, such as the rare ones of the health mail. Messages
-the wrapper itself logs in that time appear twice, because they reach the
-handler directly and through the root.
+The log takes the format of the first root handler that has one. For another
+format or level, override `job_log_handler(path)`, which creates the handler.
+For a different scope, override `job_logging`, a context manager that attaches
+the handler for the duration of the job. For example, to log only your own
+loggers:
+
+```python
+from contextlib import contextmanager
+
+
+class ThumbnailWorker(DocWorkerWrapper):
+    @contextmanager
+    def job_logging(self, job_log_file_handler):
+        own_logger = logging.getLogger("thumbnail_worker")
+        own_logger.addHandler(job_log_file_handler)
+        try:
+            yield
+        finally:
+            own_logger.removeHandler(job_log_file_handler)
+```
 
 ## Configuring and starting it
 
@@ -165,7 +165,7 @@ class ThumbnailWorker(DocWorkerWrapper):
         self.thumbnail_size = thumbnail_size
         self.thumbnail_format = thumbnail_format
 
-    def process_job(self, job, job_log_file_handler, images_dir, result_dir, **other_inputs):
+    def process_job(self, job, images_dir, result_dir, **other_inputs):
         for name in sorted(os.listdir(images_dir)):
             image = cv2.imread(os.path.join(images_dir, name))
             if image is None:
