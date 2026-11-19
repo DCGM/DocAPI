@@ -82,5 +82,5 @@ def test_the_startup_mail_uses_the_key_label(tmp_path):
                          mail_receivers=["admin@example.org"], hostname="host",
                          alive_mail_interval_seconds=0)
     run(worker)
-    subject = worker.mail.sender.send.call_args.args[0]
+    subject = worker.worker_mail_sender.sender.send.call_args.args[0]
     assert subject == "[OCR worker prod] ALIVE (host)"

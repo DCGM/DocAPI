@@ -3,7 +3,9 @@
 The real Adapter talks to a fake connector, so every request goes through the
 worker's reachability check as it does in production.
 """
+import os
 import types
+from datetime import datetime
 from unittest import mock
 
 import pytest
@@ -11,7 +13,7 @@ import requests
 
 from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 from doc_worker.outage_monitor import OutageMonitor
-from doc_worker.worker_mail import WorkerMail
+from doc_worker.worker_mail_sender import WorkerMailSender
 
 
 class FakeResponse:
@@ -34,26 +36,41 @@ DOCAPI_404 = FakeResponse(404, {"status": 404, "code": "JOB_NOT_FOUND", "detail"
 
 
 class FakeServer:
-    """A connector whose server is up, down (no connection), or answers every
-    request with one status or one FakeResponse."""
+    """A connector whose server is up, down (no connection), too slow for every
+    request ("timeout"), or answers every request with one status or one
+    FakeResponse. upload_status "timeout" makes only the result upload too slow."""
 
     def __init__(self):
         self.state = "up"
         self.report_status = 200
+        self.upload_status = 200
         self.calls = []
+        self.reported_states = []
 
     def _answer(self, method, url):
         self.calls.append((method, url.split("/v1/", 1)[1]))
         if self.state == "down":
             raise requests.ConnectionError("Connection refused")
+        if self.state == "timeout":
+            raise requests.ReadTimeout("Read timed out")
         if isinstance(self.state, int):
             return FakeResponse(self.state)
         if isinstance(self.state, FakeResponse):
             return self.state
         if method == "PATCH":
-            return FakeResponse(self.report_status, {"status": self.report_status, "code": "JOB_UPDATED",
-                                                     "detail": "updated"})
+            return self._status(self.report_status, "JOB_UPDATED")
+        if method == "POST" and url.endswith("/result"):
+            if self.upload_status == "timeout":
+                raise requests.ReadTimeout("Read timed out")
+            return self._status(self.upload_status, "RESULT_UPLOADED")
         return FakeResponse(200, {"status": 200, "code": "JOB_QUEUE_EMPTY", "detail": "No job"})
+
+    @staticmethod
+    def _status(status, code):
+        """A DocAPI answer, or the proxy's for a status it sends instead of DocAPI."""
+        if status in (502, 503, 504):
+            return FakeResponse(status)
+        return FakeResponse(status, {"status": status, "code": code, "detail": code})
 
     def set_user_agent(self, user_agent):
         self.user_agent = user_agent
@@ -62,6 +79,7 @@ class FakeServer:
         return self._answer("POST", url)
 
     def patch(self, url, **kwargs):
+        self.reported_states.append(kwargs.get("json", {}).get("state"))
         return self._answer("PATCH", url)
 
     def get(self, url, **kwargs):
@@ -94,7 +112,8 @@ def worker(tmp_path, server, clock):
 
 def _mails(worker):
     # Bodies with their wrapped lines joined.
-    return [(call.args[0], " ".join(call.args[1].split())) for call in worker.mail.sender.send.call_args_list]
+    calls = worker.worker_mail_sender.sender.send.call_args_list
+    return [(call.args[0], " ".join(call.args[1].split())) for call in calls]
 
 
 def _subjects(worker):
@@ -191,9 +210,16 @@ def test_other_errors_are_not_an_outage(worker, server, response):
     assert _subjects(worker) == ["[OCR worker] FAILURE (host)"]
 
 
+def _job():
+    return types.SimpleNamespace(
+        id="job-1", created_date=None, started_date=datetime(2026, 11, 19, 12, 0), previous_attempts=0,
+        engine_name="engine", engine_version="v1", images=[], alto_required=False, page_required=False,
+        meta_json_required=False)
+
+
 def _lose_a_job(worker, server, response):
     """A job's outcome report cannot reach DocAPI."""
-    worker.current_job = types.SimpleNamespace(id="job-1")
+    worker.current_job = _job()
     server.state = "down"
     assert worker._report_job_response(response) is False
     worker.current_job = None
@@ -240,7 +266,7 @@ def test_an_outcome_the_server_no_longer_accepts_changes_nothing(worker, server)
 
 
 def test_an_outcome_report_answered_by_the_proxy_is_held(worker, server):
-    worker.current_job = types.SimpleNamespace(id="job-1")
+    worker.current_job = _job()
     server.state = PROXY_404
     assert worker._report_job_response(WorkerResponse.ok(final_log="all pages")) is False
     worker.current_job = None
@@ -254,7 +280,7 @@ def test_an_outcome_report_answered_by_the_proxy_is_held(worker, server):
 
 @pytest.mark.parametrize("status", [500, 404])
 def test_only_unreachable_reports_are_held(worker, server, status):
-    worker.current_job = types.SimpleNamespace(id="job-1")
+    worker.current_job = _job()
     server.state = DOCAPI_404 if status == 404 else status
     assert worker._report_job_response(WorkerResponse.error(final_log="failed")) is False
     assert worker._lost_report is None
@@ -296,7 +322,7 @@ def test_an_outage_without_mail_is_only_logged(caplog):
 
 def test_reconnected_waits_for_a_pending_report():
     pending = [True]
-    mail = WorkerMail(mock.Mock(), ["admin@example.org"], identity="worker abc", hostname="host")
+    mail = WorkerMailSender(mock.Mock(), ["admin@example.org"], identity="worker abc", hostname="host")
     outages = OutageMonitor(mail, grace_seconds=0, report_pending=lambda: pending[0])
     outages.unreachable("PATCH /v1/jobs/job-1/finish", "HTTP 503")
     outages.reached()
@@ -312,3 +338,204 @@ def test_reconnected_waits_for_a_pending_report():
 def test_invalid_outage_timing_is_rejected(settings):
     with pytest.raises(ValueError):
         OutageMonitor(None, **settings)
+
+
+# --- Results whose upload an outage cut off ---
+
+class PipelineWorker(Worker):
+    """Leases one job without DocAPI; the server goes down while it is processed."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.outage_during_processing = None
+        self.leased = False
+
+    def request_job(self):
+        if self.leased:
+            return None
+        self.leased = True
+        self.current_job = _job()
+        return WorkerResponse.ok()
+
+    def _check_and_download_engine_files(self):
+        return WorkerResponse.ok()
+
+    def _download_job_data(self):
+        os.makedirs(os.path.join(self.get_job_data_path(), "images"), exist_ok=True)
+        return WorkerResponse.ok()
+
+    def get_engine_data_path(self):
+        return None
+
+    def process_job(self, job, images_dir, result_dir, **kwargs):
+        with open(os.path.join(result_dir, "page.txt"), "w") as file:
+            file.write("text")
+        self.server.state = self.outage_during_processing
+        return WorkerResponse.ok(final_log="all pages")
+
+
+@pytest.fixture
+def pipeline(tmp_path, server, clock):
+    worker = PipelineWorker("http://docapi.example.org/", server, base_dir=str(tmp_path),
+                            mail_sender=mock.Mock(), mail_receivers=["admin@example.org"], identity="OCR worker",
+                            hostname="host", cleanup_job_dir=True)
+    worker.server = server
+    return worker
+
+
+def _job_dirs(worker):
+    return os.listdir(worker.jobs_dir)
+
+
+@pytest.mark.parametrize("outage", ["down", 502, PROXY_404])
+def test_results_an_outage_kept_from_docapi_are_uploaded_after_it_without_processing_again(pipeline, server,
+                                                                                          outage):
+    pipeline.outage_during_processing = outage
+    assert pipeline.run_job_pipeline() is None
+    # Neither an error nor anything else is reported for the job, and its results are kept.
+    assert server.calls == [("POST", "jobs/job-1/result")]
+    assert _subjects(pipeline) == ["[OCR worker] DISCONNECTED (host)"]
+    assert _job_dirs(pipeline)
+
+    # While DocAPI stays unreachable only the upload is retried.
+    server.calls.clear()
+    assert pipeline.run_job_pipeline() is None
+    assert server.calls == [("POST", "jobs/job-1/result")]
+
+    server.state = "up"
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
+    assert server.reported_states == ["done"]
+    assert _subjects(pipeline)[-1] == "[OCR worker] RECONNECTED (host)"
+    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+    assert _job_dirs(pipeline) == []
+
+
+def test_uploaded_results_are_not_uploaded_again_when_the_report_meets_another_outage(pipeline, server):
+    pipeline.outage_during_processing = "down"
+    pipeline.run_job_pipeline()
+    server.state, server.report_status = "up", 502
+    server.calls.clear()
+    assert pipeline.run_job_pipeline() is None
+    assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
+
+    server.report_status = 200
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert server.calls == [("PATCH", "jobs/job-1")]
+    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+
+
+def test_results_docapi_rejects_after_the_outage_are_reported_as_an_error_not_uploaded_again(pipeline, server):
+    pipeline.outage_during_processing = "down"
+    pipeline.run_job_pipeline()
+    server.state, server.upload_status = "up", 409
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
+    assert server.reported_states == ["error"]
+    reconnected = _mails(pipeline)[-1][1]
+    assert "job-1: its results were not taken (status 409" in reconnected
+    assert "reported as error after the outage" in reconnected
+    assert _job_dirs(pipeline)
+    assert pipeline._lost_report is None
+
+
+def test_an_outcome_docapi_rejects_after_the_upload_keeps_the_job_directory(pipeline, server):
+    pipeline.outage_during_processing = "down"
+    pipeline.run_job_pipeline()
+    server.state, server.report_status = "up", 409
+    pipeline.run_job_pipeline()
+    assert "job-1: its ok outcome was not accepted (status 409" in _mails(pipeline)[-1][1]
+    assert _job_dirs(pipeline)
+
+
+def test_results_a_reachable_docapi_rejects_are_a_retryable_error(pipeline, server):
+    server.upload_status = 413
+    assert pipeline.run_job_pipeline() is None
+    assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
+    assert server.reported_states == ["error"]
+    assert pipeline._lost_report is None
+    assert _job_dirs(pipeline)
+
+
+def test_a_job_whose_finish_was_lost_is_cleaned_up_once_reported(pipeline, server):
+    server.report_status = 502
+    assert pipeline.run_job_pipeline() is None
+    assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
+    assert _job_dirs(pipeline)
+
+    server.report_status = 200
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert server.calls == [("PATCH", "jobs/job-1")]
+    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+    assert _job_dirs(pipeline) == []
+
+
+def test_a_held_error_keeps_the_job_directory(pipeline, server):
+    pipeline.process_job = lambda **kwargs: WorkerResponse.error(final_log="bad pages")
+    server.report_status = 502
+    pipeline.run_job_pipeline()
+    server.report_status = 200
+    pipeline.run_job_pipeline()
+    assert "job-1: reported as error after the outage" in _mails(pipeline)[-1][1]
+    assert _job_dirs(pipeline)
+
+
+# --- A request that was only slow is not an outage ---
+
+@pytest.mark.parametrize("slow", ["timeout", 504])
+def test_a_slow_upload_while_docapi_answers_is_an_error_not_an_outage(pipeline, server, slow):
+    server.upload_status = slow
+    assert pipeline.run_job_pipeline() is None
+    # The probe finds DocAPI answering, so the job is reported at once.
+    assert server.calls == [("POST", "jobs/job-1/result"), ("GET", "me"), ("PATCH", "jobs/job-1")]
+    assert server.reported_states == ["error"]
+    assert pipeline._lost_report is None
+    assert _subjects(pipeline) == []
+
+
+def test_a_slow_upload_after_an_outage_is_reported_as_an_error(pipeline, server):
+    pipeline.outage_during_processing = "down"
+    pipeline.run_job_pipeline()
+    server.state, server.upload_status = "up", "timeout"
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert server.calls == [("POST", "jobs/job-1/result"), ("GET", "me"), ("PATCH", "jobs/job-1")]
+    assert server.reported_states == ["error"]
+    reconnected = _mails(pipeline)[-1][1]
+    assert "job-1: its results could not be uploaded (ReadTimeout: Read timed out)" in reconnected
+    assert "reported as error after the outage" in reconnected
+    # The upload is not tried again.
+    server.calls.clear()
+    pipeline.run_job_pipeline()
+    assert ("POST", "jobs/job-1/result") not in server.calls
+
+
+def test_a_timeout_docapi_does_not_answer_the_probe_for_is_an_outage(worker, server, clock):
+    server.state = "timeout"
+    worker.run_job_pipeline()
+    assert server.calls == [("POST", "jobs/lease"), ("GET", "me")]
+    clock[0] += 60
+    worker.run_job_pipeline()
+    assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
+    assert "ReadTimeout" in _mails(worker)[0][1]
+
+
+def test_the_probe_waits_at_most_its_own_read_timeout(tmp_path):
+    connector = mock.Mock(timeout=(10, 300))
+    connector.post.side_effect = requests.ReadTimeout("Read timed out")
+    connector.get.return_value = FakeResponse(200, {"status": 200, "code": "USER_INFO", "detail": "me"})
+    worker = Worker("http://docapi.example.org/", connector, base_dir=str(tmp_path), identity="OCR worker")
+    with pytest.raises(requests.ReadTimeout) as slow:
+        worker.adapter.connector.post("http://docapi.example.org/v1/jobs/job-1/result")
+    connector.get.assert_called_once_with("http://docapi.example.org/v1/me", timeout=(10, 30))
+    # DocAPI answered the probe, so the timeout is not marked as an outage.
+    assert not worker._unreachable(slow.value)
+
+    connector.get.side_effect = requests.ReadTimeout("Read timed out")
+    with pytest.raises(requests.ReadTimeout) as outage:
+        worker.adapter.connector.post("http://docapi.example.org/v1/jobs/job-1/result")
+    assert worker._unreachable(outage.value)

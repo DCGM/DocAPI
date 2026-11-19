@@ -185,7 +185,7 @@ def test_from_config_builds_a_worker_without_mail(clean_env, tmp_path):
         "BASE_DIR": str(tmp_path / "data"), "API_READ_TIMEOUT_SECONDS": "30", "POLLING_INTERVAL": "2"}))
     assert worker._connector.api_key == "secret-key"
     assert worker._connector.timeout == (10, 30)
-    assert worker.mail is None and not worker.alive.on
+    assert worker.worker_mail_sender is None and not worker.alive_monitor.on
     assert worker.identity == "Test worker" and worker.polling_interval == 2
     assert worker.jobs_dir == str(tmp_path / "data" / "jobs")
     assert worker.error_messages == dict(DEFAULT_WORKER_ERRORS)
@@ -204,13 +204,14 @@ def test_from_config_builds_mail_and_alive_reports(clean_env):
         **MAIL_SETUP, "MAIL_PASSWORD": "mail-password", "MAIL_SEND_SERVER_LIMIT": "5",
         "ALIVE_MAIL_INTERVAL_SECONDS": "0"}))
     # Building a sender opens no connection; the root conftest fails any that is opened.
-    sender = worker.mail.sender
+    sender = worker.worker_mail_sender.sender
     assert (sender.server, sender.sender_mail, sender.password) == ("smtp.example.org", "worker@example.org",
                                                                    "mail-password")
     assert sender.security == "ssl"  # auto with a password
     assert sender.send_server_limit == 5
-    assert worker.mail.receivers == ["admin@example.org"]
-    assert worker.alive.on and (worker.alive.mail_startup, worker.alive.mail_interval_seconds) == (True, 0)
+    assert worker.worker_mail_sender.receivers == ["admin@example.org"]
+    alive = worker.alive_monitor
+    assert alive.on and (alive.mail_startup, alive.mail_interval_seconds) == (True, 0)
 
 
 @pytest.mark.parametrize("extra", [
@@ -223,7 +224,7 @@ def test_complete_mail_setups_are_accepted(clean_env, extra):
         extra = {**extra, "MAIL_CA_FILE": ssl.get_default_verify_paths().cafile or ""}
         if not extra["MAIL_CA_FILE"]:
             pytest.skip("no system CA file to load")
-    assert dummy_worker.DummyWorker.from_config(Config({**MAIL_SETUP, **extra})).mail is not None
+    assert dummy_worker.DummyWorker.from_config(Config({**MAIL_SETUP, **extra})).worker_mail_sender is not None
 
 
 class OwnConfig(Config):
@@ -295,7 +296,7 @@ def test_from_config_passes_a_subclass_its_own_settings(clean_env):
 def test_from_config_keeps_the_settings_of_config_for_the_wrapper(clean_env):
     worker = OwnWorker.from_config(OwnConfig({**MAIL_SETUP, "MAIL_PASSWORD": "secret"}))
     assert (worker.model_path, worker.own_mail_password) == ("model.bin", "own")
-    assert worker.mail is not None
+    assert worker.worker_mail_sender is not None
 
 
 def test_a_setting_without_a_parameter_fails(clean_env):
@@ -308,7 +309,7 @@ def test_a_setting_without_a_parameter_fails(clean_env):
 def test_an_overridden_subclass_args_builds_its_own_arguments(clean_env):
     worker = LoadingWorker.from_config(OwnConfig({**MAIL_SETUP, "MODEL_PATH": "other.bin"}))
     assert worker.model == "loaded other.bin"
-    assert worker.mail is not None and worker.alive.on  # Built as usual.
+    assert worker.worker_mail_sender is not None and worker.alive_monitor.on  # Built as usual.
     with pytest.raises(TypeError, match="multiple values"):
         WrapperSettingWorker.from_config(Config())
 

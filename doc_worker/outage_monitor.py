@@ -1,5 +1,5 @@
 """Whether DocAPI can be reached: OutageMonitor logs DocAPI outages and mails
-DISCONNECTED, STILL DISCONNECTED and RECONNECTED through the WorkerMail."""
+DISCONNECTED, STILL DISCONNECTED and RECONNECTED through the WorkerMailSender."""
 import logging
 import math
 import threading
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from doc_worker.worker_mail import WorkerMail, duration, row, utc_text
+from doc_worker.worker_mail_sender import WorkerMailSender, duration, row, utc_text
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +42,13 @@ class OutageMonitor:
     carries the note the worker passes to report_settled().
     """
 
-    def __init__(self, mail: Optional[WorkerMail], grace_seconds: float = 60,
+    def __init__(self, worker_mail_sender: Optional[WorkerMailSender], grace_seconds: float = 60,
                  mail_interval_seconds: float = 3600,
                  active_job: Callable[[], Optional[str]] = lambda: None,
                  report_pending: Callable[[], bool] = lambda: False):
         """
         Args:
-            mail: Sends the outage emails; None only logs outages.
+            worker_mail_sender: Sends the outage emails; None only logs outages.
             grace_seconds: How long DocAPI may be unreachable while the worker is
                 idle before a DISCONNECTED email.
             mail_interval_seconds: How often a STILL DISCONNECTED reminder is sent while
@@ -60,7 +60,7 @@ class OutageMonitor:
                                      ("mail_interval_seconds", mail_interval_seconds, None)):
             if not math.isfinite(value) or value < 0 or (minimum is None and value == 0):
                 raise ValueError(f"{name} must be a finite, {'positive' if minimum is None else 'nonnegative'} number")
-        self.mail = mail
+        self.worker_mail_sender = worker_mail_sender
         self.grace_seconds = grace_seconds
         self.mail_interval_seconds = mail_interval_seconds
         self._active_job = active_job
@@ -127,8 +127,8 @@ class OutageMonitor:
             self._send("RECONNECTED", self._message(outage, "RECONNECTED", lost_job=lost_job))
 
     def _send(self, status: str, message: str) -> None:
-        if self.mail is not None:
-            self.mail.send(status, message)
+        if self.worker_mail_sender is not None:
+            self.worker_mail_sender.send(status, message)
 
     @staticmethod
     def _message(outage: _ServerOutage, status: str, now_monotonic: Optional[float] = None,
