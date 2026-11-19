@@ -38,7 +38,7 @@ async def test_startup_creates_credentials(startup_sessions, monkeypatch, produc
     monkeypatch.setattr(config, "ADMIN_KEY", ADMIN_SECRET if configured_admin else None)
     credentials = {} if production else {
         getattr(config, f"TEST_{role.upper()}_KEY_LABEL"): (getattr(config, f"TEST_{role.upper()}_KEY"), KeyRole(role))
-        for role in ("admin", "readonly", "user", "worker")
+        for role in ("admin", "manager", "readonly", "user", "worker")
     }
     if configured_admin:
         credentials["admin"] = (ADMIN_SECRET, KeyRole.ADMIN)
@@ -129,7 +129,8 @@ async def test_startup_without_admin_setting_preserves_admin(startup_sessions, m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("production", [False, True], ids=["development", "production"])
-@pytest.mark.parametrize("setting", ["ADMIN_KEY", "TEST_ADMIN_KEY", "TEST_READONLY_KEY", "TEST_USER_KEY", "TEST_WORKER_KEY"])
+@pytest.mark.parametrize("setting", ["ADMIN_KEY", "TEST_ADMIN_KEY", "TEST_MANAGER_KEY",
+                                     "TEST_READONLY_KEY", "TEST_USER_KEY", "TEST_WORKER_KEY"])
 async def test_startup_invalid_credentials(startup_sessions, monkeypatch, production, setting):
     monkeypatch.setattr(config, "PRODUCTION", production)
     monkeypatch.setattr(config, setting, "malformed-key")

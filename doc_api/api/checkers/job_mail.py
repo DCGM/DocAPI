@@ -11,7 +11,7 @@ from sqlalchemy import exc, select, exists, func, and_, or_, cast, String
 from sqlalchemy.dialects.postgresql import insert
 
 from doc_api.api.database import open_session
-from doc_api.api.mail_senders import mail_sender
+from doc_api.api import services
 
 
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -84,7 +84,7 @@ def send_final_report(mail: JobMail) -> bool | datetime:
     this server process and count SMTP attempts, including failures.
     """
     try:
-        sender = mail_sender(mail.channel)
+        sender = services.mail_sender(mail.channel)
         if sender is None:
             logger.error("Job notification %r not sent: the %s mail channel is not configured",
                          mail.subject, mail.channel)
@@ -93,8 +93,7 @@ def send_final_report(mail: JobMail) -> bool | datetime:
         # per channel, SECRET_MASKING_INTERNAL_MAIL / SECRET_MASKING_EXTERNAL_MAIL.
         subject, body = mail.subject, mail.body
         if getattr(config, f"SECRET_MASKING_{mail.channel}_MAIL"):
-            masking = config.secret_masking()
-            subject, body = masking.mask_text(subject), masking.mask_text(body)
+            subject, body = services.masker.mask_text(subject), services.masker.mask_text(body)
         # The sender logs each outcome.
         if len(mail.recipients) != 1:
             raise ValueError(f"A job notification goes to one recipient, not {len(mail.recipients)}")
@@ -155,8 +154,7 @@ class ClaimedNotification:
 
 async def claim_notification() -> ClaimedNotification | None:
     """Reserve one due delivery, committing and releasing its connection before SMTP."""
-    channels = [channel for channel in ('INTERNAL', 'EXTERNAL')
-                if getattr(config, f'{channel}_MAIL_SERVER') and getattr(config, f'{channel}_MAIL_SENDER_MAIL')]
+    channels = [channel for channel in services.MAIL_CHANNELS if services.mail_sender(channel) is not None]
     if not channels:
         return None
     while True:

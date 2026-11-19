@@ -12,9 +12,6 @@ from pathlib import Path
 import re
 import subprocess
 
-from doc_api.tools.mail_sender import MailSender
-from doc_api.tools.secrets import SecretMasker
-
 COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 
 
@@ -156,11 +153,13 @@ class Config:
         # Public identity in the UI, authentication responses and emails.
         self.SERVER_NAME = os.getenv("SERVER_NAME", "DocAPI")
         self.CONTACT_TO_GET_NEW_KEY = os.getenv("CONTACT_TO_GET_NEW_KEY", "admin@pc-doc-api-01.cz")
-        self.APP_VERSION = os.getenv("APP_VERSION", "custom")
         # Optional repositories shown in the API documentation.
         self.API_REPOSITORY_URL = os.getenv("API_REPOSITORY_URL", "").strip().rstrip("/")
         self.WORKER_REPOSITORY_URL = os.getenv("WORKER_REPOSITORY_URL", "").strip().rstrip("/")
-        # Build metadata in Docker; resolved from this checkout for local Python runs.
+
+        # Build metadata, set by the Docker image; the commit is resolved from this
+        # checkout for local Python runs.
+        self.APP_VERSION = os.getenv("APP_VERSION", "custom")
         self.APP_GIT_COMMIT = resolve_git_commit()
 
         # =============================================================================
@@ -285,32 +284,36 @@ class Config:
 
         # Internal: server errors and admin job reports -------------------------------
 
-        # Server and sender address are required; recipients are comma-separated.
+        # Connection; the server and the sender address are required.
         self.INTERNAL_MAIL_SERVER = os.getenv("INTERNAL_MAIL_SERVER", None)
-        self.INTERNAL_MAIL_PORT = int(os.getenv("INTERNAL_MAIL_PORT", 25))
-        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
-        self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
-        self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
-        self.INTERNAL_MAIL_USERNAME = os.getenv("INTERNAL_MAIL_USERNAME", None)
+        self.INTERNAL_MAIL_PORT = int(os.getenv("INTERNAL_MAIL_PORT", "25"))
         self.INTERNAL_MAIL_SECURITY = os.getenv("INTERNAL_MAIL_SECURITY", "auto")
         self.INTERNAL_MAIL_CA_FILE = os.getenv("INTERNAL_MAIL_CA_FILE", None)
         validate_mail_ca_file(self.INTERNAL_MAIL_CA_FILE, "INTERNAL_MAIL_CA_FILE")
         self.INTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("INTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
         if not math.isfinite(self.INTERNAL_MAIL_TIMEOUT_SECONDS) or self.INTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
             raise ValueError("INTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
+        # Sender.
+        self.INTERNAL_MAIL_SENDER_MAIL = os.getenv("INTERNAL_MAIL_SENDER_MAIL", None)
+        self.INTERNAL_MAIL_SENDER_NAME = os.getenv("INTERNAL_MAIL_SENDER_NAME", self.ADMIN_SERVER_NAME)
+        # Login, only with a password; the username defaults to the sender address.
+        self.INTERNAL_MAIL_USERNAME = os.getenv("INTERNAL_MAIL_USERNAME", None)
+        self.INTERNAL_MAIL_PASSWORD = os.getenv("INTERNAL_MAIL_PASSWORD", None)
+        # Receivers, comma-separated.
         self.INTERNAL_MAIL_RECEIVER_MAILS = [
             address.strip() for address in os.getenv("INTERNAL_MAIL_RECEIVER_MAILS", "").split(",")
             if address.strip()
         ]
+        # Limits.
         reject_renamed_mail_limits()
         # Emails per receiver and subject per sliding window, to protect the
         # receivers; 0 turns it off.
-        self.INTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_RECEIVER_LIMIT", 10))
+        self.INTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_RECEIVER_LIMIT", "10"))
         self.INTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS = float(
             os.getenv("INTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "3600"))
         # Emails through this channel's sender per sliding window, to protect the
         # SMTP server; 0 turns it off.
-        self.INTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_SERVER_LIMIT", 100))
+        self.INTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("INTERNAL_MAIL_SEND_SERVER_LIMIT", "100"))
         self.INTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS = float(
             os.getenv("INTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS", "3600"))
         for setting in ("INTERNAL_MAIL_SEND_RECEIVER_LIMIT", "INTERNAL_MAIL_SEND_SERVER_LIMIT"):
@@ -331,26 +334,30 @@ class Config:
         # External: user job reports ---------------------------------------------------
 
         # Owners must have email/email_notifications configured on their API key.
+        # Connection; the server and the sender address are required.
         self.EXTERNAL_MAIL_SERVER = os.getenv("EXTERNAL_MAIL_SERVER", None)
-        self.EXTERNAL_MAIL_PORT = int(os.getenv("EXTERNAL_MAIL_PORT", 25))
-        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)
-        self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
-        self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
-        self.EXTERNAL_MAIL_USERNAME = os.getenv("EXTERNAL_MAIL_USERNAME", None)
+        self.EXTERNAL_MAIL_PORT = int(os.getenv("EXTERNAL_MAIL_PORT", "25"))
         self.EXTERNAL_MAIL_SECURITY = os.getenv("EXTERNAL_MAIL_SECURITY", "auto")
         self.EXTERNAL_MAIL_CA_FILE = os.getenv("EXTERNAL_MAIL_CA_FILE", None)
         validate_mail_ca_file(self.EXTERNAL_MAIL_CA_FILE, "EXTERNAL_MAIL_CA_FILE")
         self.EXTERNAL_MAIL_TIMEOUT_SECONDS = float(os.getenv("EXTERNAL_MAIL_TIMEOUT_SECONDS", "60"))
         if not math.isfinite(self.EXTERNAL_MAIL_TIMEOUT_SECONDS) or self.EXTERNAL_MAIL_TIMEOUT_SECONDS <= 0:
             raise ValueError("EXTERNAL_MAIL_TIMEOUT_SECONDS must be a finite, positive number")
+        # Sender.
+        self.EXTERNAL_MAIL_SENDER_MAIL = os.getenv("EXTERNAL_MAIL_SENDER_MAIL", None)
+        self.EXTERNAL_MAIL_SENDER_NAME = os.getenv("EXTERNAL_MAIL_SENDER_NAME", self.SERVER_NAME)
+        # Login, only with a password; the username defaults to the sender address.
+        self.EXTERNAL_MAIL_USERNAME = os.getenv("EXTERNAL_MAIL_USERNAME", None)
+        self.EXTERNAL_MAIL_PASSWORD = os.getenv("EXTERNAL_MAIL_PASSWORD", None)
+        # Limits.
         # Emails per receiver and subject per sliding window, to protect the
         # receivers; 0 turns it off.
-        self.EXTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_RECEIVER_LIMIT", 10))
+        self.EXTERNAL_MAIL_SEND_RECEIVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_RECEIVER_LIMIT", "10"))
         self.EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS = float(
             os.getenv("EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS", "3600"))
         # Emails through this channel's sender per sliding window, to protect the
         # SMTP server; 0 turns it off.
-        self.EXTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_SERVER_LIMIT", 500))
+        self.EXTERNAL_MAIL_SEND_SERVER_LIMIT = int(os.getenv("EXTERNAL_MAIL_SEND_SERVER_LIMIT", "500"))
         self.EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS = float(
             os.getenv("EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS", "3600"))
         for setting in ("EXTERNAL_MAIL_SEND_RECEIVER_LIMIT", "EXTERNAL_MAIL_SEND_SERVER_LIMIT"):
@@ -395,7 +402,7 @@ class Config:
         # Also mask long random-looking tokens in text; hashes and ids may be hidden too.
         self.SECRET_MASKING_HIGH_ENTROPY = self._env_bool("SECRET_MASKING_HIGH_ENTROPY", False)
         # Replaces every secret, whatever its length; empty means the default.
-        self.SECRET_MASKING_MASK = os.getenv("SECRET_MASKING_MASK") or "*****"
+        self.SECRET_MASKING_MASK = os.getenv("SECRET_MASKING_MASK", "*****") or "*****"
         # Comma-separated exact key names whose values are revealed partly, e.g.
         # sk-proj-*****wxyz, to tell which API key a job used. They override the
         # rest: masked this way even if they do not look secret and even with
@@ -417,8 +424,8 @@ class Config:
         # Logging
         # =============================================================================
 
-        self.LOGGING_FILE_LEVEL = os.getenv("LOGGING_FILE_LEVEL", logging.INFO)
-        self.LOGGING_CONSOLE_LEVEL = os.getenv("LOGGING_CONSOLE_LEVEL", logging.INFO)
+        self.LOGGING_FILE_LEVEL = os.getenv("LOGGING_FILE_LEVEL", "INFO")
+        self.LOGGING_CONSOLE_LEVEL = os.getenv("LOGGING_CONSOLE_LEVEL", "INFO")
         self.LOGGING_DIR = os.getenv("LOGGING_DIR", os.path.join(self.BASE_DIR, "logs"))
         self.LOGGING_CONFIG = {
             'version': 1,
@@ -432,11 +439,11 @@ class Config:
             # Masks the message and traceback of exception records these handlers
             # write, third-party loggers included, and the query string of
             # uvicorn access records; other records are unchanged.
-            # Follows the SECRET_MASKING settings in force for each record.
+            # Uses the server's masker, built once at startup (api/services.py).
             'filters': {
                 'mask_secrets': {
                     '()': 'doc_api.tools.secrets.SecretMaskingFilter',
-                    'masker': self.secret_masking,
+                    'masker': 'ext://doc_api.api.services.masker',
                 }
             },
             'handlers': {
@@ -568,11 +575,13 @@ class Config:
 
         # Automatically created credentials when PRODUCTION is false.
         self.TEST_ADMIN_KEY = os.getenv("TEST_ADMIN_KEY", f"{self.KEY_PREFIX}.testadminkid.testadminkey")
+        self.TEST_MANAGER_KEY = os.getenv("TEST_MANAGER_KEY", f"{self.KEY_PREFIX}.testmanagerkid.testmanagerkey")
         self.TEST_READONLY_KEY = os.getenv("TEST_READONLY_KEY", f"{self.KEY_PREFIX}.testreadonlykid.testreadonlykey")
         self.TEST_USER_KEY = os.getenv("TEST_USER_KEY", f"{self.KEY_PREFIX}.testuserkid.testuserkey")
         self.TEST_WORKER_KEY = os.getenv("TEST_WORKER_KEY", f"{self.KEY_PREFIX}.testworkerkid.testworkerkey")
 
         self.TEST_ADMIN_KEY_LABEL = os.getenv("TEST_ADMIN_KEY_LABEL", "test-admin")
+        self.TEST_MANAGER_KEY_LABEL = os.getenv("TEST_MANAGER_KEY_LABEL", "test-manager")
         self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
         self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
         self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
@@ -586,39 +595,6 @@ class Config:
         if value < minimum:
             raise ValueError(f"{key} must be an integer >= {minimum}")
         return value
-
-    def mail_sender(self, channel: str) -> Optional[MailSender]:
-        """A new sender for the INTERNAL or EXTERNAL mail channel; None when the
-        channel has no server or sender address. Callers send to each receiver,
-        internal mail to INTERNAL_MAIL_RECEIVER_MAILS. The server keeps one
-        sender per channel (api/mail_senders.py) so its limits hold."""
-        if channel not in ("INTERNAL", "EXTERNAL"):
-            raise ValueError(f"Unknown mail channel: {channel}")
-        server = getattr(self, f"{channel}_MAIL_SERVER")
-        sender_mail = getattr(self, f"{channel}_MAIL_SENDER_MAIL")
-        if not server or not sender_mail:
-            return None
-        return MailSender(server=server, sender_mail=sender_mail,
-                          port=getattr(self, f"{channel}_MAIL_PORT"),
-                          sender_name=getattr(self, f"{channel}_MAIL_SENDER_NAME"),
-                          username=getattr(self, f"{channel}_MAIL_USERNAME"),
-                          password=getattr(self, f"{channel}_MAIL_PASSWORD"),
-                          security=getattr(self, f"{channel}_MAIL_SECURITY"),
-                          ca_file=getattr(self, f"{channel}_MAIL_CA_FILE"),
-                          timeout=getattr(self, f"{channel}_MAIL_TIMEOUT_SECONDS"),
-                          send_receiver_limit=getattr(self, f"{channel}_MAIL_SEND_RECEIVER_LIMIT"),
-                          send_receiver_window_seconds=getattr(self, f"{channel}_MAIL_SEND_RECEIVER_WINDOW_SECONDS"),
-                          send_server_limit=getattr(self, f"{channel}_MAIL_SEND_SERVER_LIMIT"),
-                          send_server_window_seconds=getattr(self, f"{channel}_MAIL_SEND_SERVER_WINDOW_SECONDS"))
-
-    def secret_masking(self) -> SecretMasker:
-        """A masker with the SECRET_MASKING_* settings in force."""
-        return SecretMasker(enabled=self.SECRET_MASKING, mask=self.SECRET_MASKING_MASK,
-                            allowed_keys=self.SECRET_MASKING_ALLOWED_KEYS,
-                            high_entropy=self.SECRET_MASKING_HIGH_ENTROPY,
-                            partial_keys=self.SECRET_MASKING_PARTIAL_KEYS,
-                            partial_start=self.SECRET_MASKING_PARTIAL_START,
-                            partial_end=self.SECRET_MASKING_PARTIAL_END)
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)

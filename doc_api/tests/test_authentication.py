@@ -210,6 +210,7 @@ async def test_get_me_200_manager(client, manager_headers):
     response = await client.get("/v1/me", headers=manager_headers)
     assert response.status_code == 200, response.text
     assert response.json()["data"]["role"] == "manager"
+    assert response.json()["data"]["label"] == config.TEST_MANAGER_KEY_LABEL
 
 
 @pytest.mark.asyncio

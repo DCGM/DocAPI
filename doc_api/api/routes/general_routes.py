@@ -21,6 +21,7 @@ from doc_api.api.routes.helpers import RouteInvariantError
 from doc_api.api.guards.user_guards import challenge_user_access_to_job
 from doc_api.api.authentication import require_api_key
 from doc_api.api.cruds import user_cruds, general_cruds, worker_cruds
+from doc_api.api import services
 from doc_api.api.database import get_async_session
 from doc_api.api.guards.worker_guards import (challenge_worker_access_to_job,
                                              WORKER_ACCESS_TO_PROCESSING_JOB_GUARD_RESPONSES)
@@ -223,7 +224,7 @@ def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dic
     engine_settings = db_job.definition.get("engine_settings", None)
     if key.role in UNMASKED_ROLES:
         return engine_settings
-    return config.secret_masking().mask_struct(engine_settings)
+    return services.masker.mask_struct(engine_settings)
 
 
 def mask_job_logs(job: dict, key: model.Key) -> dict:
@@ -234,7 +235,7 @@ def mask_job_logs(job: dict, key: model.Key) -> dict:
         return job
     for field in ("log", "log_user", "final_log", "final_log_user"):
         if job.get(field) is not None:
-            job[field] = config.secret_masking().mask_text(job[field])
+            job[field] = services.masker.mask_text(job[field])
     return job
 
 

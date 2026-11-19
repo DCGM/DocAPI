@@ -767,7 +767,7 @@ Any other SMTP connection fails the test.
 - [x] upgrade email and final reports. [`test_migrations.py::test_upgrade_email_and_final_reports`](test_migrations.py).
 - [x] the send receiver limit: one NOT SENT notice, then the report waits until the window has room. [`test_job_mail.py::test_send_receiver_limit_defers_job_mail_until_the_window_has_room`](test_job_mail.py).
 - [x] the channel's send server limit defers job mail until its window has room; the receiver gets a NOT SENT notice from the reserve. [`test_job_mail.py::test_send_server_limit_defers_job_mail_until_the_window_has_room`](test_job_mail.py).
-- [x] invalid mail configuration is logged. [`test_job_mail.py::test_invalid_mail_configuration_is_logged`](test_job_mail.py).
+- [x] invalid mail configuration stops the server at startup; a sender failing while a notification is prepared is logged. [`test_job_mail.py::test_invalid_mail_configuration_fails_at_startup`](test_job_mail.py).
 
 - [x] worker writes pad missing attempt positions in all four logs. [`test_worker.py::test_patch_job_200_logs_sparse_attempts`](test_worker.py).
 - [x] admin append/replace writes pad missing attempt positions. [`test_user.py::test_patch_job_200_logs_sparse_attempts`](test_user.py).
@@ -785,7 +785,6 @@ Any other SMTP connection fails the test.
 - [x] absent optional subject values. [`test_job_mail.py::test_subject_template_missing_optional_values`](test_job_mail.py).
 - [x] invalid subject configuration. [`test_job_mail.py::test_subject_template_invalid_configuration`](test_job_mail.py).
 
-- [x] mailing defaults and settings match the environment example. [`test_job_mail.py::test_mail_configuration_matches_env_example`](test_job_mail.py).
 
 - [x] concurrent admin finalization does not duplicate mail. [`test_user.py::test_patch_job_200_concurrent_final_state_no_duplicate_mail`](test_user.py).
 - [x] notification preparation failure preserves a successful job update. [`test_worker.py::test_patch_job_200_mail_preparation_failure`](test_worker.py).
@@ -826,7 +825,8 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 `doc_api.tools.secrets` masks values under secret-looking keys at any depth and
 known secret patterns in free text. It is a standalone tool: a `SecretMasker`
 holds its settings and masks with them, and it reads no server config. The
-server builds its masker from the variables below with `Config.secret_masking()`. User/readonly responses show masked engine
+server builds one masker from the variables below at startup, in
+`doc_api/api/services.py`, and uses it everywhere. User/readonly responses show masked engine
 settings and job logs; admin and worker responses keep the real values, for jobs
 and debugging. Logged exceptions and access-log query strings are masked too. Masking happens in the server
 routes and checkers, not the shared schemas. Stored data is never changed.
@@ -849,7 +849,7 @@ routes and checkers, not the shared schemas. Stored data is never changed.
 - [x] partial keys apply with masking turned off. [`test_secret_masking.py::test_partial_keys_apply_with_masking_disabled`](test_secret_masking.py).
 - [x] configurable mask. [`test_secret_masking.py::test_custom_mask`](test_secret_masking.py).
 - [x] optional high-entropy switch. [`test_secret_masking.py::test_mask_secrets_in_text_high_entropy_switch`](test_secret_masking.py).
-- [x] server log handlers carry the masking filter with the server's settings in force. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
+- [x] server log handlers carry the masking filter with the server's masker, built once at startup. [`test_secret_masking.py::test_server_log_handlers_mask_secrets`](test_secret_masking.py).
 - [x] only exception records are masked, traceback included. [`test_secret_masking.py::test_logging_masks_only_exceptions`](test_secret_masking.py).
 - [x] access log query strings are masked; other access paths are not scanned. [`test_secret_masking.py::test_access_log_masks_query_string_keys`](test_secret_masking.py).
 - [x] unhandled errors mask the logged URL and the error mail. [`test_secret_masking.py::test_unhandled_error_masks_url_and_mail`](test_secret_masking.py).
@@ -1716,6 +1716,10 @@ Automated monitoring and presentation checks:
 
 Additional existing configuration checks:
 
+- [x] `.env_example` lists every setting `config.py` reads, in the same order and with the same default. [`test_config.py::test_env_example_lists_every_setting_in_order_with_its_default`](test_config.py).
+- [x] settings the Docker image sets are commented out in `.env_example`, so a deployment's `.env` does not override them. [`test_config.py::test_settings_the_image_sets_are_commented_out_in_env_example`](test_config.py).
+- [x] `.env_docker_example` holds exactly the variables Compose fills into `compose.yml`, and no server settings. [`test_config.py::test_env_docker_example_holds_what_compose_reads_and_no_server_settings`](test_config.py).
+- [x] `config.py` imports only the standard library; the masker and mail senders are built in `api/services.py`. [`test_config.py::test_config_imports_only_the_standard_library`](test_config.py).
 - [x] [`test_job_mail.py::test_default_subjects`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_job_mail_passes_smtp_security_and_username`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_mail_sender_per_channel`](test_job_mail.py).

@@ -52,7 +52,7 @@ async def test_next_test_is_empty(client, db_sessions):
     assert not list(Path(config.JOBS_DIR).iterdir())
     async with db_sessions() as db:
         assert (await db.execute(text("SELECT count(*) FROM jobs"))).scalar_one() == 0
-        assert (await db.execute(text("SELECT count(*) FROM keys"))).scalar_one() == 4
+        assert (await db.execute(text("SELECT count(*) FROM keys"))).scalar_one() == 5
 ''')
     result = await asyncio.to_thread(
         subprocess.run,

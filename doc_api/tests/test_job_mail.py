@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 
-from doc_api.api import mail_senders
+from doc_api.api import services
 from doc_api.tools import mail_sender as mail_sender_module
 from doc_api.api.checkers import job_mail
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -18,9 +18,11 @@ from doc_api.db import model
 from doc_api.tests.helpers import notification_rows
 
 
-def test_send_receiver_limit_defers_job_mail_until_the_window_has_room(job_mail_outbox, monkeypatch):
+def test_send_receiver_limit_defers_job_mail_until_the_window_has_room(job_mail_outbox, monkeypatch,
+                                                                      rebuild_services):
     monkeypatch.setattr(config, 'EXTERNAL_MAIL_SEND_RECEIVER_LIMIT', 1)
     monkeypatch.setattr(config, 'EXTERNAL_MAIL_SEND_RECEIVER_WINDOW_SECONDS', 600)
+    rebuild_services()
     now = [1000]
     monkeypatch.setattr(mail_sender_module, 'time', lambda: now[0])
     report = job_mail.JobMail('EXTERNAL', ('one@example.com',), 'subject', 'final report')
@@ -44,10 +46,12 @@ def test_send_receiver_limit_defers_job_mail_until_the_window_has_room(job_mail_
     assert len(job_mail_outbox) == 5
 
 
-def test_send_server_limit_defers_job_mail_until_the_window_has_room(job_mail_outbox, monkeypatch):
+def test_send_server_limit_defers_job_mail_until_the_window_has_room(job_mail_outbox, monkeypatch,
+                                                                    rebuild_services):
     # Three a minute: two for email, one kept for notices.
     monkeypatch.setattr(config, 'EXTERNAL_MAIL_SEND_SERVER_LIMIT', 3)
     monkeypatch.setattr(config, 'EXTERNAL_MAIL_SEND_SERVER_WINDOW_SECONDS', 60)
+    rebuild_services()
     now = [1000.0]
     monkeypatch.setattr(mail_sender_module, 'time', lambda: now[0])
     reports = [job_mail.JobMail('EXTERNAL', (f'{name}@example.com',), name, 'report') for name in 'abc']
@@ -62,8 +66,13 @@ def test_send_server_limit_defers_job_mail_until_the_window_has_room(job_mail_ou
     assert [message['Subject'] for _, _, message in job_mail_outbox] == ['a', 'b', 'c - NOT SENT', 'c']
 
 
-def test_invalid_mail_configuration_is_logged(job_mail_outbox, monkeypatch, caplog):
+def test_invalid_mail_configuration_fails_at_startup(job_mail_outbox, monkeypatch, rebuild_services, caplog):
+    # The senders are built at startup, so an invalid setting stops the server there.
     monkeypatch.setattr(config, 'EXTERNAL_MAIL_PORT', 'invalid')
+    with pytest.raises(ValueError):
+        rebuild_services()
+    # A sender that fails while a notification is prepared is logged.
+    monkeypatch.setattr(services, 'mail_sender', Mock(side_effect=ValueError('broken sender')))
     job_mail.send_final_report(job_mail.JobMail('EXTERNAL', ('one@example.com',), 'subject', 'report'))
     assert not job_mail_outbox
     assert 'Failed preparing job notification' in caplog.text
@@ -147,37 +156,6 @@ def test_subject_template_invalid_configuration(monkeypatch, template, setting):
         Config()
 
 
-def test_mail_configuration_matches_env_example(monkeypatch):
-    import os
-    import re
-    from pathlib import Path
-
-    prefixes = ('INTERNAL_MAIL_', 'EXTERNAL_MAIL_', 'USER_JOB_MAIL_', 'ADMIN_JOB_MAIL_', 'JOB_MAIL_', 'INTERNAL_ERROR_MAIL_')
-    for name in list(os.environ):
-        if name.startswith(prefixes):
-            monkeypatch.delenv(name)
-    defaults = Config()
-    example = (Path(__file__).parents[1] / '.env_example').read_text()
-    documented = {name for name in re.findall(r'^(?:# )?([A-Z_]+)=', example, re.MULTILINE)
-                  if name.startswith(prefixes)}
-    assert documented == {name for name in vars(defaults) if name.startswith(prefixes)}
-    for name, value in re.findall(r'^([A-Z_]+)=(.*)$', example, re.MULTILINE):
-        if name not in documented:
-            continue
-        expected = value.strip().strip('"')
-        expected = re.sub(r'\$\{([A-Z_]+)\}', lambda match: str(getattr(defaults, match[1])), expected)
-        actual = getattr(defaults, name)
-        if isinstance(actual, list):
-            assert actual == [address.strip() for address in expected.split(',') if address.strip()]
-        else:
-            assert str(actual) == expected, name
-    assert defaults.INTERNAL_MAIL_RECEIVER_MAILS == []
-    assert isinstance(defaults.INTERNAL_MAIL_PORT, int)
-    assert isinstance(defaults.EXTERNAL_MAIL_PORT, int)
-
-
-
-
 @pytest_asyncio.fixture
 async def finalized_job(job_factory, db_sessions, job_mail_outbox):
     job_id = await job_factory(ProcessingState.DONE)
@@ -191,7 +169,8 @@ async def finalized_job(job_factory, db_sessions, job_mail_outbox):
 
 
 @pytest.mark.asyncio
-async def test_notification_preparation_and_restart_are_idempotent(finalized_job, db_sessions, job_mail_outbox, monkeypatch):
+async def test_notification_preparation_and_restart_are_idempotent(finalized_job, db_sessions, job_mail_outbox,
+                                                                   rebuild_services):
     for _ in range(2):
         async with db_sessions() as db:
             await job_mail.prepare_job_notifications(db)
@@ -199,7 +178,7 @@ async def test_notification_preparation_and_restart_are_idempotent(finalized_job
     assert len(rows) == 1 and rows[0].state == 'pending' and rows[0].delivery_attempts == 0
     assert not job_mail_outbox
     await job_mail.check_job_notifications()
-    monkeypatch.setattr(mail_senders, '_senders', {})
+    rebuild_services()
     # Reprocessing a finished job does not create another final notification.
     async with db_sessions.begin() as db:
         job = await db.get(model.Job, finalized_job)
@@ -325,7 +304,7 @@ async def test_mail_checker_runs_without_requests(finalized_job, job_mail_outbox
 @pytest.mark.asyncio
 async def test_mail_waits_while_smtp_is_disabled(finalized_job, db_sessions, monkeypatch, job_mail_outbox):
     with monkeypatch.context() as patch:
-        patch.setattr(config, 'EXTERNAL_MAIL_SERVER', None)
+        patch.setitem(services.mail_senders, 'EXTERNAL', None)
         async with db_sessions() as db:
             await job_mail.prepare_job_notifications(db)
         await job_mail.deliver_job_notifications()
@@ -375,7 +354,7 @@ async def test_mail_checker_recovers_after_failure(monkeypatch, caplog):
 async def test_internal_error_subject_template(monkeypatch, template, expected):
     from doc_api.api import main
     sender = Mock()
-    monkeypatch.setattr(config, 'mail_sender', Mock(return_value=sender))
+    monkeypatch.setattr(services, 'mail_sender', Mock(return_value=sender))
     monkeypatch.setattr(config, 'INTERNAL_MAIL_RECEIVER_MAILS', ['admin@example.com'])
     monkeypatch.setattr(config, 'INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE', template)
     monkeypatch.setattr(config, 'SERVER_NAME', 'Public')
@@ -384,7 +363,7 @@ async def test_internal_error_subject_template(monkeypatch, template, expected):
     response = await main.unhandled(request, RuntimeError('test error'))
     await asyncio.gather(*main.error_mail_tasks)
     assert response.status_code == 500
-    config.mail_sender.assert_called_once_with('INTERNAL')
+    services.mail_sender.assert_called_once_with('INTERNAL')
     assert sender.send.call_args.args[0] == expected
 
 
@@ -398,7 +377,7 @@ async def test_internal_error_mail_does_not_hold_the_event_loop(monkeypatch):
         release.wait(5)
         sent.append(subject)
         return True
-    monkeypatch.setattr(config, 'mail_sender', Mock(return_value=Mock(send=slow_smtp)))
+    monkeypatch.setattr(services, 'mail_sender', Mock(return_value=Mock(send=slow_smtp)))
     monkeypatch.setattr(config, 'INTERNAL_MAIL_RECEIVER_MAILS', ['admin@example.com'])
     request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
     response = await main.unhandled(request, RuntimeError('test error'))
@@ -412,9 +391,11 @@ async def test_internal_error_mail_does_not_hold_the_event_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_internal_error_mail_send_receiver_limit_applies_in_background(job_mail_outbox, monkeypatch):
+async def test_internal_error_mail_send_receiver_limit_applies_in_background(job_mail_outbox, monkeypatch,
+                                                                             rebuild_services):
     from doc_api.api import main
     monkeypatch.setattr(config, 'INTERNAL_MAIL_SEND_RECEIVER_LIMIT', 2)
+    rebuild_services()
     now = [1000]
     monkeypatch.setattr(mail_sender_module, 'time', lambda: now[0])
     request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
@@ -434,9 +415,11 @@ async def test_internal_error_mail_send_receiver_limit_applies_in_background(job
 
 
 @pytest.mark.asyncio
-async def test_internal_error_mail_over_the_send_server_limit_is_only_logged(job_mail_outbox, monkeypatch, caplog):
+async def test_internal_error_mail_over_the_send_server_limit_is_only_logged(job_mail_outbox, monkeypatch, caplog,
+                                                                             rebuild_services):
     from doc_api.api import main
     monkeypatch.setattr(config, 'INTERNAL_MAIL_SEND_SERVER_LIMIT', 1)
+    rebuild_services()
     request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
     for _ in range(3):
         await main.unhandled(request, RuntimeError('test error'))
@@ -492,14 +475,14 @@ async def test_sparse_final_reports_use_current_attempt(job_factory, db_sessions
 def test_job_mail_passes_smtp_security_and_username(job_mail_outbox, monkeypatch, channel):
     sender = Mock()
     mail_sender = Mock(return_value=sender)
-    monkeypatch.setattr(config, "mail_sender", mail_sender)
+    monkeypatch.setattr(services, "mail_sender", mail_sender)
     job_mail.send_final_report(job_mail.JobMail(channel, ("one@example.com",), "subject", "report"))
     mail_sender.assert_called_once_with(channel)
     sender.send.assert_called_once_with("subject", "report", "one@example.com")
 
 
 @pytest.mark.parametrize("channel", ["INTERNAL", "EXTERNAL"])
-def test_mail_sender_per_channel(monkeypatch, channel):
+def test_mail_sender_per_channel(monkeypatch, rebuild_services, channel):
     monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", "smtp.example.com")
     monkeypatch.setattr(config, f"{channel}_MAIL_SENDER_MAIL", "server@example.com")
     monkeypatch.setattr(config, f"{channel}_MAIL_PORT", 587)
@@ -511,28 +494,33 @@ def test_mail_sender_per_channel(monkeypatch, channel):
     monkeypatch.setattr(config, f"{channel}_MAIL_SEND_SERVER_LIMIT", 5)
     monkeypatch.setattr(config, f"{channel}_MAIL_SEND_SERVER_WINDOW_SECONDS", 60.0)
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
-    sender = config.mail_sender(channel)
+    sender = services.build_mail_sender(config, channel)
     assert (sender.server, sender.port, sender.sender_mail, sender.security, sender.username, sender.timeout) == \
            ("smtp.example.com", 587, "server@example.com", "starttls", "smtp-user", 12.5)
     assert (sender.send_receiver_limit, sender.send_receiver_window_seconds,
             sender.send_server_limit, sender.send_server_window_seconds) == (3, 120.0, 5, 60.0)
-    # The server keeps one sender per channel, so its limits count all its mail.
-    assert mail_senders.mail_sender(channel) is mail_senders.mail_sender(channel)
+    # The server builds one sender per channel and keeps it, so its limits
+    # count all its mail.
+    rebuild_services()
+    assert services.mail_sender(channel) is services.mail_sender(channel) is services.mail_senders[channel]
+    assert services.mail_sender(channel).server == "smtp.example.com"
     # A channel without a server or a sender address has no sender.
     monkeypatch.setattr(config, f"{channel}_MAIL_SERVER", None)
-    assert config.mail_sender(channel) is None
+    assert services.build_mail_sender(config, channel) is None
     with pytest.raises(ValueError):
-        config.mail_sender("OTHER")
+        services.build_mail_sender(config, "OTHER")
+    with pytest.raises(ValueError):
+        services.mail_sender("OTHER")
 
 
 @pytest.mark.asyncio
 async def test_internal_error_mail_needs_an_internal_sender(monkeypatch):
     from doc_api.api import main
-    monkeypatch.setattr(config, "mail_sender", Mock(return_value=None))
+    monkeypatch.setattr(services, "mail_sender", Mock(return_value=None))
     request = SimpleNamespace(url='http://test/failing', method='GET', client='client')
     response = await main.unhandled(request, RuntimeError('test error'))
     assert response.status_code == 500
-    config.mail_sender.assert_called_once_with("INTERNAL")
+    services.mail_sender.assert_called_once_with("INTERNAL")
     assert not main.error_mail_tasks
 
 
@@ -594,6 +582,8 @@ def _use_local_smtp(monkeypatch, server):
         monkeypatch.setattr(config, f"{channel}_MAIL_PASSWORD", None)
         monkeypatch.setattr(config, f"{channel}_MAIL_TIMEOUT_SECONDS", 5.0)
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
+    monkeypatch.setattr(services, "mail_senders", {
+        channel: services.build_mail_sender(config, channel) for channel in services.MAIL_CHANNELS})
 
 
 @pytest.mark.asyncio

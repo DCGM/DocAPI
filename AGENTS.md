@@ -48,7 +48,8 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a re
 - `doc_api/config.py` and `doc_api/.env_example` mirror each other: the same
   sections with the same headings, the same settings in the same order, under
   the same names and with the same defaults. Add, rename, move or remove a
-  setting in both at once. A test compares the mail settings so far.
+  setting in both at once. `doc_api/tests/test_config.py` checks the names,
+  order and defaults.
 - Report test results as they are, including failures that `main` has as well.
 
 ## No real side effects
@@ -98,6 +99,12 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a re
   what they need.
 - Server settings are read from the environment in `doc_api/config.py`,
   validated at startup and documented in `doc_api/.env_example` (see Tests).
+  `doc_api/.env_docker_example` holds only the extra settings Compose reads for
+  `doc_api/compose.yml`, the database settings; Docker deployments append it
+  to `.env`.
+  `config.py` holds only values and imports only the standard library. Objects
+  built from the settings and shared by the server, such as the secret masker
+  and the mail senders, are built once at startup in `doc_api/api/services.py`.
 
 ## Documenting routes
 
