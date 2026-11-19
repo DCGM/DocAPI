@@ -78,6 +78,50 @@ def validate_mail_ca_file(path: Optional[str], setting: str):
         raise ValueError(f"Invalid {setting}: {error}") from error
 
 
+# Default texts and examples of the API documentation; each setting replaces
+# its default as a whole.
+JOB_DEFINITION_DESCRIPTION = """Create a new job with the specified images and options.
+
+The job definition must include a list of `images`, each with a unique `name` and `order`.
+
+If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, `page_required`, `meta_json_required` must be set to `true`.
+
+Each image can supply `image_url`, `alto_url`, and `page_url` for direct worker downloads. A required input needs either a URL or a normal upload; missing inputs keep the job in NEW. DocAPI stores links without downloading their contents.
+
+The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.
+
+Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.
+
+Optionally, you can specify `engine_name` to select a specific processing engine. Default engine will be used if not specified."""
+
+JOB_DEFINITION_EXAMPLES = {
+    "IMAGE job": {
+        "summary": "Default",
+        "description": "Simple job with two images.",
+        "value": {"images": [{"name": "image0.jpg", "order": 0}, {"name": "image1.jpg", "order": 1}],
+                  "meta_json_required": False, "alto_required": False, "page_required": False,
+                  "engine_name": "Engine A"},
+    },
+    "Linked inputs": {
+        "summary": "Image and ALTO supplied by URL",
+        "value": {"images": [{"name": "page.jpg", "order": 0, "image_url": "https://files.example.org/page.jpg",
+                              "alto_url": "https://files.example.org/page.alto.xml"}],
+                  "alto_required": True},
+    },
+    "Mixed inputs": {
+        "summary": "Linked image with ALTO supplied by normal upload",
+        "value": {"images": [{"name": "page.jpg", "order": 0, "image_url": "https://files.example.org/page.jpg"}],
+                  "alto_required": True},
+    },
+}
+
+META_JSON_EXAMPLES = {
+    "object": {"summary": "JSON object", "value": {"engine": "ocr", "version": 2}},
+    "array": {"summary": "JSON array", "value": ["step1", "step2", "step3"]},
+    "primitive": {"summary": "Primitive value", "value": True},
+}
+
+
 RENAMED_MAIL_LIMITS = {"FLOOD_LEVEL": "SEND_RECEIVER_LIMIT", "SEND_LIMIT": "SEND_SERVER_LIMIT",
                        "SEND_WINDOW_SECONDS": "SEND_SERVER_WINDOW_SECONDS"}
 
@@ -501,75 +545,19 @@ class Config:
 
         # Job definition examples -----------------------------------------------------
         self.JOB_DEFINITION_SUMMARY = os.getenv("JOB_DEFINITION_SUMMARY", "Create Job")
-        self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION",
-                                                    "Create a new job with the specified images and options.\n\n"
-                                                    "The job definition must include a list of `images`, each with a unique `name` and `order`.\n\n"
-                                                    "If ALTO XML, PAGE XML and Meta JSON files are required, the respective flags `alto_required`, "
-                                                    "`page_required`, `meta_json_required` must be set to `true`.\n\n"
-                                                    "Each image can supply `image_url`, `alto_url`, and `page_url` for direct worker downloads. "
-                                                    "A required input needs either a URL or a normal upload; missing inputs keep the job in NEW. "
-                                                    "DocAPI stores links without downloading their contents.\n\n"
-                                                    "The images must have specified extensions (e.g., `.jpg`, `.png`) in their names.\n\n"
-                                                    "Do not use `alto_required` together with `page_required`, unless your processing worker supports both formats.\n\n"
-                                                    "Optionally, you can specify `engine_name` to select a specific processing engine. Default engine will be used if not specified.\n\n")
-        self.JOB_DEFINITION_EXAMPLES = json.loads(os.getenv("JOB_DEFINITION_EXAMPLES",
-                                                            json.dumps({
-                                                                "IMAGE job": {
-                                                                    "summary": "Default",
-                                                                    "description": "Simple job with two images.",
-                                                                    "value": {
-                                                                        "images": [
-                                                                            {
-                                                                                "name": "image0.jpg",
-                                                                                "order": 0
-                                                                            },
-                                                                            {
-                                                                                "name": "image1.jpg",
-                                                                                "order": 1
-                                                                            }
-                                                                        ],
-                                                                        "meta_json_required": False,
-                                                                        "alto_required": False,
-                                                                        "page_required": False,
-                                                                        "engine_name": "Engine A",
-                                                                    }}})))
-
-        if "JOB_DEFINITION_EXAMPLES" not in os.environ:
-            self.JOB_DEFINITION_EXAMPLES.update({
-                "Linked inputs": {
-                    "summary": "Image and ALTO supplied by URL",
-                    "value": {"images": [{"name": "page.jpg", "order": 0,
-                                           "image_url": "https://files.example.org/page.jpg",
-                                           "alto_url": "https://files.example.org/page.alto.xml"}],
-                              "alto_required": True},
-                },
-                "Mixed inputs": {
-                    "summary": "Linked image with ALTO supplied by normal upload",
-                    "value": {"images": [{"name": "page.jpg", "order": 0,
-                                           "image_url": "https://files.example.org/page.jpg"}],
-                              "alto_required": True},
-                },
-            })
+        self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION", JOB_DEFINITION_DESCRIPTION)
+        self.JOB_DEFINITION_EXAMPLES = json.loads(
+            os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps(JOB_DEFINITION_EXAMPLES, indent=2)))
 
         # Metadata upload examples ----------------------------------------------------
         self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")
-        self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION",
-                                               "Upload the Meta JSON file for a job.")
-        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES",
-                                                       json.dumps({
-                                                           "object": {"summary": "JSON object",
-                                                                      "value": {"engine": "ocr", "version": 2}},
-                                                           "array": {"summary": "JSON array",
-                                                                     "value": ["step1", "step2", "step3"]},
-                                                           "primitive": {"summary": "Primitive value", "value": True},
-                                                       })))
+        self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION", "Upload the Meta JSON file for a job.")
+        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES", json.dumps(META_JSON_EXAMPLES, indent=2)))
 
         # Result download examples ----------------------------------------------------
         self.RESULT_SUMMARY = os.getenv("RESULT_SUMMARY", "Download Result")
-        self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION",
-                                            "Download the result ZIP file for a completed job.")
-        self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE",
-                                        "(binary ZIP file content)")
+        self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION", "Download the result ZIP file for a completed job.")
+        self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE", "(binary ZIP file content)")
 
         # =============================================================================
         # Testing

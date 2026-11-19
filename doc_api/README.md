@@ -3,6 +3,12 @@
 The server reads its settings from the environment. `.env_example` lists them
 all, each with its default; copy it to `.env` and change what you need.
 
+The texts and examples of the API documentation (`JOB_DEFINITION_*`,
+`META_JSON_*`, `RESULT_*`) are at the end of `.env_example`, commented out with
+their defaults. To show your own, uncomment a block and edit it. A value in single
+quotes may span several lines, which Docker Compose reads as they are; it must not
+contain a single quote.
+
 For a Docker deployment with `compose.yml`, also append `.env_docker_example`
 to `.env`:
 
