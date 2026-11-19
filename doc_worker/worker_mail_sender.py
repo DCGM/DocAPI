@@ -1,9 +1,9 @@
-"""The worker's own emails: WorkerMail wraps a MailSender and sends each email
-with the worker's identity, host, time and status.
+"""The worker's own emails: WorkerMailSender wraps a MailSender and sends each
+email with the worker's identity, host, time and status.
 
 The worker mails failures itself; doc_worker/outage_monitor.py mails DocAPI
 outages and doc_worker/alive_monitor.py the ALIVE reports, both through a
-WorkerMail. Emails about jobs come from DocAPI, not from here.
+WorkerMailSender. Emails about jobs come from DocAPI, not from here.
 """
 import logging
 import socket
@@ -23,7 +23,7 @@ def check_mail_subject(subject: str) -> None:
     subject.format(identity="worker", hostname="host", status="ALIVE", time=datetime.now(timezone.utc))
 
 
-class WorkerMail:
+class WorkerMailSender:
     """Sends the worker's emails through a MailSender, to each receiver separately.
 
     send() mails an event of the worker (FAILURE, an outage status or ALIVE) with

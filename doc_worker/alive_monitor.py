@@ -1,12 +1,12 @@
 """That the worker is alive: AliveMonitor mails ALIVE at startup and then at an
-interval through the WorkerMail, whenever the worker has mail with receivers."""
+interval through the WorkerMailSender, whenever the worker has mail with receivers."""
 import logging
 import math
 import threading
 import time
 from typing import Callable, Optional
 
-from doc_worker.worker_mail import WorkerMail, duration, row
+from doc_worker.worker_mail_sender import WorkerMailSender, duration, row
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +24,14 @@ class AliveMonitor:
     # The thread that sends the periodic ALIVE mail.
     THREAD_NAME = "worker-alive"
 
-    def __init__(self, mail: Optional[WorkerMail], mail_startup: bool = True,
+    def __init__(self, worker_mail_sender: Optional[WorkerMailSender], mail_startup: bool = True,
                  mail_interval_seconds: float = 86400,
                  active_job: Callable[[], Optional[str]] = lambda: None,
                  job_history: Callable[[], Optional[object]] = lambda: None):
         """
         Args:
-            mail: Sends the reports; None, or mail without receivers, sends none.
+            worker_mail_sender: Sends the reports; None, or one without receivers,
+                sends none.
             mail_startup: Send a report when the worker starts.
             mail_interval_seconds: Seconds between the reports; 0 sends no periodic reports.
             active_job: The id of the job being processed, None while idle.
@@ -39,7 +40,7 @@ class AliveMonitor:
         """
         if not math.isfinite(mail_interval_seconds) or mail_interval_seconds < 0:
             raise ValueError("mail_interval_seconds must be a finite, nonnegative number")
-        self.mail = mail
+        self.worker_mail_sender = worker_mail_sender
         self.mail_startup = mail_startup
         self.mail_interval_seconds = mail_interval_seconds
         self.active_job = active_job
@@ -53,7 +54,7 @@ class AliveMonitor:
     @property
     def on(self) -> bool:
         """Whether there is anyone to send the reports to."""
-        return self.mail is not None and bool(self.mail.receivers)
+        return self.worker_mail_sender is not None and bool(self.worker_mail_sender.receivers)
 
     def start(self):
         if not self.on:
@@ -99,7 +100,7 @@ class AliveMonitor:
             except Exception:
                 logger.exception("Could not read worker job history statistics")
                 lines += ["", "history", row("statistics", "unavailable; inspect worker log", " ")]
-        self.mail.send("ALIVE", "\n".join(lines) + "\n")
+        self.worker_mail_sender.send("ALIVE", "\n".join(lines) + "\n")
 
     def _run(self):
         while not self._stop.wait(self.mail_interval_seconds):

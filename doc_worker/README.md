@@ -20,7 +20,7 @@ flowchart TD
         Process --> Upload["zip and upload<br/>the results"]
         Upload --> Report["report OK,<br/>error or fail"]
     end
-    subgraph Mail["WorkerMail: receivers, identity, hostname, subject"]
+    subgraph Mail["WorkerMailSender: receivers, identity, hostname, subject"]
         Sender["MailSender<br/>SMTP server, login, send limits"]
     end
     Config["Config<br/>settings from the environment"] -- "from_config()" --> Worker
@@ -132,7 +132,11 @@ mail is set up:
   `OUTAGE_GRACE_SECONDS` while idle, at once during a job), a STILL
   DISCONNECTED reminder every `OUTAGE_MAIL_INTERVAL_SECONDS`, and
   RECONNECTED when it is back, with what happened to a job whose outcome had
-  to wait.
+  to wait. Results that could not be uploaded in the outage are uploaded
+  then, so the job is not processed again. A request that times out or gets
+  a 504 while DocAPI still answers a small request was only slow, e.g. a
+  large upload: it fails the job as an ordinary error, not as an outage. Raise
+  `API_READ_TIMEOUT_SECONDS`, and the proxy's timeout, for large results.
 - **That the worker is alive:** an ALIVE email at startup and then once a
   day, with its uptime and its last and active job.
 

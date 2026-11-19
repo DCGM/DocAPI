@@ -161,7 +161,8 @@ def main():
     logger.info(f"Starting Dummy Worker connecting to {config.API_URL}")
     logger.info(f"Jobs directory: {worker.jobs_dir}")
     logger.info(f"Engines directory: {worker.engines_dir}")
-    logger.info(f"Worker mail: {'on' if worker.mail is not None and worker.mail.receivers else 'off'}")
+    mail = worker.worker_mail_sender
+    logger.info(f"Worker mail: {'on' if mail is not None and mail.receivers else 'off'}")
 
     worker.start()
 

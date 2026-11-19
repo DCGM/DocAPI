@@ -1,15 +1,15 @@
-"""The worker's own mail: WorkerMail, and the wrapper's mail and failure mail."""
+"""The worker's own mail: WorkerMailSender, and the wrapper's mail and failure mail."""
 import types
 from unittest import mock
 
 import pytest
 
 from doc_worker.alive_monitor import AliveMonitor
-from doc_worker.worker_mail import WorkerMail
+from doc_worker.worker_mail_sender import WorkerMailSender
 
 
 def _mail(**kwargs):
-    return WorkerMail(mock.Mock(), **{"receivers": ["admin@example.org"], "identity": "worker abc",
+    return WorkerMailSender(mock.Mock(), **{"receivers": ["admin@example.org"], "identity": "worker abc",
                                       "hostname": "host", **kwargs})
 
 
@@ -34,7 +34,7 @@ def wrapper(tmp_path):
     return worker
 
 
-# --- WorkerMail ---
+# --- WorkerMailSender ---
 
 def test_worker_mail_has_the_subject_and_a_header():
     mail = _mail(subject="{status} | {identity} | {hostname} | {time:%Y}")
@@ -74,11 +74,13 @@ def test_an_invalid_subject_is_rejected():
 # --- The wrapper's mail ---
 
 def test_alive_mail_is_on_by_default_with_mail(wrapper):
-    assert wrapper.alive.on and (wrapper.alive.mail_startup, wrapper.alive.mail_interval_seconds) == (True, 86400)
+    alive = wrapper.alive_monitor
+    assert alive.on and (alive.mail_startup, alive.mail_interval_seconds) == (True, 86400)
     wrapper.run_job_pipeline = mock.Mock(side_effect=[None, KeyboardInterrupt])
     with mock.patch("time.sleep"), mock.patch("threading.Thread") as thread:
         wrapper.start()
-    assert [subject for subject, _ in _sent(wrapper.mail)] == [f"[{wrapper.identity}] ALIVE ({wrapper.mail.hostname})"]
+    mail = wrapper.worker_mail_sender
+    assert [subject for subject, _ in _sent(mail)] == [f"[{wrapper.identity}] ALIVE ({mail.hostname})"]
     thread.return_value.start.assert_called_once()
     thread.return_value.join.assert_called_once()  # Stopped with the worker.
 
@@ -90,7 +92,7 @@ def test_alive_mail_can_be_turned_off(wrapper, tmp_path):
     worker.run_job_pipeline = mock.Mock(side_effect=[None, KeyboardInterrupt])
     with mock.patch("time.sleep"), mock.patch("threading.Thread") as thread:
         worker.start()
-    worker.mail.sender.send.assert_not_called()
+    worker.worker_mail_sender.sender.send.assert_not_called()
     thread.assert_not_called()
 
 
@@ -98,47 +100,48 @@ def test_wrapper_builds_its_mail_and_monitors_from_its_arguments(wrapper, tmp_pa
     worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path),
                            mail_sender=mock.Mock(), mail_receivers=["admin@example.org"], identity="My worker",
                            alive_mail_interval_seconds=60, outage_grace_seconds=5, outage_mail_interval_seconds=600)
-    assert worker.alive.mail is worker.mail and worker.alive.mail_interval_seconds == 60
-    assert worker.outages.mail is worker.mail
-    assert (worker.outages.grace_seconds, worker.outages.mail_interval_seconds) == (5, 600)
-    assert (worker.identity, worker.mail.identity) == ("My worker", "My worker")
+    alive = worker.alive_monitor
+    assert alive.worker_mail_sender is worker.worker_mail_sender and alive.mail_interval_seconds == 60
+    assert worker.outage_monitor.worker_mail_sender is worker.worker_mail_sender
+    assert (worker.outage_monitor.grace_seconds, worker.outage_monitor.mail_interval_seconds) == (5, 600)
+    assert (worker.identity, worker.worker_mail_sender.identity) == ("My worker", "My worker")
 
 
 def test_a_new_identity_reaches_the_mail(wrapper):
     wrapper.identity = "OCR worker prod"
-    assert wrapper.mail.identity == "OCR worker prod"
+    assert wrapper.worker_mail_sender.identity == "OCR worker prod"
 
 
 def test_a_worker_without_a_mail_sender_has_no_mail(wrapper, tmp_path):
     worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path))
-    assert worker.mail is None and worker.outages.mail is None
+    assert worker.worker_mail_sender is None and worker.outage_monitor.worker_mail_sender is None
     worker._notify_worker_failure("failure")  # Only logged.
 
 
 @pytest.mark.parametrize("failure", [KeyboardInterrupt, RuntimeError, SystemExit])
 def test_wrapper_loop_manages_alive_reports_and_reports_unexpected_termination(wrapper, failure):
-    wrapper.alive = mock.Mock()
+    wrapper.alive_monitor = mock.Mock()
     wrapper.run_job_pipeline = mock.Mock(side_effect=[None, failure("loop broke")])
     with mock.patch("time.sleep"):
         if failure is KeyboardInterrupt:
             wrapper.start()
-            wrapper.mail.sender.send.assert_not_called()
+            wrapper.worker_mail_sender.sender.send.assert_not_called()
         else:
             with pytest.raises(failure):
                 wrapper.start()
-            wrapper.mail.sender.send.assert_called_once()
-            body = wrapper.mail.sender.send.call_args.args[1]
+            wrapper.worker_mail_sender.sender.send.assert_called_once()
+            body = wrapper.worker_mail_sender.sender.send.call_args.args[1]
             assert "loop broke" in body and "Traceback" in body
-    wrapper.alive.start.assert_called_once()
-    wrapper.alive.pipeline_returned.assert_called_once()
-    wrapper.alive.close.assert_called_once()
+    wrapper.alive_monitor.start.assert_called_once()
+    wrapper.alive_monitor.pipeline_returned.assert_called_once()
+    wrapper.alive_monitor.close.assert_called_once()
 
 
 def test_each_failure_is_mailed(wrapper):
     wrapper._notify_worker_failure("first")
     wrapper._notify_worker_failure("second")
-    assert wrapper.mail.sender.send.call_count == 2
-    assert "second" in wrapper.mail.sender.send.call_args.args[1]
+    assert wrapper.worker_mail_sender.sender.send.call_count == 2
+    assert "second" in wrapper.worker_mail_sender.sender.send.call_args.args[1]
 
 
 def test_wrapper_reports_successful_job_errors_without_worker_alert(wrapper):
@@ -146,7 +149,7 @@ def test_wrapper_reports_successful_job_errors_without_worker_alert(wrapper):
     wrapper.current_job = types.SimpleNamespace(id="job-1")
     wrapper._report_job_response(WorkerResponse.error(final_log="technical", final_log_user="user"))
     wrapper.adapter.patch_job_error.assert_called_once_with(final_log="technical", final_log_user="user", job_id="job-1")
-    wrapper.mail.sender.send.assert_not_called()
+    wrapper.worker_mail_sender.sender.send.assert_not_called()
 
 
 @pytest.mark.parametrize("raises", [False, True])
@@ -158,9 +161,9 @@ def test_wrapper_alerts_when_job_error_cannot_reach_docapi(wrapper, raises):
     else:
         wrapper.adapter.patch_job_error.return_value = types.SimpleNamespace(is_success=False, status=500, code=None)
     wrapper._report_job_response(WorkerResponse.error(final_log="technical"))
-    wrapper.mail.sender.send.assert_called_once()
+    wrapper.worker_mail_sender.sender.send.assert_called_once()
     if raises:
-        body = wrapper.mail.sender.send.call_args.args[1]
+        body = wrapper.worker_mail_sender.sender.send.call_args.args[1]
         assert "OSError: unavailable" in body and "Traceback" in body
 
 
@@ -175,8 +178,8 @@ def test_wrapper_alerts_when_polling_fails_without_a_job(wrapper, raises):
         assert wrapper.run_job_pipeline() is None
     report.assert_not_called()
     wrapper.adapter.patch_job_error.assert_not_called()
-    wrapper.mail.sender.send.assert_called_once()
-    message = wrapper.mail.sender.send.call_args.args[1]
+    wrapper.worker_mail_sender.sender.send.assert_called_once()
+    message = wrapper.worker_mail_sender.sender.send.call_args.args[1]
     assert ("Failed to request job" if raises else "Failed to request job lease") in message
     assert ("DocAPI unreachable" if raises else "500") in message
     assert "without a job ID" not in message
@@ -195,7 +198,7 @@ def test_wrapper_reports_job_fetch_failure_after_acquiring_a_lease(wrapper, rais
     assert wrapper.run_job_pipeline() is None
     wrapper.adapter.patch_job_error.assert_called_once()
     assert wrapper.adapter.patch_job_error.call_args.kwargs["job_id"] == "new-job"
-    wrapper.mail.sender.send.assert_not_called()
+    wrapper.worker_mail_sender.sender.send.assert_not_called()
     assert wrapper.current_job is None and wrapper.current_lease is None
 
 
@@ -226,7 +229,7 @@ def test_invalid_monitor_settings_are_rejected_before_side_effects(wrapper, tmp_
 
 def test_failure_mail_is_sent_as_written(wrapper):
     wrapper._notify_worker_failure("unknown page key: p1, contains_keyword=True")
-    subject, body, _ = wrapper.mail.sender.send.call_args.args
+    subject, body, _ = wrapper.worker_mail_sender.sender.send.call_args.args
     assert "FAILURE" in subject
     assert "unknown page key: p1, contains_keyword=True" in body
 
@@ -238,12 +241,12 @@ def test_mail_sender_subclass_filters_all_worker_mail(wrapper):
         def send(self, subject, body, receiver, headers=None):
             self.sent = (subject.replace("p1", "[id]"), body.replace("p1", "[id]"))
             return True
-    wrapper.mail.sender = RedactingMailSender(server="smtp.example.org", sender_mail="worker@example.org")
+    wrapper.worker_mail_sender.sender = RedactingMailSender(server="smtp.example.org", sender_mail="worker@example.org")
     wrapper.identity = "host p1"
     wrapper._notify_worker_failure("page p1 failed")
-    assert "p1" not in "".join(wrapper.mail.sender.sent)
+    assert "p1" not in "".join(wrapper.worker_mail_sender.sender.sent)
     assert wrapper.send_mail("note p1", "body p1") is True
-    assert wrapper.mail.sender.sent == ("note [id]", "body [id]")
+    assert wrapper.worker_mail_sender.sender.sent == ("note [id]", "body [id]")
 
 
 def test_failure_mail_includes_exception_chain(wrapper):
@@ -254,7 +257,7 @@ def test_failure_mail_includes_exception_chain(wrapper):
             raise RuntimeError("cannot save history") from cause
     except RuntimeError as exception:
         wrapper._notify_worker_failure("History failure", exception=exception)
-    body = wrapper.mail.sender.send.call_args.args[1]
+    body = wrapper.worker_mail_sender.sender.send.call_args.args[1]
     assert "History failure" in body
     assert "OSError: disk full" in body
     assert "RuntimeError: cannot save history" in body
@@ -263,18 +266,18 @@ def test_failure_mail_includes_exception_chain(wrapper):
 
 
 def test_wrapper_defaults_identity_and_detects_hostname(wrapper, tmp_path):
-    with mock.patch("doc_worker.worker_mail.socket.gethostname", return_value="automatic-host"):
+    with mock.patch("doc_worker.worker_mail_sender.socket.gethostname", return_value="automatic-host"):
         worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock())
     assert worker.identity == type(worker).__name__
-    assert worker.mail.hostname == "automatic-host"
+    assert worker.worker_mail_sender.hostname == "automatic-host"
 
 
 def test_default_subject_for_alive_and_failure(wrapper):
-    wrapper.alive.send_alive()
+    wrapper.alive_monitor.send_alive()
     wrapper._notify_worker_failure("cannot connect")
-    assert [subject for subject, _ in _sent(wrapper.mail)] == [
-        f"[{wrapper.identity}] ALIVE ({wrapper.mail.hostname})",
-        f"[{wrapper.identity}] FAILURE ({wrapper.mail.hostname})",
+    assert [subject for subject, _ in _sent(wrapper.worker_mail_sender)] == [
+        f"[{wrapper.identity}] ALIVE ({wrapper.worker_mail_sender.hostname})",
+        f"[{wrapper.identity}] FAILURE ({wrapper.worker_mail_sender.hostname})",
     ]
 
 
@@ -283,10 +286,10 @@ def test_all_worker_mail_uses_constructor_identity_hostname_and_subject(wrapper,
                            mail_sender=mock.Mock(), mail_receivers=["admin@example.org"],
                            identity="OCR production", hostname="host-override",
                            mail_subject="{status} | {identity} | {hostname} | {time:%Y-%m-%d}")
-    worker.alive.send_alive()
+    worker.alive_monitor.send_alive()
     worker._notify_worker_failure("cannot connect")
-    assert worker.mail.sender.send.call_count == 2
-    for (subject, body), status in zip(_sent(worker.mail), ("ALIVE", "FAILURE")):
+    assert worker.worker_mail_sender.sender.send.call_count == 2
+    for (subject, body), status in zip(_sent(worker.worker_mail_sender), ("ALIVE", "FAILURE")):
         assert subject.startswith(f"{status} | OCR production | host-override | ")
         assert "OCR production" in body and "host-override" in body
         assert status in body
@@ -306,10 +309,10 @@ def test_the_alive_report_shows_the_worker_s_job_and_history(wrapper, tmp_path):
     worker = type(wrapper)("http://localhost", mock.Mock(), base_dir=str(tmp_path), mail_sender=mock.Mock(),
                            mail_receivers=["admin@example.org"], job_history_path=str(tmp_path / "history.jsonl"))
     worker.current_lease = types.SimpleNamespace(id="leased")
-    worker.alive.send_alive()
-    assert "none active" in worker.mail.sender.send.call_args.args[1]  # A lease alone is not a job.
+    worker.alive_monitor.send_alive()
+    assert "none active" in worker.worker_mail_sender.sender.send.call_args.args[1]  # A lease alone is not a job.
     worker.current_job = types.SimpleNamespace(id="job-1")
-    worker.alive.send_alive()
-    body = worker.mail.sender.send.call_args.args[1]
+    worker.alive_monitor.send_alive()
+    body = worker.worker_mail_sender.sender.send.call_args.args[1]
     assert "job-1" in body and "all time" in body
-    assert isinstance(worker.alive.job_history(), JobHistory)
+    assert isinstance(worker.alive_monitor.job_history(), JobHistory)

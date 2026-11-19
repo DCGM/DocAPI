@@ -1013,10 +1013,11 @@ downloads, and failed source requests.
 
 ### Worker ALIVE mail
 
-The worker's mail lives in `doc_worker/worker_mail.py`, its monitors in
-`doc_worker/alive_monitor.py` and `doc_worker/outage_monitor.py`. The wrapper builds a
-`WorkerMail` from `mail_sender`, `mail_receivers`, `identity` (class name by
-default), `hostname` (automatic by default) and `mail_subject`; it applies to
+The worker's mail lives in `doc_worker/worker_mail_sender.py`, its monitors in
+`doc_worker/alive_monitor.py` and `doc_worker/outage_monitor.py`. The wrapper
+builds a `WorkerMailSender` (`worker.worker_mail_sender`) from `mail_sender`,
+`mail_receivers`, `identity` (class name by default), `hostname` (automatic by
+default) and `mail_subject`; it applies to
 ALIVE, failure and outage emails alike. The subject default is
 `[{identity}] {status} ({hostname})`; supported placeholders are `identity`,
 `hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
@@ -1031,10 +1032,10 @@ rows and separate time-window sections for mobile reading. They report process
 uptime and the last pipeline return, rather than guaranteeing that processing
 is progressing. ALIVE mail is independent of job final reports.
 
-- [x] `WorkerMail` subject, header, receivers, mail off without receivers, contained SMTP failures and invalid subjects. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
+- [x] `WorkerMailSender` subject, header, receivers, mail off without receivers, contained SMTP failures and invalid subjects. [`test_worker_mail_sender.py`](../../doc_worker/tests/test_worker_mail_sender.py).
 - [x] ALIVE startup and periodic mail, on by default with mail, turning it off, nothing without mail or receivers, invalid intervals and SMTP failures. [`test_alive_monitor.py`](../../doc_worker/tests/test_alive_monitor.py).
-- [x] Wrapper lifecycle integration, the mail and monitors built from its arguments, identity changes, mail sent as written or filtered by a `MailSender` subclass, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
-- [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
+- [x] Wrapper lifecycle integration, the mail and monitors built from its arguments, identity changes, mail sent as written or filtered by a `MailSender` subclass, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_mail_sender.py`](../../doc_worker/tests/test_worker_mail_sender.py).
+- [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_mail_sender.py`](../../doc_worker/tests/test_worker_mail_sender.py).
 
 Explicit worker failures are mailed whenever a mail sender and receivers are
 configured, even without ALIVE reports. Each failure sends an alert with
@@ -1054,9 +1055,15 @@ logged:
 
 A job outcome that could not be reported is reported first after reconnecting,
 before the worker polls again; a report the server no longer accepts changes
-nothing. Other errors keep the usual failure mail.
+nothing. Results whose upload an outage cut off are uploaded first, without
+processing the job again; results the server does not take then are not
+uploaded again but reported as a retryable error, as are results a reachable
+server rejects. An OK outcome reported after the outage cleans up the job
+directory when `cleanup_job_dir` is on. A read timeout or a 504 is an outage
+only if DocAPI does not answer a probe of `/v1/me` either; otherwise the
+request was only slow. Other errors keep the usual failure mail.
 
-- [x] Grace period, reminders, reconnect mail, gateway errors, a request that times out, errors that are not outages, lost outcome reports and invalid settings; the `OutageMonitor` on its own without mail and with RECONNECTED held for a pending report. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
+- [x] Grace period, reminders, reconnect mail, gateway errors, a request that times out, errors that are not outages, lost outcome reports, uploads cut off by an outage, cleanup after a late report, slow requests told from outages by the probe and invalid settings; the `OutageMonitor` on its own without mail and with RECONNECTED held for a pending report. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
 
 ### Persistent worker job history
 

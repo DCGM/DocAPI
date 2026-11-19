@@ -19,7 +19,7 @@ from typing import List, Mapping, Optional, Sequence, Union
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import cv2
 import numpy as np
@@ -31,7 +31,7 @@ from doc_api.connector import Connector
 from doc_api.tools.mail_sender import MailSender
 from doc_worker.alive_monitor import AliveMonitor
 from doc_worker.outage_monitor import OutageMonitor
-from doc_worker.worker_mail import DEFAULT_MAIL_SUBJECT, WorkerMail, check_mail_subject
+from doc_worker.worker_mail_sender import DEFAULT_MAIL_SUBJECT, WorkerMailSender, check_mail_subject
 
 from doc_worker.config import Config
 
@@ -170,10 +170,10 @@ class DocWorkerWrapper(ABC):
             prefer_alto_url: Prefer a supplied ALTO URL when an uploaded ALTO file also exists
             prefer_page_url: Prefer a supplied PAGE URL when an uploaded PAGE file also exists
 
-            mail_sender: Optional mail sender for the worker's mail (self.mail, a
-                WorkerMail) and send_mail(). Mail is sent as written; pass a MailSender
-                subclass whose send() filters subject and body to mask or redact it.
-                None sends no mail.
+            mail_sender: Optional mail sender for the worker's mail
+                (self.worker_mail_sender, a WorkerMailSender) and send_mail(). Mail is
+                sent as written; pass a MailSender subclass whose send() filters
+                subject and body to mask or redact it. None sends no mail.
             mail_receivers: Who send_mail() and the wrapper's own mail go to by
                 default; each gets a separate email. Without any, the wrapper's own
                 mail is off.
@@ -185,14 +185,14 @@ class DocWorkerWrapper(ABC):
             mail_subject: Python format string with identity, hostname, status (ALIVE,
                 FAILURE, DISCONNECTED, STILL DISCONNECTED or RECONNECTED), and time
                 (UTC datetime, supporting date format specifications) placeholders.
-            alive_mail_startup: Send an ALIVE report when the worker starts (self.alive,
-                an AliveMonitor). ALIVE reports are sent whenever mail_sender and
+            alive_mail_startup: Send an ALIVE report when the worker starts
+                (self.alive_monitor, an AliveMonitor). ALIVE reports are sent whenever mail_sender and
                 mail_receivers are configured.
             alive_mail_interval_seconds: Seconds between the ALIVE reports, one day by
                 default; 0 sends no periodic reports.
             outage_grace_seconds: How long DocAPI may be unreachable while the worker is
-                idle before a DISCONNECTED email (self.outages, an OutageMonitor); shorter
-                outages are only logged. An outage during a job is mailed at once.
+                idle before a DISCONNECTED email (self.outage_monitor, an
+                OutageMonitor); shorter outages are only logged. An outage during a job is mailed at once.
             outage_mail_interval_seconds: How often a STILL DISCONNECTED reminder is sent
                 while DocAPI stays unreachable.
             error_messages: Overrides keyed by DEFAULT_WORKER_ERRORS names. Each
@@ -201,27 +201,32 @@ class DocWorkerWrapper(ABC):
 
         DocAPI is unreachable when a request to it fails to connect or times out,
         or gets a 502, 503 or 504, or a 404 without a DocAPI app code, which a
-        proxy in front of DocAPI sends when it has no route to it. self.outages, an
+        proxy in front of DocAPI sends when it has no route to it. After a read
+        timeout or a 504, a small request to /v1/me checks whether DocAPI answers;
+        if it does, the request was only slow, e.g. a large upload, and it fails
+        as an ordinary error, not an outage. self.outage_monitor, an
         OutageMonitor, logs and mails outages. A job outcome that could not be
         reported is reported once DocAPI is reachable again, before the worker
-        polls for a new job.
+        polls for a new job; results that could not be uploaded are uploaded
+        first, so the job is not processed again.
         """
         # Settings are checked before the adapter is built or directories are created.
         check_mail_subject(mail_subject)
-        self.mail: Optional[WorkerMail] = None
+        self.worker_mail_sender: Optional[WorkerMailSender] = None
         if mail_sender is not None:
-            self.mail = WorkerMail(mail_sender, mail_receivers, hostname=hostname, subject=mail_subject)
+            self.worker_mail_sender = WorkerMailSender(mail_sender, mail_receivers, hostname=hostname,
+                                                       subject=mail_subject)
         self.identity = type(self).__name__ if identity is None else identity
         # Until DocAPI has said what the key's label is.
         self._identity_from_key = identity is None
         self._identity_warned = False
         self._connector = connector
-        self.alive = AliveMonitor(self.mail, alive_mail_startup, alive_mail_interval_seconds,
-                                  active_job=self._current_job_id, job_history=lambda: self.job_history)
+        self.alive_monitor = AliveMonitor(self.worker_mail_sender, alive_mail_startup, alive_mail_interval_seconds,
+                                          active_job=self._current_job_id, job_history=lambda: self.job_history)
         self._lost_report: Optional["_LostReport"] = None
-        self.outages = OutageMonitor(self.mail, outage_grace_seconds, outage_mail_interval_seconds,
-                                     active_job=self._active_job_id,
-                                     report_pending=lambda: self._lost_report is not None)
+        self.outage_monitor = OutageMonitor(self.worker_mail_sender, outage_grace_seconds,
+                                            outage_mail_interval_seconds, active_job=self._active_job_id,
+                                            report_pending=lambda: self._lost_report is not None)
         self.error_messages = dict(DEFAULT_WORKER_ERRORS)
         for name, message in (error_messages or {}).items():
             if name not in self.error_messages:
@@ -233,7 +238,7 @@ class DocWorkerWrapper(ABC):
                 if text is not None:
                     text.format(**context)
             self.error_messages[name] = message
-        self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self.outages))
+        self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self.outage_monitor, api_url))
         self._set_user_agent()
 
         # Setup directory structure
@@ -273,8 +278,8 @@ class DocWorkerWrapper(ABC):
     @identity.setter
     def identity(self, identity: str) -> None:
         self._identity = identity
-        if self.mail is not None:
-            self.mail.identity = identity
+        if self.worker_mail_sender is not None:
+            self.worker_mail_sender.identity = identity
 
     def _active_job_id(self) -> Optional[str]:
         """The job being worked on, also when only its lease is known."""
@@ -457,13 +462,13 @@ class DocWorkerWrapper(ABC):
         try:
             result = self._send_job_report(response, job_id)
         except Exception as exception:
-            if _is_unreachable_error(exception):
+            if self._unreachable(exception):
                 return self._hold_lost_report(job_id, response)
             logger.exception("Could not report the job outcome to DocAPI")
             self._notify_worker_failure(f"Could not report the outcome of job {job_id} to DocAPI",
                                         exception=exception)
             return False
-        if _is_unreachable_status(getattr(result, "status", None), getattr(result, "code", None)):
+        if self._unreachable(result):
             return self._hold_lost_report(job_id, response)
         if not result.is_success:
             self._notify_worker_failure(f"Could not report the outcome of job {job_id} to DocAPI "
@@ -480,11 +485,18 @@ class DocWorkerWrapper(ABC):
         }[response.status]
         return report(final_log=technical, final_log_user=user, job_id=job_id)
 
-    def _hold_lost_report(self, job_id: str, response: WorkerResponse) -> bool:
-        """Keep an outcome DocAPI could not receive; it is reported on reconnect."""
-        logger.warning("DocAPI is unreachable; the outcome of job %s (%s) is reported once it is reachable again",
-                       job_id, response.status.value)
-        self._lost_report = _LostReport(str(job_id), response)
+    def _hold_lost_report(self, job_id: str, response: WorkerResponse, result_zip_path: Optional[str] = None) -> bool:
+        """Keep an outcome DocAPI could not receive, and the results it could not
+        receive, if any; both are sent on reconnect."""
+        if result_zip_path is not None:
+            logger.warning("DocAPI is unreachable; the results of job %s are uploaded and its outcome (%s) "
+                           "reported once it is reachable again", job_id, response.status.value)
+        else:
+            logger.warning("DocAPI is unreachable; the outcome of job %s (%s) is reported once it is reachable again",
+                           job_id, response.status.value)
+        job_dir = (self.get_job_data_path()
+                   if self.current_job is not None and str(self.current_job.id) == str(job_id) else None)
+        self._lost_report = _LostReport(str(job_id), response, result_zip_path=result_zip_path, job_dir=job_dir)
         return False
 
     def _prepare_final_logs(self, response: WorkerResponse) -> tuple[Optional[str], Optional[str]]:
@@ -755,7 +767,7 @@ class DocWorkerWrapper(ABC):
             
         zip_path = os.path.join(job_dir, "result.zip")
             
-        upload_response = self.adapter.post_result(zip_path)
+        upload_response = self.adapter.post_result(zip_path, job_id=self.current_job.id)
         if upload_response.is_success:
             logger.debug(f"Results uploaded successfully for job {self.current_job.id}")
             return WorkerResponse.ok()
@@ -798,7 +810,7 @@ class DocWorkerWrapper(ABC):
             if self.current_lease is not None or self.current_job is not None:
                 # A lease exists even if fetching the full job failed.
                 self._report_job_response(job_response)
-            elif _is_unreachable(job_response):
+            elif self._unreachable(job_response):
                 # The outage mails cover an unreachable server.
                 logger.warning("Could not request a job: DocAPI is unreachable")
             else:
@@ -935,17 +947,21 @@ class DocWorkerWrapper(ABC):
                 return None
             
             # Upload the results
+            logger.debug(f"Uploading results for job {self.current_job.id}...")
             try:
-                logger.debug(f"Uploading results for job {self.current_job.id}...")
                 upload_response = self._upload_results()
-                if upload_response.status != WorkerResponseStatus.OK:
+            except Exception as e:
+                upload_response = self._make_error_response("upload_results_to_server", exception=e)
+            if upload_response.status != WorkerResponseStatus.OK:
+                if self._unreachable(upload_response):
+                    # The results are done; upload them once DocAPI is back
+                    # instead of processing the job again.
+                    job_response = process_response
+                    job_response_reported = self._hold_lost_report(
+                        job.id, job_response, result_zip_path=os.path.join(job_dir, "result.zip"))
+                else:
                     job_response = upload_response
                     job_response_reported = self._report_job_response(job_response)
-                    return None
-            except Exception as e:
-                response = self._make_error_response("upload_results_to_server", exception=e)
-                job_response = response
-                job_response_reported = self._report_job_response(job_response)
                 return None
             
             # Report success only after packaging and uploading the results.
@@ -1050,12 +1066,12 @@ class DocWorkerWrapper(ABC):
         logger.info(f"Worker started, polling for jobs every {self.polling_interval} seconds")
         try:
             self._resolve_identity()
-            self.alive.start()
+            self.alive_monitor.start()
             while True:
                 if self._identity_from_key:
                     self._resolve_identity()
                 result = self.run_job_pipeline()
-                self.alive.pipeline_returned()
+                self.alive_monitor.pipeline_returned()
                 if result is None:
                     time.sleep(self.polling_interval)
         except KeyboardInterrupt:
@@ -1065,7 +1081,7 @@ class DocWorkerWrapper(ABC):
             self._notify_worker_failure("Worker terminated unexpectedly.", exception=exception)
             raise
         finally:
-            self.alive.close()
+            self.alive_monitor.close()
 
 
     def _set_user_agent(self) -> None:
@@ -1224,97 +1240,149 @@ class DocWorkerWrapper(ABC):
             True if every receiver was sent the email; False otherwise, also when
             no mail sender or no receiver is configured
         """
-        if self.mail is None:
+        if self.worker_mail_sender is None:
             logger.warning(f"Not sending email {subject!r}: the worker has no mail sender")
             return False
-        return self.mail.send_raw(subject, body, receiver_mails)
+        return self.worker_mail_sender.send_raw(subject, body, receiver_mails)
 
     def _notify_worker_failure(self, message: str, *, exception: Optional[BaseException] = None) -> None:
         """Alert when a failure cannot be communicated through job finalization."""
         if exception is not None:
             message = _join(message, "".join(traceback.format_exception(exception)).rstrip())
         logger.error("%s", message)
-        if self.mail is not None:
-            self.mail.send("FAILURE", message)
+        if self.worker_mail_sender is not None:
+            self.worker_mail_sender.send("FAILURE", message)
 
     def _settle_lost_report(self) -> bool:
-        """Report an outcome lost in an outage; False while DocAPI is still
-        unreachable, so the worker does not poll for a new job meanwhile."""
+        """Upload the results and report the outcome lost in an outage; False while
+        DocAPI is still unreachable, so the worker does not poll for a new job meanwhile.
+
+        Results DocAPI does not take, e.g. because it rejects them or the upload
+        times out while DocAPI answers, are not uploaded again: the job is
+        reported as a retryable error instead. An outcome DocAPI rejects, e.g.
+        because the lease expired and the job was requeued or failed meanwhile, is
+        not reported again. An OK outcome that is reported cleans up the job's
+        directory when cleanup_job_dir is on.
+        """
         lost = self._lost_report
         if lost is None:
             return True
+        upload_note = ""
+        if lost.result_zip_path is not None:
+            try:
+                result = self.adapter.post_result(lost.result_zip_path, job_id=lost.job_id)
+            except Exception as exception:
+                if self._unreachable(exception):
+                    return False
+                logger.exception("Could not upload the results of job %s to DocAPI", lost.job_id)
+                upload_note = f"its results could not be uploaded ({type(exception).__name__}: {exception}); "
+                lost.response = self._make_error_response("upload_results_to_server", exception=exception)
+            else:
+                if self._unreachable(result):
+                    return False
+                if result.is_success:
+                    logger.info("Uploaded the results of job %s after the outage", lost.job_id)
+                else:
+                    logger.warning("DocAPI did not take the results of job %s after the outage. "
+                                   "Status: %s, Code: %s", lost.job_id, result.status, result.code)
+                    upload_note = f"its results were not taken (status {result.status}, code {result.code}); "
+                    lost.response = self._make_error_response("upload_results", error_adapter_response=result)
+            # Only the report is left, should DocAPI drop out again.
+            lost.result_zip_path = None
+        status = lost.response.status.value
         try:
             result = self._send_job_report(lost.response, lost.job_id)
         except Exception as exception:
-            if _is_unreachable_error(exception):
+            if self._unreachable(exception):
                 return False
             logger.exception("Could not report the outcome of job %s to DocAPI", lost.job_id)
-            note = f"{lost.job_id}: its {lost.response.status.value} outcome could not be reported: {exception}"
-        else:
-            if _is_unreachable_status(getattr(result, "status", None), getattr(result, "code", None)):
-                return False
-            if result.is_success:
-                logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, lost.response.status.value)
-                note = f"{lost.job_id}: reported as {lost.response.status.value} after the outage"
-            else:
-                # The server requeued or failed the job meanwhile; nothing changes.
-                logger.warning("DocAPI did not accept the outcome of job %s after the outage. Status: %s, Code: %s",
-                               lost.job_id, result.status, result.code)
-                note = (f"{lost.job_id}: its {lost.response.status.value} outcome was not accepted "
-                        f"(status {result.status}, code {result.code}); DocAPI had already requeued or "
-                        f"failed the job")
+            return self._lost_report_settled(
+                f"{lost.job_id}: {upload_note}its {status} outcome could not be reported: {exception}")
+        if self._unreachable(result):
+            return False
+        if not result.is_success:
+            # The server requeued or failed the job meanwhile; nothing changes.
+            logger.warning("DocAPI did not accept the outcome of job %s after the outage. Status: %s, Code: %s",
+                           lost.job_id, result.status, result.code)
+            return self._lost_report_settled(
+                f"{lost.job_id}: {upload_note}its {status} outcome was not accepted (status {result.status}, "
+                f"code {result.code}); DocAPI had already requeued or failed the job")
+        logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, status)
+        if (self.cleanup_job_dir and lost.response.status == WorkerResponseStatus.OK
+                and lost.job_dir and os.path.exists(lost.job_dir)):
+            try:
+                shutil.rmtree(lost.job_dir)
+                logger.debug(f"Cleaned up job directory: {lost.job_dir}")
+            except Exception:
+                logger.exception("Failed to clean up job directory")
+        return self._lost_report_settled(f"{lost.job_id}: {upload_note}reported as {status} after the outage")
+
+    @staticmethod
+    def _unreachable(failure: Union[BaseException, AdapterResponse, WorkerResponse, None]) -> bool:
+        """Whether a DocAPI request failed because DocAPI is unreachable, as the
+        connector decided it; see _ReachabilityConnector."""
+        return _ReachabilityConnector.unreachable(failure)
+
+    def _lost_report_settled(self, note: str) -> bool:
         self._lost_report = None
-        self.outages.report_settled(note)
+        self.outage_monitor.report_settled(note)
         return True
 
 
-# --- DocAPI outages: whether a request reached DocAPI. The OutageMonitor
-# tracks outages; the wrapper holds a job outcome that could not be reported. ---
-
-# Responses that mean DocAPI is not reachable through its proxy, not that it
-# rejected the request.
-UNREACHABLE_STATUSES = frozenset({502, 503, 504})
-
-
-def _is_unreachable_status(status: Optional[int], code: Optional[str]) -> bool:
-    """Whether an HTTP answer came from a proxy in front of DocAPI instead of
-    DocAPI: a 502, 503 or 504, or a 404 without a DocAPI app code, which the
-    proxy sends when it has no route to DocAPI, e.g. while DocAPI is shut down.
-    Every error DocAPI sends itself has a code. Other errors without one, such
-    as a 413 or 429, may be permanent, so they stay ordinary failures."""
-    return status in UNREACHABLE_STATUSES or (status == 404 and code is None)
-
-
-def _is_unreachable_error(error: Optional[BaseException]) -> bool:
-    return isinstance(error, (requests.ConnectionError, requests.Timeout))
-
-
-def _is_unreachable(response: Optional[WorkerResponse]) -> bool:
-    """Whether a pipeline response failed because DocAPI could not be reached."""
-    if response is None:
-        return False
-    adapter_response = response.error_adapter_response
-    return (_is_unreachable_error(response.exception)
-            or (adapter_response is not None
-                and _is_unreachable_status(adapter_response.status, adapter_response.code)))
-
+# --- DocAPI outages: whether a request reached DocAPI. The connector decides
+# it and tells the OutageMonitor; the wrapper holds a job outcome that could not
+# be reported. ---
 
 @dataclass
 class _LostReport:
     """A job outcome that could not be reported because DocAPI was unreachable."""
     job_id: str
     response: WorkerResponse
+    result_zip_path: Optional[str] = None   # The result.zip still to upload before the report; None once uploaded.
+    job_dir: Optional[str] = None           # Cleaned up once an OK outcome is reported.
 
 
 class _ReachabilityConnector:
-    """Passes a Connector through and tells the OutageMonitor whether each
-    DocAPI request reached the server."""
+    """Passes a Connector through, decides for each DocAPI request whether it
+    reached DocAPI, and tells the OutageMonitor.
+
+    DocAPI is unreachable when a request fails to connect or times out, or gets
+    an answer from a proxy in front of DocAPI instead: a 502, 503 or 504, or a
+    404 without a DocAPI app code, which the proxy sends when it has no route to
+    DocAPI. Every error DocAPI sends itself has a code; other errors without
+    one, such as a 413 or 429, may be permanent, so they stay ordinary failures.
+
+    A read timeout or a 504 may also mean that a request, such as a large
+    upload, only took too long. After one, a small probe request tells the two
+    apart: if DocAPI answers it, the request was slow and DocAPI is reachable.
+
+    The caller gets the exception or the response unchanged. When DocAPI was
+    unreachable, it is marked, and unreachable() reads the mark, also from an
+    AdapterResponse or a WorkerResponse that carries it.
+    """
 
     REQUEST_METHODS = ("get", "post", "put", "patch", "delete")
+    PROBE_ROUTE = "/v1/me"
+    # The longest the probe waits for DocAPI's answer; the connect timeout is the connector's.
+    PROBE_READ_TIMEOUT_SECONDS = 30
+    # Statuses a proxy answers with when it cannot reach DocAPI.
+    PROXY_STATUSES = frozenset({502, 503, 504})
+    # Set to True on the exception or response of a request that did not reach DocAPI.
+    MARK = "docapi_unreachable"
 
-    def __init__(self, connector: Connector, outages: OutageMonitor):
+    def __init__(self, connector: Connector, outage_monitor: OutageMonitor, api_url: str):
         self._connector = connector
-        self._outages = outages
+        self._outage_monitor = outage_monitor
+        self._probe_url = urljoin(api_url, self.PROBE_ROUTE.lstrip("/"))
+
+    @classmethod
+    def unreachable(cls, failure: Union[BaseException, AdapterResponse, WorkerResponse, None]) -> bool:
+        """Whether this failure came from a request that did not reach DocAPI."""
+        if isinstance(failure, WorkerResponse):
+            return cls.unreachable(failure.exception) or cls.unreachable(failure.error_adapter_response)
+        if isinstance(failure, AdapterResponse):
+            failure = failure.response
+        return getattr(failure, cls.MARK, False) is True
 
     def __getattr__(self, name):
         attribute = getattr(self._connector, name)
@@ -1326,19 +1394,50 @@ class _ReachabilityConnector:
             try:
                 response = attribute(url, *args, **kwargs)
             except (requests.ConnectionError, requests.Timeout) as error:
-                self._outages.unreachable(label, f"{type(error).__name__}: {error}")
+                slow = isinstance(error, requests.Timeout) and not isinstance(error, requests.ConnectTimeout)
+                if self._decide(label, f"{type(error).__name__}: {error}", slow):
+                    setattr(error, self.MARK, True)
                 raise
             status = getattr(response, "status_code", None)
-            # Only a 404's body is read: its code tells DocAPI's own 404 from a proxy's.
-            code = response_code(response) if status == 404 else None
-            if _is_unreachable_status(status, code):
-                self._outages.unreachable(
-                    label, f"HTTP {status}" + (" without a DocAPI code" if status == 404 else ""))
+            if self._from_proxy(response):
+                if self._decide(label, f"HTTP {status}" + (" without a DocAPI code" if status == 404 else ""),
+                                status == 504):
+                    setattr(response, self.MARK, True)
             else:
-                self._outages.reached()
+                self._outage_monitor.reached()
             return response
 
         return request
+
+    @classmethod
+    def _from_proxy(cls, response) -> bool:
+        """Whether an HTTP answer came from a proxy in front of DocAPI instead of DocAPI."""
+        status = getattr(response, "status_code", None)
+        # Only a 404's body is read: its code tells DocAPI's own 404 from a proxy's.
+        return status in cls.PROXY_STATUSES or (status == 404 and response_code(response) is None)
+
+    def _decide(self, label: str, error: str, maybe_slow: bool) -> bool:
+        """Whether a failed request means DocAPI is unreachable: it is, unless the
+        request may only have been slow and DocAPI answers the probe."""
+        if maybe_slow and self._probe():
+            logger.warning("%s failed (%s), but DocAPI answers: the request was too slow, DocAPI is reachable",
+                           label, error)
+            self._outage_monitor.reached()
+            return False
+        self._outage_monitor.unreachable(label, error)
+        return True
+
+    def _probe(self) -> bool:
+        """Whether DocAPI answers a small request."""
+        try:
+            timeout = getattr(self._connector, "timeout", None)
+            connect, read = timeout if isinstance(timeout, tuple) else (timeout, timeout)
+            read = self.PROBE_READ_TIMEOUT_SECONDS if read is None else min(read, self.PROBE_READ_TIMEOUT_SECONDS)
+            response = self._connector.get(self._probe_url, timeout=(connect, read))
+        except Exception:
+            logger.debug("The probe did not reach DocAPI", exc_info=True)
+            return False
+        return not self._from_proxy(response)
 
 
 class JobHistory:
