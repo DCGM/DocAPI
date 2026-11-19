@@ -89,10 +89,14 @@ class WorkerMailSender:
 
 # --- Formatting, shared with the monitors ---
 
+# Values start in this column, also in indented sections, so all rows line up.
+VALUE_COLUMN = 14
+
+
 def row(label: str, value: str, indent: str = "") -> str:
     return textwrap.fill(str(value), width=60,
-                         initial_indent=f"{indent}{label:<12}",
-                         subsequent_indent=indent + " " * 12,
+                         initial_indent=f"{indent}{label}".ljust(VALUE_COLUMN),
+                         subsequent_indent=" " * VALUE_COLUMN,
                          break_long_words=False, break_on_hyphens=False)
 
 

@@ -310,7 +310,7 @@ def test_the_alive_report_shows_the_worker_s_job_and_history(wrapper, tmp_path):
                            mail_receivers=["admin@example.org"], job_history_path=str(tmp_path / "history.jsonl"))
     worker.current_lease = types.SimpleNamespace(id="leased")
     worker.alive_monitor.send_alive()
-    assert "none active" in worker.worker_mail_sender.sender.send.call_args.args[1]  # A lease alone is not a job.
+    assert "active job    none\n" in worker.worker_mail_sender.sender.send.call_args.args[1]  # A lease alone is not a job.
     worker.current_job = types.SimpleNamespace(id="job-1")
     worker.alive_monitor.send_alive()
     body = worker.worker_mail_sender.sender.send.call_args.args[1]
