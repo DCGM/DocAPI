@@ -171,7 +171,7 @@ class Config:
         # The subject of every email the worker sends, a Python format string with {identity},
         # {hostname}, {time} (UTC datetime, e.g. {time:%Y-%m-%d}) and {status}, the kind of email:
         # FAILURE when the worker fails, DISCONNECTED, STILL DISCONNECTED or
-        # RECONNECTED for DocAPI outages and ALIVE for health mail (see their sections below).
+        # RECONNECTED for DocAPI outages and ALIVE for the regular status reports (see their sections below).
         self.MAIL_SUBJECT = self._str("MAIL_SUBJECT", "[{identity}] {status} ({hostname})")
 
         # DocAPI outages
@@ -180,20 +180,20 @@ class Config:
         # sent when mail is set up and DocAPI cannot be reached.
         # DISCONNECTED once DocAPI has been unreachable this long while the worker is idle;
         # an outage during a job is mailed at once.
-        self.DISCONNECTED_GRACE_SECONDS = self._nonnegative_seconds("DISCONNECTED_GRACE_SECONDS", 60)
+        self.OUTAGE_GRACE_SECONDS = self._nonnegative_seconds("OUTAGE_GRACE_SECONDS", 60)
         # A STILL DISCONNECTED reminder this often while DocAPI stays unreachable; RECONNECTED
         # follows when it is back.
-        self.DISCONNECTED_MAIL_INTERVAL_SECONDS = self._positive_seconds("DISCONNECTED_MAIL_INTERVAL_SECONDS", 3600)
+        self.OUTAGE_MAIL_INTERVAL_SECONDS = self._positive_seconds("OUTAGE_MAIL_INTERVAL_SECONDS", 3600)
 
-        # Health mail
+        # ALIVE mail
         ################################################################################################################
         # Emails with the subject status ALIVE, sent when mail is set up (MAIL_SERVER and
         # MAIL_RECEIVER_MAILS): one at startup, then one every interval, with the worker's
         # uptime, its last and active job and, with JOB_HISTORY_PATH, its job statistics.
         # Send an ALIVE email when the worker starts.
-        self.MAIL_STARTUP = self._bool("MAIL_STARTUP", True)
+        self.ALIVE_MAIL_STARTUP = self._bool("ALIVE_MAIL_STARTUP", True)
         # Seconds between the ALIVE emails; the default is one day (86400), 0 sends none.
-        self.MAIL_ALIVE_INTERVAL_SECONDS = self._nonnegative_seconds("MAIL_ALIVE_INTERVAL_SECONDS", 86400)
+        self.ALIVE_MAIL_INTERVAL_SECONDS = self._nonnegative_seconds("ALIVE_MAIL_INTERVAL_SECONDS", 86400)
 
         # Error messages
         ################################################################################################################

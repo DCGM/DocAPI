@@ -5,6 +5,7 @@ import os
 import re
 import ssl
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -13,7 +14,7 @@ from doc_api.tools.mail_sender import SECURITY_MODES, MailSender
 from doc_worker import config as config_module
 from doc_worker import dummy_worker
 from doc_worker.config import MAIL_SECURITY_MODES, Config
-from doc_worker.doc_worker_wrapper import DEFAULT_WORKER_ERRORS, DocWorkerWrapper, WorkerHealthConfig
+from doc_worker.doc_worker_wrapper import DEFAULT_WORKER_ERRORS, DocWorkerWrapper
 
 CONFIG_SOURCE = Path(config_module.__file__).read_text()
 ENV_EXAMPLE = Path(__file__).parents[1] / ".env_example"
@@ -32,7 +33,8 @@ CODE_DEFAULTS = {
     **{name.upper(): WRAPPER[name].default for name in (
         "base_dir", "job_history_path", "jobs_dir", "cleanup_job_dir", "engines_dir", "cleanup_old_engines",
         "polling_interval", "prefer_image_url", "prefer_alto_url", "prefer_page_url", "mail_subject",
-        "disconnected_grace_seconds", "disconnected_mail_interval_seconds")},
+        "alive_mail_startup", "alive_mail_interval_seconds", "outage_grace_seconds",
+        "outage_mail_interval_seconds")},
     "MAIL_RECEIVER_MAILS": list(WRAPPER["mail_receivers"].default),
     "WORKER_IDENTITY": WRAPPER["identity"].default,
     "WORKER_HOSTNAME": WRAPPER["hostname"].default,
@@ -40,8 +42,6 @@ CODE_DEFAULTS = {
         "port", "sender_name", "username", "password", "security", "ca_file", "send_receiver_limit",
         "send_receiver_window_seconds", "send_server_limit", "send_server_window_seconds")},
     "MAIL_TIMEOUT_SECONDS": MAIL["timeout"].default,
-    "MAIL_STARTUP": WorkerHealthConfig().mail_startup,
-    "MAIL_ALIVE_INTERVAL_SECONDS": WorkerHealthConfig().alive_interval_seconds,
     **ERRORS,
 }
 # Settings with no default in the code they feed: required, or off when unset.
@@ -83,7 +83,7 @@ def test_config_covers_every_argument():
     renamed = {"mail_receivers": "MAIL_RECEIVER_MAILS", "identity": "WORKER_IDENTITY",
                "hostname": "WORKER_HOSTNAME"}
     wrapper = {renamed.get(name, name.upper()) for name in WRAPPER} - {
-        "SELF", "CONNECTOR", "MAIL_SENDER", "HEALTH_CONFIG", "ERROR_MESSAGES"}
+        "SELF", "CONNECTOR", "MAIL_SENDER", "ERROR_MESSAGES"}
     # Like the server's mail settings: no extra headers, and the charset and content type
     # stay MailSender's, as the worker's emails are plain text.
     mail = {"MAIL_TIMEOUT_SECONDS" if name == "timeout" else f"MAIL_{name.upper()}" for name in MAIL} - {
@@ -155,7 +155,7 @@ def test_overrides_replace_the_environment(clean_env):
     ({"API_READ_TIMEOUT_SECONDS": "0"}, "API_READ_TIMEOUT_SECONDS must be a finite, positive number"),
     *(({"POLLING_INTERVAL": value}, "POLLING_INTERVAL must be at least 1 second")
       for value in ("0", "0.5", "-1", "inf")),
-    ({"DISCONNECTED_MAIL_INTERVAL_SECONDS": "inf"}, "DISCONNECTED_MAIL_INTERVAL_SECONDS must be a finite"),
+    ({"OUTAGE_MAIL_INTERVAL_SECONDS": "inf"}, "OUTAGE_MAIL_INTERVAL_SECONDS must be a finite"),
     ({"MAIL_SEND_SERVER_LIMIT": "-1"}, "MAIL_SEND_SERVER_LIMIT must be a nonnegative integer"),
     ({"MAIL_SECURITY": "tls"}, "MAIL_SECURITY must be one of"),
     ({"MAIL_SERVER": "smtp.example.org", "MAIL_RECEIVER_MAILS": "a@example.org"},
@@ -185,7 +185,7 @@ def test_from_config_builds_a_worker_without_mail(clean_env, tmp_path):
         "BASE_DIR": str(tmp_path / "data"), "API_READ_TIMEOUT_SECONDS": "30", "POLLING_INTERVAL": "2"}))
     assert worker._connector.api_key == "secret-key"
     assert worker._connector.timeout == (10, 30)
-    assert (worker.mail_sender, worker.mail_receivers, worker.health) == (None, [], None)
+    assert worker.mail is None and not worker.alive.on
     assert worker.identity == "Test worker" and worker.polling_interval == 2
     assert worker.jobs_dir == str(tmp_path / "data" / "jobs")
     assert worker.error_messages == dict(DEFAULT_WORKER_ERRORS)
@@ -199,18 +199,18 @@ def test_from_config_reads_each_error_message(clean_env):
     assert message.final_log_user == "Could not download the {kind} {filename}"
 
 
-def test_from_config_builds_mail_and_health(clean_env):
+def test_from_config_builds_mail_and_alive_reports(clean_env):
     worker = dummy_worker.DummyWorker.from_config(Config({
         **MAIL_SETUP, "MAIL_PASSWORD": "mail-password", "MAIL_SEND_SERVER_LIMIT": "5",
-        "MAIL_ALIVE_INTERVAL_SECONDS": "0"}))
+        "ALIVE_MAIL_INTERVAL_SECONDS": "0"}))
     # Building a sender opens no connection; the root conftest fails any that is opened.
-    sender = worker.mail_sender
+    sender = worker.mail.sender
     assert (sender.server, sender.sender_mail, sender.password) == ("smtp.example.org", "worker@example.org",
                                                                    "mail-password")
     assert sender.security == "ssl"  # auto with a password
     assert sender.send_server_limit == 5
-    assert worker.mail_receivers == ["admin@example.org"]
-    assert (worker.health.mail_startup, worker.health.alive_interval) == (True, 0)
+    assert worker.mail.receivers == ["admin@example.org"]
+    assert worker.alive.on and (worker.alive.mail_startup, worker.alive.mail_interval_seconds) == (True, 0)
 
 
 @pytest.mark.parametrize("extra", [
@@ -223,7 +223,7 @@ def test_complete_mail_setups_are_accepted(clean_env, extra):
         extra = {**extra, "MAIL_CA_FILE": ssl.get_default_verify_paths().cafile or ""}
         if not extra["MAIL_CA_FILE"]:
             pytest.skip("no system CA file to load")
-    assert dummy_worker.DummyWorker.from_config(Config({**MAIL_SETUP, **extra})).mail_sender is not None
+    assert dummy_worker.DummyWorker.from_config(Config({**MAIL_SETUP, **extra})).mail is not None
 
 
 class OwnConfig(Config):
@@ -295,7 +295,7 @@ def test_from_config_passes_a_subclass_its_own_settings(clean_env):
 def test_from_config_keeps_the_settings_of_config_for_the_wrapper(clean_env):
     worker = OwnWorker.from_config(OwnConfig({**MAIL_SETUP, "MAIL_PASSWORD": "secret"}))
     assert (worker.model_path, worker.own_mail_password) == ("model.bin", "own")
-    assert worker.mail_sender is not None
+    assert worker.mail is not None
 
 
 def test_a_setting_without_a_parameter_fails(clean_env):
@@ -308,7 +308,7 @@ def test_a_setting_without_a_parameter_fails(clean_env):
 def test_an_overridden_subclass_args_builds_its_own_arguments(clean_env):
     worker = LoadingWorker.from_config(OwnConfig({**MAIL_SETUP, "MODEL_PATH": "other.bin"}))
     assert worker.model == "loaded other.bin"
-    assert worker.mail_sender is not None and worker.health is not None  # Built as usual.
+    assert worker.mail is not None and worker.alive.on  # Built as usual.
     with pytest.raises(TypeError, match="multiple values"):
         WrapperSettingWorker.from_config(Config())
 
@@ -335,3 +335,13 @@ def test_dummy_worker_arguments_override_the_environment(clean_env, tmp_path):
     assert config.BASE_DIR == str(tmp_path)
     with pytest.raises(ValueError, match="POLLING_INTERVAL must be at least 1 second"):
         dummy_worker.build_config(dummy_worker.parse_args(["--polling-interval", "0.5"]))
+
+
+@pytest.mark.parametrize("environ,state", [({}, "off"), (MAIL_SETUP, "on")])
+def test_the_dummy_worker_starts_from_its_command_line(clean_env, monkeypatch, caplog, environ, state):
+    set_env(clean_env, environ)
+    monkeypatch.setattr("sys.argv", ["dummy_worker", "--polling-interval", "2"])
+    with mock.patch.object(dummy_worker.DummyWorker, "start") as start, caplog.at_level("INFO"):
+        dummy_worker.main()
+    start.assert_called_once()
+    assert f"Worker mail: {state}" in caplog.text

@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from doc_api.connector import Connector
-from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerHealthConfig, WorkerResponse
+from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 
 
 class Worker(DocWorkerWrapper):
@@ -80,7 +80,7 @@ def test_the_identity_replaces_a_connector_user_agent(tmp_path):
 def test_the_startup_mail_uses_the_key_label(tmp_path):
     worker = make_worker(tmp_path, me("OCR worker prod"), mail_sender=mock.Mock(),
                          mail_receivers=["admin@example.org"], hostname="host",
-                         health_config=WorkerHealthConfig(alive_interval_seconds=0))
+                         alive_mail_interval_seconds=0)
     run(worker)
-    subject = worker.mail_sender.send.call_args.args[0]
+    subject = worker.mail.sender.send.call_args.args[0]
     assert subject == "[OCR worker prod] ALIVE (host)"
