@@ -14,11 +14,12 @@ logger = logging.getLogger(__name__)
 class AliveMonitor:
     """Mails ALIVE at startup and then every interval, on a thread of its own.
 
-    A report gives the uptime, the time since the last pipeline returned, the
-    active job and, with a job history, the job statistics. It shows that the
-    process lives, not that processing progresses. Without mail or receivers it
-    sends nothing and starts no thread. It does not replace DocAPI's job outcome
-    notifications, and failures are mailed whether or not it is on.
+    A report gives the uptime, the time since the worker last polled for a
+    job, the active job and, with a job history, the job statistics. It shows
+    that the process lives, not that processing progresses. _message() holds
+    every text of the report. Without mail or receivers it sends nothing and
+    starts no thread. It does not replace DocAPI's job outcome notifications,
+    and failures are mailed whether or not it is on.
     """
 
     # The thread that sends the periodic ALIVE mail.
@@ -74,33 +75,54 @@ class AliveMonitor:
         now = time.monotonic()
         with self._lock:
             last_return = self.last_pipeline_return
+        uptime = now - self.started
+        since_last_poll = None if last_return is None else now - last_return
         active_job, job_history = self.active_job(), self.job_history()
+        try:
+            statistics = None if job_history is None else job_history.statistics()
+            message = self._message(uptime, since_last_poll, active_job, statistics)
+        except Exception:
+            logger.exception("Could not read worker job history statistics")
+            message = self._message(uptime, since_last_poll, active_job, None, statistics_unavailable=True)
+        self.worker_mail_sender.send("ALIVE", message)
+
+    @staticmethod
+    def _message(uptime: float, since_last_poll: Optional[float], active_job: Optional[str],
+                 statistics: Optional[dict], statistics_unavailable: bool = False) -> str:
+        """The text of an ALIVE mail; every text of these mails is here."""
         lines = [
-            row("uptime", duration(now - self.started)),
-            row("last job", "none yet" if last_return is None else f"{duration(now - last_return)} ago"),
-            row("active job", active_job if active_job is not None else "none active"),
+            row("uptime", duration(uptime)),
+            row("last poll", "none yet" if since_last_poll is None else f"{duration(since_last_poll)} ago"),
+            row("active job", "none" if active_job is None else active_job),
         ]
-        if job_history is not None:
-            try:
-                stats = job_history.statistics()
-                if stats.get("invalid_records", 0):
-                    lines += ["", "history", row("unreadable", str(stats["invalid_records"]) + " records; inspect worker log", " ")]
-                for name, label in (("last_24_hours", "last 24 hours"), ("last_7_days", "last 7 days"),
-                                    ("total", "all time")):
-                    window = stats[name]
-                    counts = window["outcomes"]
-                    lines += ["", label,
-                              row("attempts", window["attempts"], " "),
-                              row("unique jobs", window["jobs"], " ")]
-                    for outcome, outcome_label in (("ok", "ok"), ("error", "error"), ("fail", "failed"),
-                                                   ("interrupted", "interrupted"), ("crashed", "crashed")):
-                        lines.append(row(outcome_label, counts[outcome], " "))
-                    lines.append(row("report fail", window["report_failures"], " "))
-                    lines.append(row("runtime", duration(window["duration_seconds"]), " "))
-            except Exception:
-                logger.exception("Could not read worker job history statistics")
-                lines += ["", "history", row("statistics", "unavailable; inspect worker log", " ")]
-        self.worker_mail_sender.send("ALIVE", "\n".join(lines) + "\n")
+        if statistics_unavailable:
+            lines += ["", "job history", row("statistics", "unavailable; see the worker log", " ")]
+        elif statistics is not None:
+            for name, label in (("last_24_hours", "last 24 hours"), ("last_7_days", "last 7 days"),
+                                ("total", "all time")):
+                window = statistics[name]
+                outcomes = window["outcomes"]
+                lines += ["", label,
+                          row("attempts", window["attempts"], " "),
+                          row("jobs", window["jobs"], " ")]
+                for outcome, outcome_label in (("ok", "ok"), ("error", "error"), ("fail", "failed"),
+                                               ("interrupted", "interrupted"), ("crashed", "crashed")):
+                    lines.append(row(outcome_label, outcomes[outcome], " "))
+                lines += [row("unreported", window["report_failures"], " "),
+                          row("runtime", duration(window["duration_seconds"]), " ")]
+            # Unreadable history lines are left out of every count; only all time
+            # spans them all.
+            if statistics.get("invalid_records", 0):
+                lines.append(row("unreadable", statistics["invalid_records"], " "))
+            new = statistics.get("new_invalid_records", 0)
+            if new:
+                lines += ["", "job history",
+                          row("file", statistics.get("path", "unknown"), " "),
+                          row("unreadable", f"{new} new {'line' if new == 1 else 'lines'}, "
+                                            f"left out of the statistics", " ")]
+                lines += [row(f"line {invalid['line']}", invalid["reason"], " ")
+                          for invalid in statistics.get("new_invalid_lines", ())]
+        return "\n".join(lines)
 
     def _run(self):
         while not self._stop.wait(self.mail_interval_seconds):

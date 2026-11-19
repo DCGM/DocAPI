@@ -36,7 +36,7 @@ def test_startup_mail_and_periodic_alive_reports(alive):
     alive._run()
     subject, body = _sent(alive.worker_mail_sender)[-1]
     assert "ALIVE" in subject
-    assert "last job" in body and "active job" in body and "job-1" in body
+    assert "last poll" in body and "active job" in body and "job-1" in body
     alive.close()
     alive._stop.set.assert_called_once()
     thread.return_value.join.assert_called_once()
@@ -71,7 +71,7 @@ def test_invalid_intervals_are_rejected(value):
 def test_alive_mail_identifies_idle_state(alive):
     alive.send_alive()
     body = _sent(alive.worker_mail_sender)[0][1]
-    assert "none active" in body and "job-1" not in body
+    assert "active job none" in " ".join(body.split()) and "job-1" not in body
 
 
 def test_startup_and_periodic_reports_share_the_same_statistics(alive, tmp_path):
@@ -91,7 +91,7 @@ def test_startup_and_periodic_reports_share_the_same_statistics(alive, tmp_path)
         for label in ("all time", "last 7 days", "last 24 hours"):
             section = body.split("\n" + label + "\n", 1)[1].split("\n\n", 1)[0]
             rows = [" ".join(line.split()) for line in section.splitlines()]
-            assert "attempts 1" in rows and "unique jobs 1" in rows and "ok 1" in rows
+            assert "attempts 1" in rows and "jobs 1" in rows and "unreported 0" in rows and "ok 1" in rows
 
 
 def test_corrupt_history_does_not_prevent_alive_mail(alive):
@@ -99,7 +99,22 @@ def test_corrupt_history_does_not_prevent_alive_mail(alive):
     history.statistics.side_effect = ValueError("corrupt history")
     alive.job_history = lambda: history
     alive.send_alive()
-    assert "unavailable; inspect worker log" in _sent(alive.worker_mail_sender)[0][1]
+    assert "unavailable; see the worker log" in _sent(alive.worker_mail_sender)[0][1]
+
+
+def test_unreadable_history_lines_are_listed_once_and_then_only_counted(alive, tmp_path):
+    from doc_worker.doc_worker_wrapper import JobHistory
+    path = tmp_path / "history.jsonl"
+    path.write_text("{broken\n")
+    history = JobHistory(path)
+    alive.job_history = lambda: history
+    alive.send_alive()
+    alive.send_alive()
+    first, second = (" ".join(body.split()) for _, body in _sent(alive.worker_mail_sender))
+    assert first.endswith(f"runtime 0s unreadable 1 job history file {path} "
+                          "unreadable 1 new line, left out of the statistics "
+                          "line 1 Expecting property name enclosed in double quotes (column 2)")
+    assert second.endswith("runtime 0s unreadable 1") and "job history" not in second
 
 
 def test_alive_report_wraps_description_and_uses_compact_durations(alive):
@@ -109,7 +124,7 @@ def test_alive_report_wraps_description_and_uses_compact_durations(alive):
     with mock.patch("time.monotonic", return_value=172800):
         alive.send_alive()
     body = _sent(alive.worker_mail_sender)[0][1]
-    assert "2d 0h 0m 0s" in body and "4m 5s ago" in body
+    assert "2d 0h 0m 0s" in body and "last poll 4m 5s ago" in " ".join(body.split()) and "4m 5s ago" in body
     assert all(len(line) <= 60 for line in body.splitlines())
 
 

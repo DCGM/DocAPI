@@ -5,6 +5,7 @@ import zipfile
 import time
 import shutil
 import glob
+import functools
 import inspect
 import traceback
 import math
@@ -30,7 +31,7 @@ from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
 from doc_api.tools.mail_sender import MailSender
 from doc_worker.alive_monitor import AliveMonitor
-from doc_worker.outage_monitor import OutageMonitor
+from doc_worker.outage_monitor import OutageMonitor, SettledJob
 from doc_worker.worker_mail_sender import DEFAULT_MAIL_SUBJECT, WorkerMailSender, check_mail_subject
 
 from doc_worker.config import Config
@@ -1267,7 +1268,7 @@ class DocWorkerWrapper(ABC):
         lost = self._lost_report
         if lost is None:
             return True
-        upload_note = ""
+        results, results_detail = None, ""
         if lost.result_zip_path is not None:
             try:
                 result = self.adapter.post_result(lost.result_zip_path, job_id=lost.job_id)
@@ -1275,39 +1276,40 @@ class DocWorkerWrapper(ABC):
                 if self._unreachable(exception):
                     return False
                 logger.exception("Could not upload the results of job %s to DocAPI", lost.job_id)
-                upload_note = f"its results could not be uploaded ({type(exception).__name__}: {exception}); "
+                results, results_detail = "not_uploaded", f"{type(exception).__name__}: {exception}"
                 lost.response = self._make_error_response("upload_results_to_server", exception=exception)
             else:
                 if self._unreachable(result):
                     return False
                 if result.is_success:
                     logger.info("Uploaded the results of job %s after the outage", lost.job_id)
+                    results = "uploaded"
                 else:
                     logger.warning("DocAPI did not take the results of job %s after the outage. "
                                    "Status: %s, Code: %s", lost.job_id, result.status, result.code)
-                    upload_note = f"its results were not taken (status {result.status}, code {result.code}); "
+                    results, results_detail = "not_taken", f"status {result.status}, code {result.code}"
                     lost.response = self._make_error_response("upload_results", error_adapter_response=result)
             # Only the report is left, should DocAPI drop out again.
             lost.result_zip_path = None
-        status = lost.response.status.value
+        settled = functools.partial(SettledJob, lost.job_id, lost.response.status.value,
+                                    results=results, results_detail=results_detail)
         try:
             result = self._send_job_report(lost.response, lost.job_id)
         except Exception as exception:
             if self._unreachable(exception):
                 return False
             logger.exception("Could not report the outcome of job %s to DocAPI", lost.job_id)
-            return self._lost_report_settled(
-                f"{lost.job_id}: {upload_note}its {status} outcome could not be reported: {exception}")
+            return self._lost_report_settled(settled(report="not_reported",
+                                                     report_detail=f"{type(exception).__name__}: {exception}"))
         if self._unreachable(result):
             return False
         if not result.is_success:
             # The server requeued or failed the job meanwhile; nothing changes.
             logger.warning("DocAPI did not accept the outcome of job %s after the outage. Status: %s, Code: %s",
                            lost.job_id, result.status, result.code)
-            return self._lost_report_settled(
-                f"{lost.job_id}: {upload_note}its {status} outcome was not accepted (status {result.status}, "
-                f"code {result.code}); DocAPI had already requeued or failed the job")
-        logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, status)
+            return self._lost_report_settled(settled(report="not_accepted",
+                                                     report_detail=f"status {result.status}, code {result.code}"))
+        logger.info("Reported the outcome of job %s (%s) after the outage", lost.job_id, lost.response.status.value)
         if (self.cleanup_job_dir and lost.response.status == WorkerResponseStatus.OK
                 and lost.job_dir and os.path.exists(lost.job_dir)):
             try:
@@ -1315,7 +1317,7 @@ class DocWorkerWrapper(ABC):
                 logger.debug(f"Cleaned up job directory: {lost.job_dir}")
             except Exception:
                 logger.exception("Failed to clean up job directory")
-        return self._lost_report_settled(f"{lost.job_id}: {upload_note}reported as {status} after the outage")
+        return self._lost_report_settled(settled(report="reported"))
 
     @staticmethod
     def _unreachable(failure: Union[BaseException, AdapterResponse, WorkerResponse, None]) -> bool:
@@ -1323,9 +1325,9 @@ class DocWorkerWrapper(ABC):
         connector decided it; see _ReachabilityConnector."""
         return _ReachabilityConnector.unreachable(failure)
 
-    def _lost_report_settled(self, note: str) -> bool:
+    def _lost_report_settled(self, settled: SettledJob) -> bool:
         self._lost_report = None
-        self.outage_monitor.report_settled(note)
+        self.outage_monitor.report_settled(settled)
         return True
 
 
@@ -1448,6 +1450,9 @@ class JobHistory:
     exceptions, URLs and engine definitions are excluded from both files.
     """
     _statuses = ("ok", "error", "fail", "interrupted", "crashed")
+    # How many of the unreadable lines found since the last statistics() are kept,
+    # with their numbers and reasons, for the next ALIVE report.
+    INVALID_LINES_KEPT = 5
 
     def __init__(self, path):
         self.path = Path(path).expanduser()
@@ -1455,6 +1460,10 @@ class JobHistory:
         if self.stats_path == self.path:
             self.stats_path = self.path.with_name(self.path.name + ".stats.json")
         self._lock = threading.Lock()
+        # Unreadable lines found since the last statistics(); kept in memory only,
+        # so each is reported once.
+        self._new_invalid_count = 0
+        self._new_invalid_lines = []
 
     @classmethod
     def _validate_entry(cls, entry):
@@ -1473,14 +1482,15 @@ class JobHistory:
 
     def _empty_stats(self, now):
         return {
-            "version": 2, "history_bytes": 0, "as_of": now.isoformat(), "invalid_records": 0,
+            "version": 3, "history_bytes": 0, "history_lines": 0, "as_of": now.isoformat(),
+            "invalid_records": 0,
             "total": {"attempts": 0, "job_ids": {}, "outcomes": dict.fromkeys(self._statuses, 0),
                       "duration_seconds": 0.0, "report_failures": 0},
             "recent": [],
         }
 
     def _validate_stats(self, data, size, now, rebuild_on_clock_change):
-        if data["version"] != 2 or type(data["history_bytes"]) is not int or not 0 <= data["history_bytes"] <= size:
+        if data["version"] != 3 or type(data["history_bytes"]) is not int or not 0 <= data["history_bytes"] <= size:
             raise ValueError("Invalid worker statistics cache")
         as_of = datetime.fromisoformat(data["as_of"])
         if as_of.tzinfo is None or (rebuild_on_clock_change and now < as_of):
@@ -1489,7 +1499,7 @@ class JobHistory:
         total = data["total"]
         if not isinstance(total["job_ids"], dict) or not isinstance(data["recent"], list):
             raise ValueError("Invalid worker statistics cache")
-        counts = [total["attempts"], total["report_failures"], data["invalid_records"],
+        counts = [total["attempts"], total["report_failures"], data["invalid_records"], data["history_lines"],
                   *(total["outcomes"][status] for status in self._statuses)]
         if any(type(count) is not int or count < 0 for count in counts):
             raise ValueError("Invalid worker statistics counts")
@@ -1512,6 +1522,20 @@ class JobHistory:
             data["recent"].append({name: entry.get(name) for name in
                                    ("job_id", "finished_at", "status", "duration_seconds", "reported_to_api")})
 
+    def _invalid_line(self, data, error):
+        """Count a history line the statistics cannot use, and keep its number and
+        reason until the next statistics()."""
+        number = data["history_lines"]
+        if isinstance(error, json.JSONDecodeError):
+            reason = f"{error.msg} (column {error.colno})"
+        else:
+            reason = f"missing field {error}" if isinstance(error, KeyError) else str(error)
+        data["invalid_records"] += 1
+        self._new_invalid_count += 1
+        self._new_invalid_lines = (self._new_invalid_lines
+                                   + [{"line": number, "reason": reason}])[-self.INVALID_LINES_KEPT:]
+        logger.warning("Ignoring line %d of worker history %s: %s", number, self.path, reason)
+
     def _load_stats(self, now, *, rebuild_on_clock_change=True):
         size = self.path.stat().st_size if self.path.exists() else 0
         try:
@@ -1532,13 +1556,13 @@ class JobHistory:
             with self.path.open("rb") as stream:
                 stream.seek(data["history_bytes"])
                 for line in stream:
+                    data["history_lines"] += 1
                     if line.strip():
                         try:
                             entry = json.loads(line)
                             self._validate_entry(entry)
-                        except (ValueError, TypeError, KeyError, UnicodeError):
-                            data["invalid_records"] += 1
-                            logger.warning("Ignoring malformed worker history record in %s", self.path)
+                        except (ValueError, TypeError, KeyError, UnicodeError) as error:
+                            self._invalid_line(data, error)
                         else:
                             self._accumulate(data, entry, cutoff)
                 data["history_bytes"] = stream.tell()
@@ -1592,23 +1616,33 @@ class JobHistory:
                 stream.flush()
                 os.fsync(stream.fileno())
                 data["history_bytes"] = stream.tell()
+                data["history_lines"] += 1
             self._accumulate(data, entry, finished_at - timedelta(days=7))
             # History is authoritative. If this replacement fails, the next
             # operation consumes the missing tail rather than double-counting.
             self._save_stats(data)
 
     def statistics(self, now=None):
-        """Read the cache and tally only recent records for rolling windows."""
+        """Read the cache and tally only recent records for rolling windows.
+
+        new_invalid_records counts the unreadable lines found since the last call,
+        and new_invalid_lines holds the latest of them with their numbers and
+        reasons; each is returned once.
+        """
         now = datetime.now(timezone.utc) if now is None else now
         with self._lock:
             data = self._load_stats(now)
             if self.path.exists():
                 self._save_stats(data)
+            new_invalid_records, new_invalid_lines = self._new_invalid_count, self._new_invalid_lines
+            self._new_invalid_count, self._new_invalid_lines = 0, []
         total = data["total"]
         result = {"total": {"attempts": total["attempts"], "jobs": len(total["job_ids"]),
                             "outcomes": dict(total["outcomes"]), "duration_seconds": total["duration_seconds"],
                             "report_failures": total["report_failures"]},
-                  "invalid_records": data["invalid_records"]}
+                  "invalid_records": data["invalid_records"],
+                  "new_invalid_records": new_invalid_records, "new_invalid_lines": new_invalid_lines,
+                  "path": str(self.path)}
         for name, days in (("last_7_days", 7), ("last_24_hours", 1)):
             cutoff = now - timedelta(days=days)
             selected = [entry for entry in data["recent"] if

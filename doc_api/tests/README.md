@@ -1029,7 +1029,7 @@ disables periodic mail. Without mail or receivers it sends nothing and starts
 no thread. Startup uses the same report as periodic checks. Invalid intervals
 are rejected before creating directories or polling. Reports use short aligned
 rows and separate time-window sections for mobile reading. They report process
-uptime and the last pipeline return, rather than guaranteeing that processing
+uptime and the last poll for a job, rather than guaranteeing that processing
 is progressing. ALIVE mail is independent of job final reports.
 
 - [x] `WorkerMailSender` subject, header, receivers, mail off without receivers, contained SMTP failures and invalid subjects. [`test_worker_mail_sender.py`](../../doc_worker/tests/test_worker_mail_sender.py).
@@ -1088,7 +1088,7 @@ Malformed history lines are preserved, skipped with a warning, and counted in
 the ALIVE report. History/cache write failures are logged without changing the
 processing outcome. Rolling windows use completion timestamps.
 
-- [x] Persistence, retry counts, time windows, append-only writes, cache reconstruction/tail recovery, corrupt records and concurrent statistics reads. [`test_job_history.py`](../../doc_worker/tests/test_job_history.py).
+- [x] Persistence, retry counts, time windows, append-only writes, cache reconstruction/tail recovery, corrupt records reported once with their line numbers and reasons and then only counted, and concurrent statistics reads. [`test_job_history.py`](../../doc_worker/tests/test_job_history.py).
 - [x] Pipeline outcomes, interruptions, crashes, idle polls and history failures. [`test_job_finished.py`](../../doc_worker/tests/test_job_finished.py).
 - [x] Identical startup/periodic alive reports and graceful handling of unavailable statistics. [`test_alive_monitor.py`](../../doc_worker/tests/test_alive_monitor.py).
 
@@ -1099,7 +1099,7 @@ and failure emails when a mail sender is configured. Success is sent only after 
 Reporting returns a boolean and never replaces the original pipeline response
 or reports a different state as a fallback. Reporting failures send a worker failure email,
 retain local job files, and are recorded separately as `reported_to_api`
-in history and `report fail` in alive summaries. Callbacks receive the original
+in history and as `unreported` in ALIVE reports. Callbacks receive the original
 pipeline response.
 Implementations return their final logs directly through
 `WorkerResponse.ok/error/fail(final_log=..., final_log_user=...)`. The wrapper

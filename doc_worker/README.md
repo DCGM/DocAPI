@@ -138,7 +138,10 @@ mail is set up:
   large upload: it fails the job as an ordinary error, not as an outage. Raise
   `API_READ_TIMEOUT_SECONDS`, and the proxy's timeout, for large results.
 - **That the worker is alive:** an ALIVE email at startup and then once a
-  day, with its uptime and its last and active job.
+  day, with its uptime, when it last polled for a job and its active job.
+
+The texts of the outage and ALIVE emails are each in one place,
+`OutageMonitor._message()` and `AliveMonitor._message()`.
 
 To get the emails, set the mail server, a sender and the receivers; the
 worker refuses to start with only some of them:
@@ -153,7 +156,12 @@ MAIL_PASSWORD=...
 ```
 
 Optional:
-- `JOB_HISTORY_PATH` adds job statistics to the ALIVE emails;
+- `JOB_HISTORY_PATH` adds job statistics to the ALIVE emails. A line of
+  the history file that cannot be read is left out of them: the next ALIVE
+  email lists it with its line number and reason, and later ones only count
+  it under `all time`. To clear the count, fix or remove the line and delete
+  the statistics cache beside the file (`<name>.stats.json`), which is then
+  rebuilt;
 - `ALIVE_MAIL_STARTUP` and `ALIVE_MAIL_INTERVAL_SECONDS` change when they are sent;
 - `WORKER_IDENTITY` names the worker, instead of its API key's label;
 - `MAIL_SUBJECT` sets the subject of the emails, by default

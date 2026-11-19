@@ -12,7 +12,7 @@ import pytest
 import requests
 
 from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
-from doc_worker.outage_monitor import OutageMonitor
+from doc_worker.outage_monitor import OutageMonitor, SettledJob
 from doc_worker.worker_mail_sender import WorkerMailSender
 
 
@@ -150,14 +150,14 @@ def test_a_long_idle_outage_is_mailed_once_with_reminders_and_a_reconnect(worker
     assert _subjects(worker)[-1] == "[OCR worker] STILL DISCONNECTED (host)"
     reminder = _mails(worker)[-1][1]
     # Sent an interval after DISCONNECTED, which went out 60 s into the outage.
-    assert "DocAPI is still unreachable." in reminder and "for 1h 1m 0s" in reminder and "5 requests" in reminder
+    assert "DocAPI is still unreachable." in reminder and "for 1h 1m 0s" in reminder and "failed" not in reminder
 
     server.state = "up"
     worker.run_job_pipeline()
     assert _subjects(worker)[-1] == "[OCR worker] RECONNECTED (host)"
     reconnected = _mails(worker)[-1][1]
     assert "DocAPI is reachable again." in reconnected and "lasted 1h 1m 0s" in reconnected
-    assert "5 requests" in reconnected
+    assert "failed" not in reconnected and "job id" not in reconnected
     worker.run_job_pipeline()
     assert len(_subjects(worker)) == 3
 
@@ -229,7 +229,7 @@ def test_an_outage_during_a_job_is_mailed_at_once_and_its_outcome_reported_first
     _lose_a_job(worker, server, WorkerResponse.error(final_log="download failed"))
     # No grace period during a job.
     assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
-    assert "job-1: it cannot be finished" in _mails(worker)[0][1]
+    assert "job id job-1 Its results and outcome are sent once DocAPI is reachable again" in _mails(worker)[0][1]
     assert "PATCH /v1/jobs/job-1" in _mails(worker)[0][1]
 
     # While DocAPI stays down the worker retries the report and does not poll.
@@ -243,14 +243,14 @@ def test_an_outage_during_a_job_is_mailed_at_once_and_its_outcome_reported_first
     # The outcome goes first, then the worker polls again.
     assert server.calls == [("PATCH", "jobs/job-1"), ("POST", "jobs/lease")]
     assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)", "[OCR worker] RECONNECTED (host)"]
-    assert "job-1: reported as error after the outage" in _mails(worker)[-1][1]
+    assert "job id job-1 outcome reported as error" in _mails(worker)[-1][1]
 
 
 def test_a_processed_job_whose_finish_was_lost_is_reported_done(worker, server):
     _lose_a_job(worker, server, WorkerResponse.ok(final_log="all pages"))
     server.state = "up"
     worker.run_job_pipeline()
-    assert "job-1: reported as ok after the outage" in _mails(worker)[-1][1]
+    assert "job id job-1 outcome reported as ok" in _mails(worker)[-1][1]
 
 
 def test_an_outcome_the_server_no_longer_accepts_changes_nothing(worker, server):
@@ -258,7 +258,8 @@ def test_an_outcome_the_server_no_longer_accepts_changes_nothing(worker, server)
     server.state, server.report_status = "up", 409
     worker.run_job_pipeline()
     reconnected = _mails(worker)[-1][1]
-    assert "was not accepted (status 409" in reconnected and "already requeued or" in reconnected
+    assert "job id job-1 outcome error, not accepted by DocAPI (status 409" in reconnected
+    assert "DocAPI had already requeued or failed the job" in reconnected
     # It is not retried.
     server.calls.clear()
     worker.run_job_pipeline()
@@ -275,7 +276,7 @@ def test_an_outcome_report_answered_by_the_proxy_is_held(worker, server):
 
     server.state = "up"
     worker.run_job_pipeline()
-    assert "job-1: reported as ok after the outage" in _mails(worker)[-1][1]
+    assert "job id job-1 outcome reported as ok" in _mails(worker)[-1][1]
 
 
 @pytest.mark.parametrize("status", [500, 404])
@@ -328,10 +329,10 @@ def test_reconnected_waits_for_a_pending_report():
     outages.reached()
     assert [call.args[0] for call in mail.sender.send.call_args_list] == ["[worker abc] DISCONNECTED (host)"]
     pending[0] = False
-    outages.report_settled("job-1: reported as ok after the outage")
+    outages.report_settled(SettledJob("job-1", "ok"))
     subject, body = mail.sender.send.call_args.args[:2]
     assert subject == "[worker abc] RECONNECTED (host)"
-    assert "job-1: reported as ok after the outage" in " ".join(body.split())
+    assert "job id job-1 outcome reported as ok" in " ".join(body.split())
 
 
 @pytest.mark.parametrize("settings", [dict(grace_seconds=-1), dict(mail_interval_seconds=0)])
@@ -408,7 +409,7 @@ def test_results_an_outage_kept_from_docapi_are_uploaded_after_it_without_proces
     assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
     assert server.reported_states == ["done"]
     assert _subjects(pipeline)[-1] == "[OCR worker] RECONNECTED (host)"
-    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+    assert "job id job-1 results uploaded after the outage outcome reported as ok" in _mails(pipeline)[-1][1]
     assert _job_dirs(pipeline) == []
 
 
@@ -424,7 +425,7 @@ def test_uploaded_results_are_not_uploaded_again_when_the_report_meets_another_o
     server.calls.clear()
     pipeline.run_job_pipeline()
     assert server.calls == [("PATCH", "jobs/job-1")]
-    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+    assert "job id job-1 outcome reported as ok" in _mails(pipeline)[-1][1]
 
 
 def test_results_docapi_rejects_after_the_outage_are_reported_as_an_error_not_uploaded_again(pipeline, server):
@@ -436,8 +437,8 @@ def test_results_docapi_rejects_after_the_outage_are_reported_as_an_error_not_up
     assert server.calls == [("POST", "jobs/job-1/result"), ("PATCH", "jobs/job-1")]
     assert server.reported_states == ["error"]
     reconnected = _mails(pipeline)[-1][1]
-    assert "job-1: its results were not taken (status 409" in reconnected
-    assert "reported as error after the outage" in reconnected
+    assert "job id job-1 results not taken by DocAPI (status 409" in reconnected
+    assert "the job is reported as error instead outcome reported as error" in reconnected
     assert _job_dirs(pipeline)
     assert pipeline._lost_report is None
 
@@ -447,7 +448,8 @@ def test_an_outcome_docapi_rejects_after_the_upload_keeps_the_job_directory(pipe
     pipeline.run_job_pipeline()
     server.state, server.report_status = "up", 409
     pipeline.run_job_pipeline()
-    assert "job-1: its ok outcome was not accepted (status 409" in _mails(pipeline)[-1][1]
+    reconnected = _mails(pipeline)[-1][1]
+    assert "results uploaded after the outage outcome ok, not accepted by DocAPI (status 409" in reconnected
     assert _job_dirs(pipeline)
 
 
@@ -470,7 +472,7 @@ def test_a_job_whose_finish_was_lost_is_cleaned_up_once_reported(pipeline, serve
     server.calls.clear()
     pipeline.run_job_pipeline()
     assert server.calls == [("PATCH", "jobs/job-1")]
-    assert "job-1: reported as ok after the outage" in _mails(pipeline)[-1][1]
+    assert "job id job-1 outcome reported as ok" in _mails(pipeline)[-1][1]
     assert _job_dirs(pipeline) == []
 
 
@@ -480,7 +482,7 @@ def test_a_held_error_keeps_the_job_directory(pipeline, server):
     pipeline.run_job_pipeline()
     server.report_status = 200
     pipeline.run_job_pipeline()
-    assert "job-1: reported as error after the outage" in _mails(pipeline)[-1][1]
+    assert "job id job-1 outcome reported as error" in _mails(pipeline)[-1][1]
     assert _job_dirs(pipeline)
 
 
@@ -506,8 +508,8 @@ def test_a_slow_upload_after_an_outage_is_reported_as_an_error(pipeline, server)
     assert server.calls == [("POST", "jobs/job-1/result"), ("GET", "me"), ("PATCH", "jobs/job-1")]
     assert server.reported_states == ["error"]
     reconnected = _mails(pipeline)[-1][1]
-    assert "job-1: its results could not be uploaded (ReadTimeout: Read timed out)" in reconnected
-    assert "reported as error after the outage" in reconnected
+    assert "job id job-1 results could not be uploaded (ReadTimeout: Read timed out)" in reconnected
+    assert "the job is reported as error instead outcome reported as error" in reconnected
     # The upload is not tried again.
     server.calls.clear()
     pipeline.run_job_pipeline()

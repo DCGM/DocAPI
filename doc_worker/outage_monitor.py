@@ -19,13 +19,24 @@ class _ServerOutage:
     started_at: datetime
     started_monotonic: float
     job_id: Optional[str]           # The job being processed when it started.
-    failed_requests: int = 0
     last_request: str = ""
     last_error: str = ""
     mailed: bool = False            # DISCONNECTED was sent.
     last_mail_monotonic: float = 0.0
     ended_at: Optional[datetime] = None
     ended_monotonic: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class SettledJob:
+    """What became of a job whose outcome waited for DocAPI through an outage;
+    the RECONNECTED mail shows it."""
+    job_id: str
+    outcome: str                    # The outcome's status, e.g. "ok" or "error".
+    report: str = "reported"        # "reported", "not_reported" or "not_accepted".
+    report_detail: str = ""         # Why not: the error, or DocAPI's status and code.
+    results: Optional[str] = None   # None if no results waited; else "uploaded", "not_uploaded" or "not_taken".
+    results_detail: str = ""        # Why not: the error, or DocAPI's status and code.
 
 
 class OutageMonitor:
@@ -39,7 +50,8 @@ class OutageMonitor:
 
     When a job's outcome could not be reported, the worker reports it once DocAPI
     is back. RECONNECTED waits for that while report_pending() is true, and then
-    carries the note the worker passes to report_settled().
+    shows the SettledJob the worker passes to report_settled(). _message() holds
+    every text of the outage mails.
     """
 
     def __init__(self, worker_mail_sender: Optional[WorkerMailSender], grace_seconds: float = 60,
@@ -78,7 +90,6 @@ class OutageMonitor:
             outage = self._outage
             if outage is None or outage.ended_at is not None:
                 outage = self._outage = _ServerOutage(now, now_monotonic, None if job is None else str(job))
-            outage.failed_requests += 1
             outage.last_request, outage.last_error = request, error
             status = None
             if not outage.mailed:
@@ -110,9 +121,9 @@ class OutageMonitor:
         if not waiting:
             self._mail_reconnected(outage)
 
-    def report_settled(self, note: str) -> None:
+    def report_settled(self, settled: SettledJob) -> None:
         """The outcome that waited for DocAPI was reported, or will never be: mail
-        RECONNECTED with this note on the job, if DocAPI is back."""
+        RECONNECTED with what became of the job, if DocAPI is back."""
         with self._lock:
             outage = self._outage
             if outage is not None and outage.ended_at is not None:
@@ -120,11 +131,11 @@ class OutageMonitor:
             else:
                 outage = None
         if outage is not None:
-            self._mail_reconnected(outage, lost_job=note)
+            self._mail_reconnected(outage, settled)
 
-    def _mail_reconnected(self, outage: _ServerOutage, lost_job: Optional[str] = None) -> None:
-        if outage.mailed or lost_job is not None:
-            self._send("RECONNECTED", self._message(outage, "RECONNECTED", lost_job=lost_job))
+    def _mail_reconnected(self, outage: _ServerOutage, settled: Optional[SettledJob] = None) -> None:
+        if outage.mailed or settled is not None:
+            self._send("RECONNECTED", self._message(outage, "RECONNECTED", settled=settled))
 
     def _send(self, status: str, message: str) -> None:
         if self.worker_mail_sender is not None:
@@ -132,24 +143,38 @@ class OutageMonitor:
 
     @staticmethod
     def _message(outage: _ServerOutage, status: str, now_monotonic: Optional[float] = None,
-                 *, lost_job: Optional[str] = None) -> str:
+                 *, settled: Optional[SettledJob] = None) -> str:
+        """The text of an outage mail; every text of these mails is here."""
         if status == "RECONNECTED":
-            lines = ["DocAPI is reachable again.", "",
-                     row("from", utc_text(outage.started_at)),
-                     row("to", utc_text(outage.ended_at)),
-                     row("lasted", duration(outage.ended_monotonic - outage.started_monotonic)),
-                     row("failed", f"{outage.failed_requests} requests"),
-                     row("last error", outage.last_error)]
-            if lost_job is not None:
-                lines.append(row("job", lost_job))
+            lines = ["DocAPI is reachable again.", "", "outage",
+                     row("from", utc_text(outage.started_at), " "),
+                     row("to", utc_text(outage.ended_at), " "),
+                     row("lasted", duration(outage.ended_monotonic - outage.started_monotonic), " "),
+                     row("last error", outage.last_error, " ")]
+            if settled is not None:
+                lines += ["", "job", row("id", settled.job_id, " ")]
+                if settled.results is not None:
+                    lines.append(row("results", {
+                        "uploaded": "uploaded after the outage",
+                        "not_uploaded": f"could not be uploaded ({settled.results_detail}); "
+                                        f"the job is reported as error instead",
+                        "not_taken": f"not taken by DocAPI ({settled.results_detail}); "
+                                     f"the job is reported as error instead",
+                    }[settled.results], " "))
+                lines.append(row("outcome", {
+                    "reported": f"reported as {settled.outcome}",
+                    "not_reported": f"{settled.outcome}, not reported ({settled.report_detail})",
+                    "not_accepted": f"{settled.outcome}, not accepted by DocAPI ({settled.report_detail}); "
+                                    f"DocAPI had already requeued or failed the job",
+                }[settled.report], " "))
             return "\n".join(lines)
         lines = ["DocAPI cannot be reached." if status == "DISCONNECTED" else "DocAPI is still unreachable.", "",
-                 row("since", utc_text(outage.started_at))]
+                 "outage", row("since", utc_text(outage.started_at), " ")]
         if status != "DISCONNECTED":
-            lines += [row("for", duration(now_monotonic - outage.started_monotonic)),
-                      row("failed", f"{outage.failed_requests} requests")]
-        lines += [row("request", outage.last_request), row("error", outage.last_error)]
+            lines.append(row("for", duration(now_monotonic - outage.started_monotonic), " "))
+        lines += [row("request", outage.last_request, " "), row("error", outage.last_error, " ")]
         if outage.job_id is not None:
-            lines.append(row("job", f"{outage.job_id}: it cannot be finished; its outcome is reported "
-                                     f"once DocAPI is reachable again"))
+            lines += ["", "job", row("id", outage.job_id, " "),
+                      row("", "Its results and outcome are sent once DocAPI is reachable again. "
+                              "If its lease expires meanwhile, DocAPI requeues or fails the job.", " ")]
         return "\n".join(lines)

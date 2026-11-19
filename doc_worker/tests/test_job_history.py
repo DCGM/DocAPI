@@ -72,6 +72,35 @@ def test_corrupt_history_is_preserved_and_new_records_remain_readable(tmp_path, 
     assert history.statistics(NOW)['invalid_records'] == 1
 
 
+def test_unreadable_lines_are_reported_once_with_their_number_and_reason(tmp_path, caplog):
+    path = tmp_path / 'history.jsonl'
+    history = JobHistory(path)
+    record(history)
+    good = path.read_text()
+    entry = json.loads(good)
+    entry.pop('finished_at')
+    path.write_text(good + '\n{broken\n' + json.dumps(entry) + '\n')
+    stats = history.statistics(NOW)
+    assert stats['invalid_records'] == stats['new_invalid_records'] == 2 and stats['path'] == str(path)
+    assert stats['new_invalid_lines'] == [
+        {'line': 3, 'reason': "Expecting property name enclosed in double quotes (column 2)"},
+        {'line': 4, 'reason': "missing field 'finished_at'"}]
+    assert "Ignoring line 3 of worker history" in caplog.text
+    # Only the count is kept, in the cache too.
+    stats = history.statistics(NOW)
+    assert stats['invalid_records'] == 2 and stats['new_invalid_records'] == 0 and stats['new_invalid_lines'] == []
+    assert JobHistory(path).statistics(NOW)['invalid_records'] == 2
+    assert set(json.loads(history.stats_path.read_text())) == {
+        'version', 'history_bytes', 'history_lines', 'as_of', 'invalid_records', 'total', 'recent'}
+    # Lines found while recording are reported by the next statistics(); only the latest are kept.
+    path.write_text(path.read_text() + 'x\n' * (JobHistory.INVALID_LINES_KEPT + 1))
+    record(history)
+    stats = history.statistics(NOW)
+    assert stats['invalid_records'] == 3 + JobHistory.INVALID_LINES_KEPT
+    assert stats['new_invalid_records'] == 1 + JobHistory.INVALID_LINES_KEPT
+    assert [invalid['line'] for invalid in stats['new_invalid_lines']] == list(range(6, 6 + JobHistory.INVALID_LINES_KEPT))
+
+
 def test_failed_cache_replacement_keeps_appended_history_for_recovery(tmp_path):
     path = tmp_path / 'history.jsonl'
     history = JobHistory(path)
