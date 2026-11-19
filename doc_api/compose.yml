@@ -15,7 +15,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       # The API documentation texts and examples (JOB_DEFINITION_*, META_JSON_*,
-      # RESULT_*) have built-in defaults; see .env_example to set your own.
+      # RESULT_*) have built-in defaults; append .env_docs_example to .env to
+      # set your own.
     restart: unless-stopped
     # if using traefik, comment out the ports section above and uncomment the labels section below (add traefik network)
     # labels:

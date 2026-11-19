@@ -1,5 +1,6 @@
-""".env_example describes the settings config.py reads, .env_docker_example the
-ones Compose reads for compose.yml, and config.py holds only values."""
+""".env_example and .env_docs_example describe the settings config.py reads,
+.env_docker_example the ones Compose reads for compose.yml, and config.py holds
+only values."""
 import ast
 import json
 import os
@@ -11,6 +12,8 @@ from doc_api import config as config_module
 from doc_api.config import Config
 
 SERVER_DIR = Path(config_module.__file__).parent
+# The server's settings, in config.py's order when appended to each other.
+SERVER_EXAMPLES = (".env_example", ".env_docs_example")
 SETTING_LINE = re.compile(r"^(# )?([A-Z][A-Z0-9_]*)=(.*)$")
 
 
@@ -60,9 +63,13 @@ def documented_settings(example: str = ".env_example") -> list[tuple[str, str, b
     return settings
 
 
+def server_settings() -> list[tuple[str, str, bool]]:
+    return [entry for example in SERVER_EXAMPLES for entry in documented_settings(example)]
+
+
 def test_env_example_lists_every_setting_in_order_with_its_default(monkeypatch):
     read = read_settings(monkeypatch)
-    documented = documented_settings()
+    documented = server_settings()
     assert [name for name, _, _ in documented] == list(read)
     for name, value, _ in documented:
         default = read[name]
@@ -85,7 +92,7 @@ def test_settings_the_image_sets_are_commented_out_in_env_example():
     # An active line in the deployment's .env would override the image,
     # e.g. PRODUCTION=true or the data directory.
     image = set(re.findall(r"^ENV ([A-Z][A-Z0-9_]*)=", (SERVER_DIR / "Dockerfile").read_text(), re.MULTILINE))
-    active = {name for name, _, commented in documented_settings() if not commented}
+    active = {name for name, _, commented in server_settings() if not commented}
     assert not image & active
 
 

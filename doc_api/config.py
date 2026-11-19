@@ -543,22 +543,6 @@ class Config:
         self.SHOW_PUT_PAGE = self._env_bool("SHOW_PUT_PAGE", True)
         self.SHOW_PUT_METADATA = self._env_bool("SHOW_PUT_METADATA", True)
 
-        # Job definition examples -----------------------------------------------------
-        self.JOB_DEFINITION_SUMMARY = os.getenv("JOB_DEFINITION_SUMMARY", "Create Job")
-        self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION", JOB_DEFINITION_DESCRIPTION)
-        self.JOB_DEFINITION_EXAMPLES = json.loads(
-            os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps(JOB_DEFINITION_EXAMPLES, indent=2)))
-
-        # Metadata upload examples ----------------------------------------------------
-        self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")
-        self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION", "Upload the Meta JSON file for a job.")
-        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES", json.dumps(META_JSON_EXAMPLES, indent=2)))
-
-        # Result download examples ----------------------------------------------------
-        self.RESULT_SUMMARY = os.getenv("RESULT_SUMMARY", "Download Result")
-        self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION", "Download the result ZIP file for a completed job.")
-        self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE", "(binary ZIP file content)")
-
         # =============================================================================
         # Testing
         # =============================================================================
@@ -575,6 +559,28 @@ class Config:
         self.TEST_READONLY_KEY_LABEL = os.getenv("TEST_READONLY_KEY_LABEL", "test-readonly")
         self.TEST_USER_KEY_LABEL = os.getenv("TEST_USER_KEY_LABEL", "test-user")
         self.TEST_WORKER_KEY_LABEL = os.getenv("TEST_WORKER_KEY_LABEL", "test-worker")
+
+        # =============================================================================
+        # API documentation texts
+        # =============================================================================
+
+        # Shown in /docs; each setting replaces its default as a whole.
+
+        # Job definition examples -----------------------------------------------------
+        self.JOB_DEFINITION_SUMMARY = os.getenv("JOB_DEFINITION_SUMMARY", "Create Job")
+        self.JOB_DEFINITION_DESCRIPTION = os.getenv("JOB_DEFINITION_DESCRIPTION", JOB_DEFINITION_DESCRIPTION)
+        self.JOB_DEFINITION_EXAMPLES = json.loads(
+            os.getenv("JOB_DEFINITION_EXAMPLES", json.dumps(JOB_DEFINITION_EXAMPLES)))
+
+        # Metadata upload examples ----------------------------------------------------
+        self.META_JSON_SUMMARY = os.getenv("META_JSON_SUMMARY", "Upload Meta JSON")
+        self.META_JSON_DESCRIPTION = os.getenv("META_JSON_DESCRIPTION", "Upload the Meta JSON file for a job.")
+        self.META_JSON_EXAMPLES = json.loads(os.getenv("META_JSON_EXAMPLES", json.dumps(META_JSON_EXAMPLES)))
+
+        # Result download examples ----------------------------------------------------
+        self.RESULT_SUMMARY = os.getenv("RESULT_SUMMARY", "Download Result")
+        self.RESULT_DESCRIPTION = os.getenv("RESULT_DESCRIPTION", "Download the result ZIP file for a completed job.")
+        self.RESULT_EXAMPLE = os.getenv("RESULT_EXAMPLE", "(binary ZIP file content)")
 
     @staticmethod
     def _env_int(key: str, default: int, *, minimum: int = 0) -> int:
