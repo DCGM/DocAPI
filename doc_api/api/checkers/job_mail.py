@@ -18,7 +18,6 @@ from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import config
 from doc_api.db import model
 from doc_api.tools.mail_sender import MailStatus
-from doc_api.tools.secrets import mask_secrets_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,7 @@ def send_final_report(mail: JobMail) -> bool | datetime:
         subject, body = mail.subject, mail.body
         if getattr(config, f"SECRET_MASKING_{mail.channel}_MAIL"):
             masking = config.secret_masking()
-            subject, body = mask_secrets_in_text(subject, masking), mask_secrets_in_text(body, masking)
+            subject, body = masking.mask_text(subject), masking.mask_text(body)
         # The sender logs each outcome.
         if len(mail.recipients) != 1:
             raise ValueError(f"A job notification goes to one recipient, not {len(mail.recipients)}")

@@ -13,7 +13,7 @@ import re
 import subprocess
 
 from doc_api.tools.mail_sender import MailSender
-from doc_api.tools.secrets import MaskingSettings
+from doc_api.tools.secrets import SecretMasker
 
 COMMIT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}\Z")
 
@@ -436,7 +436,7 @@ class Config:
             'filters': {
                 'mask_secrets': {
                     '()': 'doc_api.tools.secrets.SecretMaskingFilter',
-                    'settings': self.secret_masking,
+                    'masker': self.secret_masking,
                 }
             },
             'handlers': {
@@ -611,14 +611,14 @@ class Config:
                           send_server_limit=getattr(self, f"{channel}_MAIL_SEND_SERVER_LIMIT"),
                           send_server_window_seconds=getattr(self, f"{channel}_MAIL_SEND_SERVER_WINDOW_SECONDS"))
 
-    def secret_masking(self) -> MaskingSettings:
-        """The masking tool's settings from the SECRET_MASKING_* settings in force."""
-        return MaskingSettings(enabled=self.SECRET_MASKING, mask=self.SECRET_MASKING_MASK,
-                               allowed_keys=self.SECRET_MASKING_ALLOWED_KEYS,
-                               high_entropy=self.SECRET_MASKING_HIGH_ENTROPY,
-                               partial_keys=self.SECRET_MASKING_PARTIAL_KEYS,
-                               partial_start=self.SECRET_MASKING_PARTIAL_START,
-                               partial_end=self.SECRET_MASKING_PARTIAL_END)
+    def secret_masking(self) -> SecretMasker:
+        """A masker with the SECRET_MASKING_* settings in force."""
+        return SecretMasker(enabled=self.SECRET_MASKING, mask=self.SECRET_MASKING_MASK,
+                            allowed_keys=self.SECRET_MASKING_ALLOWED_KEYS,
+                            high_entropy=self.SECRET_MASKING_HIGH_ENTROPY,
+                            partial_keys=self.SECRET_MASKING_PARTIAL_KEYS,
+                            partial_start=self.SECRET_MASKING_PARTIAL_START,
+                            partial_end=self.SECRET_MASKING_PARTIAL_END)
 
     def _env_bool(self, key: str, default: bool = False) -> bool:
         val = os.getenv(key)

@@ -824,9 +824,9 @@ Worker progress/log updates still reach the API; empty heartbeats are skipped fo
 ### Secret masking
 
 `doc_api.tools.secrets` masks values under secret-looking keys at any depth and
-known secret patterns in free text. It is a standalone tool: its settings are a
-`MaskingSettings` value, and it reads no server config. The server builds its
-settings from the variables below with `Config.secret_masking()`. User/readonly responses show masked engine
+known secret patterns in free text. It is a standalone tool: a `SecretMasker`
+holds its settings and masks with them, and it reads no server config. The
+server builds its masker from the variables below with `Config.secret_masking()`. User/readonly responses show masked engine
 settings and job logs; admin and worker responses keep the real values, for jobs
 and debugging. Logged exceptions and access-log query strings are masked too. Masking happens in the server
 routes and checkers, not the shared schemas. Stored data is never changed.

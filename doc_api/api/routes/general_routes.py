@@ -30,7 +30,6 @@ from doc_api.api.schemas.responses import DocAPIResponseClientError, AppCode, Do
 
 from doc_api.db import model
 from doc_api.config import config
-from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from uuid import UUID
 
 
@@ -224,7 +223,7 @@ def displayed_engine_settings(db_job: model.Job, key: model.Key) -> Optional[dic
     engine_settings = db_job.definition.get("engine_settings", None)
     if key.role in UNMASKED_ROLES:
         return engine_settings
-    return mask_secrets_in_struct(engine_settings, config.secret_masking())
+    return config.secret_masking().mask_struct(engine_settings)
 
 
 def mask_job_logs(job: dict, key: model.Key) -> dict:
@@ -235,7 +234,7 @@ def mask_job_logs(job: dict, key: model.Key) -> dict:
         return job
     for field in ("log", "log_user", "final_log", "final_log_user"):
         if job.get(field) is not None:
-            job[field] = mask_secrets_in_text(job[field], config.secret_masking())
+            job[field] = config.secret_masking().mask_text(job[field])
     return job
 
 

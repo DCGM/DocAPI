@@ -38,7 +38,6 @@ from doc_api.api.schemas.responses import AppCode, validate_server_error_respons
     DETAILS_GENERAL, make_responses
 from doc_api.config import config
 from doc_api.tools.mail_sender import MailSender
-from doc_api.tools.secrets import mask_secrets_in_struct, mask_secrets_in_text
 from doc_api.db import model
 
 
@@ -305,11 +304,11 @@ async def validation_handler(_: Request, exc: RequestValidationError):
         # UploadFile/type validators can include exception objects in ctx.
         # Preserve their messages without turning a client error into a 500.
         # Errors echo the submitted input, which may hold secrets.
-        details=mask_secrets_in_struct(jsonable_encoder(exc.errors(), custom_encoder={
+        details=config.secret_masking().mask_struct(jsonable_encoder(exc.errors(), custom_encoder={
             Exception: str,
             # Invalid numeric input must still produce a valid JSON error response.
             float: lambda value: value if isfinite(value) else str(value),
-        }), config.secret_masking())
+        }))
     )
     return validate_client_error_response(payload)
 
@@ -320,7 +319,7 @@ async def unhandled(request: Request, exc: Exception):
     # logged exception is masked by the log handlers' filter; the URL line is
     # plain text and is masked here, and so is the mail if
     # SECRET_MASKING_INTERNAL_MAIL is on.
-    url = mask_secrets_in_text(str(request.url), config.secret_masking())
+    url = config.secret_masking().mask_text(str(request.url))
     sender = mail_sender("INTERNAL")
     receivers = config.INTERNAL_MAIL_RECEIVER_MAILS
     if sender is not None and receivers:
@@ -332,7 +331,7 @@ async def unhandled(request: Request, exc: Exception):
                 f'ERROR: {exc}\n\n'
                 f'{traceback.format_exc()}')
         if config.SECRET_MASKING_INTERNAL_MAIL:
-            body = mask_secrets_in_text(body, config.secret_masking())
+            body = config.secret_masking().mask_text(body)
         mail_error_in_background(sender, list(receivers), " ".join(subject.splitlines()), body)
     exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
