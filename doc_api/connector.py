@@ -42,9 +42,12 @@ class Connector:
     (connect, read) pair; DEFAULT_TIMEOUT unless given. A timed-out request
     raises requests.Timeout. None waits without limit. Each request method
     also takes a timeout of its own.
+
+    user_agent: the User-Agent header, naming the caller in the server's and
+    proxies' logs; None keeps the one requests sends.
     """
 
-    def __init__(self, api_key, user_agent="DocAPI-Client/1.0.0", timeout=DEFAULT_TIMEOUT):
+    def __init__(self, api_key, user_agent=None, timeout=DEFAULT_TIMEOUT):
         self.api_key = api_key
         self.user_agent = user_agent
         self.timeout = _check_timeout(timeout)
@@ -52,7 +55,8 @@ class Connector:
         # Create and configure session for connection reuse
         self.session = requests.Session()
         self.session.headers.update(self._get_auth_header())
-        self.session.headers.update(self._get_user_agent_header())
+        if user_agent is not None:
+            self.session.headers.update(self._get_user_agent_header())
 
         self._logger = logging.getLogger(__name__)
 
@@ -74,6 +78,14 @@ class Connector:
 
     def delete(self, url, timeout=_CONNECTOR_TIMEOUT):
         return self.session.delete(url, timeout=self._timeout(timeout))
+
+    def set_user_agent(self, user_agent):
+        """Send user_agent as the User-Agent from now on; None goes back to requests' own."""
+        self.user_agent = user_agent
+        if user_agent is None:
+            self.session.headers["User-Agent"] = requests.utils.default_user_agent()
+        else:
+            self.session.headers.update(self._get_user_agent_header())
 
     def _get_auth_header(self):
         return {'X-API-Key': self.api_key}

@@ -968,6 +968,7 @@ request that times out is a DocAPI outage.
 - [x] invalid timeouts are rejected. [`test_connector.py::test_invalid_timeouts_are_rejected`](test_connector.py).
 - [x] a connect or read part may be unlimited. [`test_connector.py::test_a_connect_or_read_part_may_be_unlimited`](test_connector.py).
 - [x] a server that never answers times out. [`test_connector.py::test_a_server_that_never_answers_times_out`](test_connector.py).
+- [x] the User-Agent is requests' own unless set. [`test_connector.py::test_the_user_agent_is_requests_own_unless_set`](test_connector.py).
 
 ### Worker adapter
 

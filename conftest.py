@@ -19,7 +19,8 @@ from typing import Optional
 
 import pytest
 
-for _name in [name for name in os.environ if "_MAIL_" in name]:
+# Server settings use *_MAIL_*, worker settings (doc_worker/config.py) MAIL_*.
+for _name in [name for name in os.environ if "_MAIL_" in name or name.startswith("MAIL_")]:
     del os.environ[_name]
 
 LOCAL_HOST = "127.0.0.1"

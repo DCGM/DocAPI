@@ -54,8 +54,8 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a re
 ## No real side effects
 
 - Tests never send email. The repository-root `conftest.py` removes `*_MAIL_*`
-  settings and fails any test that opens an SMTP connection. Use the
-  `local_smtp` fixture for a real exchange with a local server.
+  and `MAIL_*` settings and fails any test that opens an SMTP connection. Use
+  the `local_smtp` fixture for a real exchange with a local server.
 - Do not connect to production servers, SMTP relays or deployments without the
   maintainer's explicit go-ahead.
 
