@@ -40,9 +40,24 @@ def read_settings(monkeypatch) -> dict:
 
 
 def documented_settings(example: str = ".env_example") -> list[tuple[str, str, bool]]:
-    """(name, value, commented out) for each setting line of an example file."""
-    lines = (SERVER_DIR / example).read_text().splitlines()
-    return [(match[2], match[3], bool(match[1])) for match in map(SETTING_LINE.match, lines) if match]
+    """(name, value, commented out) for each setting of an example file. A value
+    in single quotes may span lines, each commented out like the first."""
+    lines = iter((SERVER_DIR / example).read_text().splitlines())
+    settings = []
+    for line in lines:
+        match = SETTING_LINE.match(line)
+        if not match:
+            continue
+        value = match[3]
+        if value.startswith("'"):
+            while len(value) < 2 or not value.endswith("'"):
+                part = next(lines)
+                if match[1]:
+                    assert part.startswith("#"), f"{match[2]}: every line of a commented block starts with #"
+                    part = part[2:] if part.startswith("# ") else part[1:]
+                value += "\n" + part
+        settings.append((match[2], value, bool(match[1])))
+    return settings
 
 
 def test_env_example_lists_every_setting_in_order_with_its_default(monkeypatch):
@@ -52,11 +67,14 @@ def test_env_example_lists_every_setting_in_order_with_its_default(monkeypatch):
     for name, value, _ in documented:
         default = read[name]
         if value.startswith("<") and value.endswith(">"):
-            # Described instead of shown: no default, or a multi-line text.
-            assert default is None or "\n" in str(default), f"{name} must show its default {default!r}"
+            # Described instead of shown: a setting without a default.
+            assert default is None, f"{name} must show its default {default!r}"
             continue
         assert default is not None, f"{name} has no default; describe its value in <...>"
-        value = re.sub(r"\$\{([A-Z0-9_]+)\}", lambda match: str(read[match[1]]), value.strip().strip('"'))
+        if value.startswith("'"):
+            value = value[1:-1]  # Taken as it is, as Compose does.
+        else:
+            value = re.sub(r"\$\{([A-Z0-9_]+)\}", lambda match: str(read[match[1]]), value.strip().strip('"'))
         if str(default).startswith("{"):
             assert json.loads(value) == json.loads(default), name
         else:
