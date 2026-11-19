@@ -1011,46 +1011,52 @@ downloads, and failed source requests.
 - [x] worker external request has no docapi credentials. [`test_worker_external_request_has_no_docapi_credentials`](../../doc_worker/tests/test_doc_worker_wrapper.py).
 - [x] worker external input failure. [`test_worker_external_input_failure`](../../doc_worker/tests/test_doc_worker_wrapper.py).
 
-### Optional worker health mail
+### Worker ALIVE mail
 
-The wrapper accepts `health_config=WorkerHealthConfig(...)` from
-`doc_worker.doc_worker_wrapper`, together with a `mail_sender` and `mail_receivers`. Constructor arguments `identity` (class name by default), `hostname` (automatic
-by default), and `mail_subject` apply to both alive and failure emails. The subject
-default is `[{identity}] {status} ({hostname})`; supported placeholders are
-`identity`, `hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
-Startup uses the same
-alive report as periodic checks. Configuring health without a mail sender or receivers logs
-a warning and rejects initialization before creating directories or polling. Reports use short aligned rows and separate
-time-window sections for mobile reading. Lifecycle mail is
-opt-in and independent of job final reports. Defaults are an immediate alive report at startup, daily
-alive mail; an alive interval of zero disables
-periodic mail. Alive messages report process uptime and the last pipeline
-return, rather than guaranteeing that processing is progressing.
+The worker's mail lives in `doc_worker/worker_mail.py`, its monitors in
+`doc_worker/alive_monitor.py` and `doc_worker/outage_monitor.py`. The wrapper builds a
+`WorkerMail` from `mail_sender`, `mail_receivers`, `identity` (class name by
+default), `hostname` (automatic by default) and `mail_subject`; it applies to
+ALIVE, failure and outage emails alike. The subject default is
+`[{identity}] {status} ({hostname})`; supported placeholders are `identity`,
+`hostname`, `status`, and `time` (UTC datetime, e.g. `{time:%Y-%m-%d}`).
 
-- [x] Startup, periodic alive mail, disabling mail, mail sent as written or filtered by a `MailSender` subclass, invalid intervals, and SMTP failures. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
-- [x] Wrapper lifecycle integration, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
-- [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+An `AliveMonitor` sends ALIVE whenever the worker has a mail sender and
+receivers: an immediate report at startup (`alive_mail_startup`) and daily
+reports by default (`alive_mail_interval_seconds`); an interval of zero
+disables periodic mail. Without mail or receivers it sends nothing and starts
+no thread. Startup uses the same report as periodic checks. Invalid intervals
+are rejected before creating directories or polling. Reports use short aligned
+rows and separate time-window sections for mobile reading. They report process
+uptime and the last pipeline return, rather than guaranteeing that processing
+is progressing. ALIVE mail is independent of job final reports.
+
+- [x] `WorkerMail` subject, header, receivers, mail off without receivers, contained SMTP failures and invalid subjects. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
+- [x] ALIVE startup and periodic mail, on by default with mail, turning it off, nothing without mail or receivers, invalid intervals and SMTP failures. [`test_alive_monitor.py`](../../doc_worker/tests/test_alive_monitor.py).
+- [x] Wrapper lifecycle integration, the mail and monitors built from its arguments, identity changes, mail sent as written or filtered by a `MailSender` subclass, graceful interruption, unexpected termination, and failures that cannot be reported to DocAPI. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
+- [x] Clear job/lease state after every pipeline cycle, preserve it through reporting and cleanup, and use a newly acquired lease when fetching job details fails. [`test_worker_mail.py`](../../doc_worker/tests/test_worker_mail.py).
 
 Explicit worker failures are mailed whenever a mail sender and receivers are
-configured, even without health reports. Each failure sends an alert with
+configured, even without ALIVE reports. Each failure sends an alert with
 available exception details and tracebacks, as written; SMTP failures are
 contained.
 
 ### Worker outage mail
 
-A DocAPI request that fails to connect, times out or gets a 502, 503 or 504
-starts an outage; the next request that reaches DocAPI ends it. Failed requests
-in an outage are only logged:
+An `OutageMonitor` tracks DocAPI's reachability. A DocAPI request that fails
+to connect, times out or gets a 502, 503 or 504 starts an outage; the next
+request that reaches DocAPI ends it. Failed requests in an outage are only
+logged:
 
-- `DISCONNECTED` is mailed once the outage has lasted `disconnected_grace_seconds` while the worker is idle (60 s by default), or at once during a job.
-- `STILL DISCONNECTED` follows every `disconnected_mail_interval_seconds` (one hour by default).
+- `DISCONNECTED` is mailed once the outage has lasted `outage_grace_seconds` while the worker is idle (60 s by default), or at once during a job.
+- `STILL DISCONNECTED` follows every `outage_mail_interval_seconds` (one hour by default).
 - `RECONNECTED` is mailed when DocAPI can be reached again.
 
 A job outcome that could not be reported is reported first after reconnecting,
 before the worker polls again; a report the server no longer accepts changes
 nothing. Other errors keep the usual failure mail.
 
-- [x] Grace period, reminders, reconnect mail, gateway errors, a request that times out, errors that are not outages, lost outcome reports and invalid settings. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
+- [x] Grace period, reminders, reconnect mail, gateway errors, a request that times out, errors that are not outages, lost outcome reports and invalid settings; the `OutageMonitor` on its own without mail and with RECONNECTED held for a pending report. [`test_worker_outage.py`](../../doc_worker/tests/test_worker_outage.py).
 
 ### Persistent worker job history
 
@@ -1072,12 +1078,12 @@ incrementally; rolling windows inspect only the recent cached records. A stale
 cache reads only the missing JSONL tail. Missing/invalid caches rebuild from
 history once, and the cache is atomically replaced. Use separate paths per worker.
 Malformed history lines are preserved, skipped with a warning, and counted in
-the health report. History/cache write failures are logged without changing the
+the ALIVE report. History/cache write failures are logged without changing the
 processing outcome. Rolling windows use completion timestamps.
 
 - [x] Persistence, retry counts, time windows, append-only writes, cache reconstruction/tail recovery, corrupt records and concurrent statistics reads. [`test_job_history.py`](../../doc_worker/tests/test_job_history.py).
 - [x] Pipeline outcomes, interruptions, crashes, idle polls and history failures. [`test_job_finished.py`](../../doc_worker/tests/test_job_finished.py).
-- [x] Identical startup/periodic alive reports and graceful handling of unavailable statistics. [`test_worker_health.py`](../../doc_worker/tests/test_worker_health.py).
+- [x] Identical startup/periodic alive reports and graceful handling of unavailable statistics. [`test_alive_monitor.py`](../../doc_worker/tests/test_alive_monitor.py).
 
 ### Worker final reports and automatic error messages
 

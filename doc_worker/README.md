@@ -11,6 +11,41 @@ wrapper does everything around a job:
 The subclass implements only the processing. `dummy_worker.py` is a complete
 example, which copies the inputs to the results.
 
+```mermaid
+flowchart TD
+    subgraph Worker["DocWorkerWrapper: start() asks DocAPI for jobs, one at a time"]
+        direction LR
+        Lease["lease a job"] --> Download["download its inputs<br/>and engine files"]
+        Download --> Process["process_job()<br/>your code"]
+        Process --> Upload["zip and upload<br/>the results"]
+        Upload --> Report["report OK,<br/>error or fail"]
+    end
+    subgraph Mail["WorkerMail: receivers, identity, hostname, subject"]
+        Sender["MailSender<br/>SMTP server, login, send limits"]
+    end
+    Config["Config<br/>settings from the environment"] -- "from_config()" --> Worker
+    Worker -- "every request" --> Connector["_ReachabilityConnector"]
+    Connector --> DocAPI[("DocAPI")]
+    Connector -- "unreachable, reached" --> Outages["OutageMonitor<br/>DISCONNECTED, STILL DISCONNECTED,<br/>RECONNECTED"]
+    Worker -- "runs while the worker runs" --> Alive["AliveMonitor<br/>ALIVE reports"]
+    Worker -- "FAILURE" --> Mail
+    Outages --> Mail
+    Alive --> Mail
+    Mail --> Receivers(["mail receivers"])
+    Worker -- "everything logged during a job" --> JobLog[/"worker.log<br/>in the job's directory"/]
+```
+
+- **`Config` and `from_config()`** build the worker from the environment; see
+  [Configuring and starting it](#configuring-and-starting-it).
+- **The pipeline** runs once per job. Only `process_job()` is yours; see
+  [Processing a job](#processing-a-job).
+- **`_ReachabilityConnector`** passes every request to DocAPI and tells the
+  `OutageMonitor` whether DocAPI answered.
+- **The job's log** gets everything logged while the job runs; see
+  [The job's log](#the-jobs-log).
+- **Monitoring** mails failures, DocAPI outages and ALIVE reports when mail
+  is set up; see [Monitoring](#monitoring).
+
 ## Processing a job
 
 Implement `process_job`. The wrapper calls it with keyword arguments, once per
@@ -63,8 +98,7 @@ your code and of the libraries you use, each once.
   `logging.basicConfig(level=logging.INFO)`. The default, WARNING, drops INFO
   and DEBUG messages before any handler sees them.
 - **Other threads:** messages of other threads during the job go into its log
-  too. Only the wrapper's health checks, which run beside every job, are left
-  out.
+  too. Only the ALIVE reports, which run beside every job, are left out.
 
 The log takes the format of the first root handler that has one. For another
 format or level, override `job_log_handler(path)`, which creates the handler.
@@ -87,11 +121,56 @@ class ThumbnailWorker(DocWorkerWrapper):
             own_logger.removeHandler(job_log_file_handler)
 ```
 
+## Monitoring
+
+The worker watches three things. It always logs them, and it emails them when
+mail is set up:
+
+- **Failures** that a job's report cannot carry, such as a report DocAPI never
+  received or the worker stopping unexpectedly: a FAILURE email.
+- **Whether DocAPI can be reached:** DISCONNECTED when it cannot (after
+  `OUTAGE_GRACE_SECONDS` while idle, at once during a job), a STILL
+  DISCONNECTED reminder every `OUTAGE_MAIL_INTERVAL_SECONDS`, and
+  RECONNECTED when it is back, with what happened to a job whose outcome had
+  to wait.
+- **That the worker is alive:** an ALIVE email at startup and then once a
+  day, with its uptime and its last and active job.
+
+To get the emails, set the mail server, a sender and the receivers; the
+worker refuses to start with only some of them:
+
+```sh
+MAIL_SERVER=smtp.example.org
+MAIL_SENDER_MAIL=worker@example.org
+MAIL_RECEIVER_MAILS=admin@example.org,ops@example.org
+# Only if the server needs a login; MAIL_PORT and MAIL_SECURITY as it requires.
+MAIL_USERNAME=worker
+MAIL_PASSWORD=...
+```
+
+Optional:
+- `JOB_HISTORY_PATH` adds job statistics to the ALIVE emails;
+- `ALIVE_MAIL_STARTUP` and `ALIVE_MAIL_INTERVAL_SECONDS` change when they are sent;
+- `WORKER_IDENTITY` names the worker, instead of its API key's label;
+- `MAIL_SUBJECT` sets the subject of the emails, by default
+  `[{identity}] {status} ({hostname})`. Its placeholders:
+  - `{identity}`: the worker's name;
+  - `{hostname}`: by default the host name the system reports
+    (`socket.gethostname()`); in a Docker container that is the container's
+    ID unless it was given a hostname. `WORKER_HOSTNAME` replaces it;
+  - `{status}`: FAILURE, DISCONNECTED, STILL DISCONNECTED, RECONNECTED or ALIVE;
+  - `{time}`: the UTC time, with a format if you like, e.g. `{time:%Y-%m-%d %H:%M}`.
+
+  A subject with any other placeholder is rejected when the worker is built.
+
+`.env_example` lists them all. Emails about jobs come from DocAPI, not from
+the worker.
+
 ## Configuring and starting it
 
 Settings come from the environment through `config.py`. `.env_example` lists
 every setting with its default. `from_config` builds the worker from a
-checked `Config`, including the connector, the mail sender and the health
+checked `Config`, including the connector, the mail sender and the ALIVE
 mail:
 
 ```python

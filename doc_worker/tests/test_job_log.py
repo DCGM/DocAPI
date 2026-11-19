@@ -9,8 +9,9 @@ from unittest import mock
 
 import pytest
 
-from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerHealth, WorkerResponse
+from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
 from doc_worker.dummy_worker import DummyWorker
+from doc_worker.alive_monitor import AliveMonitor
 
 own_logger = logging.getLogger("myapp.worker")
 library_logger = logging.getLogger("mylibrary")
@@ -63,7 +64,7 @@ class Worker(Pipeline, DocWorkerWrapper):
     def process_job(self, job, images_dir, result_dir, **kwargs):
         own_logger.info("own message %s", job.id)
         library_logger.debug("library message %s", job.id)
-        for name, text in (("other", "thread message"), (WorkerHealth.THREAD_NAME, "health message")):
+        for name, text in (("other", "thread message"), (AliveMonitor.THREAD_NAME, "alive message")):
             thread = threading.Thread(target=lambda text=text: own_logger.info("%s %s", text, job.id), name=name)
             thread.start()
             thread.join()
@@ -105,10 +106,10 @@ def test_everything_logged_during_a_job_is_in_its_log_once(tmp_path):
         assert lines(log, text) == 1, text
 
 
-def test_the_health_checks_are_not_in_the_job_log(tmp_path):
+def test_the_alive_reports_are_not_in_the_job_log(tmp_path):
     worker = Worker(tmp_path)
     worker.run_job_pipeline()
-    assert "health message" not in worker.job_log()
+    assert "alive message" not in worker.job_log()
 
 
 def test_nothing_from_outside_the_job_is_in_its_log(tmp_path):
@@ -172,9 +173,9 @@ def test_the_job_log_takes_the_format_of_the_root_handlers(tmp_path, monkeypatch
     handler.close()
 
 
-def test_an_overridden_job_log_handler_keeps_the_health_checks_out(tmp_path):
+def test_an_overridden_job_log_handler_keeps_the_alive_reports_out(tmp_path):
     worker = FormattedWorker(tmp_path)
     worker.run_job_pipeline()
     log = worker.job_log().splitlines()
     assert "JOB INFO own message job-1" in log
-    assert not [line for line in log if "library message" in line or "health message" in line]
+    assert not [line for line in log if "library message" in line or "alive message" in line]

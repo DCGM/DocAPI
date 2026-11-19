@@ -1,6 +1,4 @@
 import logging
-import socket
-import textwrap
 import os
 import json
 import zipfile
@@ -31,6 +29,9 @@ from doc_api.adapter import Adapter, AdapterResponse, response_code
 from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
 from doc_api.tools.mail_sender import MailSender
+from doc_worker.alive_monitor import AliveMonitor
+from doc_worker.outage_monitor import OutageMonitor
+from doc_worker.worker_mail import DEFAULT_MAIL_SUBJECT, WorkerMail, check_mail_subject
 
 from doc_worker.config import Config
 
@@ -141,11 +142,12 @@ class DocWorkerWrapper(ABC):
                  mail_receivers: Sequence[str] = (),
                  identity: Optional[str] = None,
                  hostname: Optional[str] = None,
-                 mail_subject: str = "[{identity}] {status} ({hostname})",
-                 health_config: Optional["WorkerHealthConfig"] = None,
-                 error_messages: Optional[Mapping[str, WorkerErrorMessage]] = None,
-                 disconnected_grace_seconds: float = 60,
-                 disconnected_mail_interval_seconds: float = 3600):
+                 mail_subject: str = DEFAULT_MAIL_SUBJECT,
+                 alive_mail_startup: bool = True,
+                 alive_mail_interval_seconds: float = 86400,
+                 outage_grace_seconds: float = 60,
+                 outage_mail_interval_seconds: float = 3600,
+                 error_messages: Optional[Mapping[str, WorkerErrorMessage]] = None):
         """
         Initialize the DocWorker.
         
@@ -155,7 +157,7 @@ class DocWorkerWrapper(ABC):
             
             base_dir: Base directory - if specified, creates 'jobs' and 'engines' subdirectories
             job_history_path: Optional JSONL history file, one file per worker.
-                Records attempts and keeps a sibling .stats.json cache for health mail.
+                Records attempts and keeps a sibling .stats.json cache for ALIVE mail.
                 None disables history. Independent of job-directory cleanup.
             jobs_dir: Directory for job data (overrides base_dir/jobs if specified)
             cleanup_job_dir: If True, removes job directory after successful processing
@@ -168,11 +170,13 @@ class DocWorkerWrapper(ABC):
             prefer_alto_url: Prefer a supplied ALTO URL when an uploaded ALTO file also exists
             prefer_page_url: Prefer a supplied PAGE URL when an uploaded PAGE file also exists
 
-            mail_sender: Optional mail sender that send_mail() and the wrapper's own
-                mail use. Mail is sent as written; pass a MailSender subclass whose
-                send() filters subject and body to mask or redact it.
+            mail_sender: Optional mail sender for the worker's mail (self.mail, a
+                WorkerMail) and send_mail(). Mail is sent as written; pass a MailSender
+                subclass whose send() filters subject and body to mask or redact it.
+                None sends no mail.
             mail_receivers: Who send_mail() and the wrapper's own mail go to by
-                default; each gets a separate email.
+                default; each gets a separate email. Without any, the wrapper's own
+                mail is off.
             identity: The worker's name, in the subject and "worker" line of its emails and
                 as the User-Agent of its requests, which the wrapper sets on the connector.
                 None takes the label of the worker's API key from DocAPI when start() runs,
@@ -181,49 +185,43 @@ class DocWorkerWrapper(ABC):
             mail_subject: Python format string with identity, hostname, status (ALIVE,
                 FAILURE, DISCONNECTED, STILL DISCONNECTED or RECONNECTED), and time
                 (UTC datetime, supporting date format specifications) placeholders.
-            health_config: Opt-in startup and periodic alive mail. Requires mail_sender
-                and mail_receivers.
-                None disables alive reports. Explicit worker failures are mailed
-                whenever mail_sender and mail_receivers are configured,
-                independently of health_config.
+            alive_mail_startup: Send an ALIVE report when the worker starts (self.alive,
+                an AliveMonitor). ALIVE reports are sent whenever mail_sender and
+                mail_receivers are configured.
+            alive_mail_interval_seconds: Seconds between the ALIVE reports, one day by
+                default; 0 sends no periodic reports.
+            outage_grace_seconds: How long DocAPI may be unreachable while the worker is
+                idle before a DISCONNECTED email (self.outages, an OutageMonitor); shorter
+                outages are only logged. An outage during a job is mailed at once.
+            outage_mail_interval_seconds: How often a STILL DISCONNECTED reminder is sent
+                while DocAPI stays unreachable.
             error_messages: Overrides keyed by DEFAULT_WORKER_ERRORS names. Each
                 WorkerErrorMessage sets technical and user text independently.
                 Omitted entries retain their existing English defaults.
-            disconnected_grace_seconds: How long DocAPI may be unreachable while the
-                worker is idle before a DISCONNECTED email; shorter outages are only
-                logged. An outage during a job is mailed at once.
-            disconnected_mail_interval_seconds: How often a STILL DISCONNECTED reminder
-                is sent while DocAPI stays unreachable.
 
         DocAPI is unreachable when a request to it fails to connect or times out,
         or gets a 502, 503 or 504, or a 404 without a DocAPI app code, which a
-        proxy in front of DocAPI sends when it has no route to it. Failed requests in an outage are logged, not
-        mailed one by one: the worker mails DISCONNECTED, a reminder per interval
-        and RECONNECTED. A job outcome that could not be reported is reported
-        once DocAPI is reachable again, before the worker polls for a new job.
+        proxy in front of DocAPI sends when it has no route to it. self.outages, an
+        OutageMonitor, logs and mails outages. A job outcome that could not be
+        reported is reported once DocAPI is reachable again, before the worker
+        polls for a new job.
         """
-        for name, value, minimum in (("disconnected_grace_seconds", disconnected_grace_seconds, 0),
-                                     ("disconnected_mail_interval_seconds", disconnected_mail_interval_seconds, None)):
-            if not math.isfinite(value) or value < 0 or (minimum is None and value == 0):
-                raise ValueError(f"{name} must be a finite, {'positive' if minimum is None else 'nonnegative'} number")
-        if health_config is not None and mail_sender is None:
-            message = "Worker health requires a mail sender."
-            logger.warning(message)
-            raise ValueError(message)
-        if health_config is not None and not mail_receivers:
-            message = "Worker health requires mail receivers."
-            logger.warning(message)
-            raise ValueError(message)
+        # Settings are checked before the adapter is built or directories are created.
+        check_mail_subject(mail_subject)
+        self.mail: Optional[WorkerMail] = None
+        if mail_sender is not None:
+            self.mail = WorkerMail(mail_sender, mail_receivers, hostname=hostname, subject=mail_subject)
         self.identity = type(self).__name__ if identity is None else identity
         # Until DocAPI has said what the key's label is.
         self._identity_from_key = identity is None
         self._identity_warned = False
         self._connector = connector
-        self.hostname = socket.gethostname() if hostname is None else hostname
-        self.mail_subject = mail_subject
-        # Reject invalid templates before constructing the adapter or creating directories.
-        self.mail_subject.format(identity=self.identity, hostname=self.hostname,
-                                 status="ALIVE", time=datetime.now(timezone.utc))
+        self.alive = AliveMonitor(self.mail, alive_mail_startup, alive_mail_interval_seconds,
+                                  active_job=self._current_job_id, job_history=lambda: self.job_history)
+        self._lost_report: Optional["_LostReport"] = None
+        self.outages = OutageMonitor(self.mail, outage_grace_seconds, outage_mail_interval_seconds,
+                                     active_job=self._active_job_id,
+                                     report_pending=lambda: self._lost_report is not None)
         self.error_messages = dict(DEFAULT_WORKER_ERRORS)
         for name, message in (error_messages or {}).items():
             if name not in self.error_messages:
@@ -235,12 +233,7 @@ class DocWorkerWrapper(ABC):
                 if text is not None:
                     text.format(**context)
             self.error_messages[name] = message
-        self.disconnected_grace_seconds = disconnected_grace_seconds
-        self.disconnected_mail_interval_seconds = disconnected_mail_interval_seconds
-        self._outage_lock = threading.Lock()
-        self._outage: Optional["_ServerOutage"] = None
-        self._lost_report: Optional["_LostReport"] = None
-        self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self))
+        self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self.outages))
         self._set_user_agent()
 
         # Setup directory structure
@@ -271,11 +264,26 @@ class DocWorkerWrapper(ABC):
         self.prefer_page_url = prefer_page_url
 
         self.job_history = JobHistory(job_history_path) if job_history_path is not None else None
-        self.mail_sender = mail_sender
-        self.mail_receivers = list(mail_receivers)
-        if mail_sender is not None and not self.mail_receivers:
-            logger.warning("Worker mail is off: the worker has a mail sender but no mail receivers")
-        self.health = WorkerHealth(self, health_config) if health_config is not None else None
+
+    @property
+    def identity(self) -> str:
+        """The worker's name, in its emails and as the User-Agent of its requests."""
+        return self._identity
+
+    @identity.setter
+    def identity(self, identity: str) -> None:
+        self._identity = identity
+        if self.mail is not None:
+            self.mail.identity = identity
+
+    def _active_job_id(self) -> Optional[str]:
+        """The job being worked on, also when only its lease is known."""
+        job = self.current_job if self.current_job is not None else self.current_lease
+        return None if job is None else str(job.id)
+
+    def _current_job_id(self) -> Optional[str]:
+        """The job being processed; a lease alone does not count."""
+        return None if self.current_job is None else str(self.current_job.id)
 
     @classmethod
     def from_config(cls, config: Config) -> "DocWorkerWrapper":
@@ -292,8 +300,8 @@ class DocWorkerWrapper(ABC):
     def wrapper_args(cls, config: Config) -> dict:
         """The wrapper's constructor arguments, from the settings of Config itself.
 
-        Builds the Connector, the MailSender and the health mail (when a mail
-        server is set) and the error messages.
+        Builds the Connector, the MailSender (when a mail server is set) and
+        the error messages.
         """
         if config.WORKER_KEY_FILE:
             with open(config.WORKER_KEY_FILE, encoding="utf-8") as file:
@@ -315,10 +323,6 @@ class DocWorkerWrapper(ABC):
                 send_receiver_window_seconds=config.MAIL_SEND_RECEIVER_WINDOW_SECONDS,
                 send_server_limit=config.MAIL_SEND_SERVER_LIMIT,
                 send_server_window_seconds=config.MAIL_SEND_SERVER_WINDOW_SECONDS)
-        health_config = None
-        if config.MAIL_SERVER:
-            health_config = WorkerHealthConfig(mail_startup=config.MAIL_STARTUP,
-                                               alive_interval_seconds=config.MAIL_ALIVE_INTERVAL_SECONDS)
         error_messages = {
             name: WorkerErrorMessage(getattr(config, f"ERROR_{name.upper()}_LOG"),
                                      getattr(config, f"ERROR_{name.upper()}_LOG_USER"))
@@ -332,9 +336,11 @@ class DocWorkerWrapper(ABC):
             prefer_page_url=config.PREFER_PAGE_URL,
             mail_sender=mail_sender, mail_receivers=config.MAIL_RECEIVER_MAILS,
             identity=config.WORKER_IDENTITY, hostname=config.WORKER_HOSTNAME, mail_subject=config.MAIL_SUBJECT,
-            health_config=health_config, error_messages=error_messages,
-            disconnected_grace_seconds=config.DISCONNECTED_GRACE_SECONDS,
-            disconnected_mail_interval_seconds=config.DISCONNECTED_MAIL_INTERVAL_SECONDS,
+            alive_mail_startup=config.ALIVE_MAIL_STARTUP,
+            alive_mail_interval_seconds=config.ALIVE_MAIL_INTERVAL_SECONDS,
+            outage_grace_seconds=config.OUTAGE_GRACE_SECONDS,
+            outage_mail_interval_seconds=config.OUTAGE_MAIL_INTERVAL_SECONDS,
+            error_messages=error_messages,
         )
 
     @classmethod
@@ -373,7 +379,7 @@ class DocWorkerWrapper(ABC):
         By default it takes the format of the first root handler that has one, else a
         format of its own, and lets every level through: what reaches it is decided by
         the loggers' levels. Override it for another format or level. The wrapper adds a
-        filter that leaves out the health checks, and closes the handler after the job.
+        filter that leaves out the ALIVE reports, and closes the handler after the job.
         """
         handler = logging.FileHandler(path)
         formatter = next((root_handler.formatter for root_handler in logging.getLogger().handlers
@@ -389,7 +395,7 @@ class DocWorkerWrapper(ABC):
         By default the handler is attached to the root logger from the moment the job is
         acquired until it is done, after on_job_finished. The log then holds the messages of
         the wrapper, of the worker's own code and of the libraries it uses, from every thread
-        but the health checks', as far as their loggers' levels let them through. Override it for a different scope,
+        but the ALIVE reports', as far as their loggers' levels let them through. Override it for a different scope,
         e.g. only some loggers; the handler is closed after this returns.
         """
         root_logger = logging.getLogger()
@@ -821,8 +827,8 @@ class DocWorkerWrapper(ABC):
             os.makedirs(job_dir, exist_ok=True)
 
             job_log_file_handler = self.job_log_handler(os.path.join(job_dir, "worker.log"))
-            # The health checks run beside every job and are not part of it.
-            job_log_file_handler.addFilter(lambda record: record.threadName != WorkerHealth.THREAD_NAME)
+            # The ALIVE reports run beside every job and are not part of it.
+            job_log_file_handler.addFilter(lambda record: record.threadName != AliveMonitor.THREAD_NAME)
             job_log.enter_context(self.job_logging(job_log_file_handler))
 
             # Log job acquisition summary
@@ -1044,14 +1050,12 @@ class DocWorkerWrapper(ABC):
         logger.info(f"Worker started, polling for jobs every {self.polling_interval} seconds")
         try:
             self._resolve_identity()
-            if self.health is not None:
-                self.health.start()
+            self.alive.start()
             while True:
                 if self._identity_from_key:
                     self._resolve_identity()
                 result = self.run_job_pipeline()
-                if self.health is not None:
-                    self.health.pipeline_returned()
+                self.alive.pipeline_returned()
                 if result is None:
                     time.sleep(self.polling_interval)
         except KeyboardInterrupt:
@@ -1061,8 +1065,7 @@ class DocWorkerWrapper(ABC):
             self._notify_worker_failure("Worker terminated unexpectedly.", exception=exception)
             raise
         finally:
-            if self.health is not None:
-                self.health.close()
+            self.alive.close()
 
 
     def _set_user_agent(self) -> None:
@@ -1221,86 +1224,18 @@ class DocWorkerWrapper(ABC):
             True if every receiver was sent the email; False otherwise, also when
             no mail sender or no receiver is configured
         """
-        if self.mail_sender is None:
+        if self.mail is None:
             logger.warning(f"Not sending email {subject!r}: the worker has no mail sender")
             return False
-        receivers = self.mail_receivers if receiver_mails is None else list(receiver_mails)
-        if not receivers:
-            logger.warning(f"Not sending email {subject!r}: the worker has no mail receivers")
-            return False
-        results = [self.mail_sender.send(subject, body, receiver) for receiver in receivers]
-        return all(results)
+        return self.mail.send_raw(subject, body, receiver_mails)
 
     def _notify_worker_failure(self, message: str, *, exception: Optional[BaseException] = None) -> None:
         """Alert when a failure cannot be communicated through job finalization."""
         if exception is not None:
             message = _join(message, "".join(traceback.format_exception(exception)).rstrip())
         logger.error("%s", message)
-        self._send_worker_mail("FAILURE", message)
-
-    def _send_worker_mail(self, status: str, message: str) -> None:
-        """Send worker mail with consistent identity, host and subject; without a
-        mail sender or receivers, worker mail is off and nothing is sent."""
-        if self.mail_sender is None or not self.mail_receivers:
-            return
-        now = datetime.now(timezone.utc)
-        try:
-            subject = self.mail_subject.format(identity=self.identity, hostname=self.hostname,
-                                               status=status, time=now)
-            fields = (("worker", self.identity), ("hostname", self.hostname),
-                      ("time", now.strftime("%Y-%m-%d %H:%M:%S UTC")), ("status", status))
-            header = "\n".join(_row(label, value) for label, value in fields)
-            self.send_mail(subject, f"{header}\n\n{message}\n")
-        except Exception:
-            # Alert delivery must not interrupt processing or cause another alert.
-            logger.exception("Could not send worker mail")
-
-    def _server_unreachable(self, request: str, error: str) -> None:
-        """A request could not reach DocAPI (see _is_unreachable_status): start or continue the outage, and mail DISCONNECTED or a
-        STILL DISCONNECTED reminder when due."""
-        logger.warning("DocAPI unreachable: %s: %s", request, error)
-        now, now_monotonic = datetime.now(timezone.utc), time.monotonic()
-        job = self.current_job.id if self.current_job is not None else (
-            self.current_lease.id if self.current_lease is not None else None)
-        with self._outage_lock:
-            outage = self._outage
-            if outage is None or outage.ended_at is not None:
-                outage = self._outage = _ServerOutage(now, now_monotonic, None if job is None else str(job))
-            outage.failed_requests += 1
-            outage.last_request, outage.last_error = request, error
-            status = None
-            if not outage.mailed:
-                # A job cannot be recovered mid-processing, so it is mailed at once.
-                if job is not None or now_monotonic - outage.started_monotonic >= self.disconnected_grace_seconds:
-                    status, outage.mailed = "DISCONNECTED", True
-                    if outage.job_id is None and job is not None:
-                        outage.job_id = str(job)
-            elif now_monotonic - outage.last_mail_monotonic >= self.disconnected_mail_interval_seconds:
-                status = "STILL DISCONNECTED"
-            if status is not None:
-                outage.last_mail_monotonic = now_monotonic
-                message = self._outage_message(outage, status, now_monotonic)
-        if status is not None:
-            self._send_worker_mail(status, message)
-
-    def _server_reached(self) -> None:
-        """A request reached DocAPI: end the outage. RECONNECTED is mailed now,
-        or after a lost outcome is reported if one is waiting."""
-        with self._outage_lock:
-            outage = self._outage
-            if outage is None or outage.ended_at is not None:
-                return
-            outage.ended_at, outage.ended_monotonic = datetime.now(timezone.utc), time.monotonic()
-            waiting = self._lost_report is not None
-            if not waiting:
-                self._outage = None
-        logger.info("DocAPI is reachable again after %s", _duration(outage.ended_monotonic - outage.started_monotonic))
-        if not waiting:
-            self._mail_reconnected(outage)
-
-    def _mail_reconnected(self, outage: "_ServerOutage", lost_job: Optional[str] = None) -> None:
-        if outage.mailed or lost_job is not None:
-            self._send_worker_mail("RECONNECTED", self._outage_message(outage, "RECONNECTED", lost_job=lost_job))
+        if self.mail is not None:
+            self.mail.send("FAILURE", message)
 
     def _settle_lost_report(self) -> bool:
         """Report an outcome lost in an outage; False while DocAPI is still
@@ -1328,43 +1263,13 @@ class DocWorkerWrapper(ABC):
                 note = (f"{lost.job_id}: its {lost.response.status.value} outcome was not accepted "
                         f"(status {result.status}, code {result.code}); DocAPI had already requeued or "
                         f"failed the job")
-        with self._outage_lock:
-            self._lost_report = None
-            outage = self._outage
-            if outage is not None and outage.ended_at is not None:
-                self._outage = None
-            else:
-                outage = None
-        if outage is not None:
-            self._mail_reconnected(outage, lost_job=note)
+        self._lost_report = None
+        self.outages.report_settled(note)
         return True
 
-    def _outage_message(self, outage: "_ServerOutage", status: str, now_monotonic: Optional[float] = None,
-                        *, lost_job: Optional[str] = None) -> str:
-        if status == "RECONNECTED":
-            lines = ["DocAPI is reachable again.", "",
-                     _row("from", _now_text(outage.started_at)),
-                     _row("to", _now_text(outage.ended_at)),
-                     _row("lasted", _duration(outage.ended_monotonic - outage.started_monotonic)),
-                     _row("failed", f"{outage.failed_requests} requests"),
-                     _row("last error", outage.last_error)]
-            if lost_job is not None:
-                lines.append(_row("job", lost_job))
-            return "\n".join(lines)
-        lines = ["DocAPI cannot be reached." if status == "DISCONNECTED" else "DocAPI is still unreachable.", "",
-                 _row("since", _now_text(outage.started_at))]
-        if status != "DISCONNECTED":
-            lines += [_row("for", _duration(now_monotonic - outage.started_monotonic)),
-                      _row("failed", f"{outage.failed_requests} requests")]
-        lines += [_row("request", outage.last_request), _row("error", outage.last_error)]
-        if outage.job_id is not None:
-            lines.append(_row("job", f"{outage.job_id}: it cannot be finished; its outcome is reported "
-                                     f"once DocAPI is reachable again"))
-        return "\n".join(lines)
 
-
-# --- DocAPI outages: the wrapper's _server_unreachable/_server_reached and
-# _settle_lost_report use these. ---
+# --- DocAPI outages: whether a request reached DocAPI. The OutageMonitor
+# tracks outages; the wrapper holds a job outcome that could not be reported. ---
 
 # Responses that mean DocAPI is not reachable through its proxy, not that it
 # rejected the request.
@@ -1394,25 +1299,6 @@ def _is_unreachable(response: Optional[WorkerResponse]) -> bool:
                 and _is_unreachable_status(adapter_response.status, adapter_response.code)))
 
 
-def _now_text(now: datetime) -> str:
-    return now.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-@dataclass
-class _ServerOutage:
-    """A time when the worker's requests could not reach DocAPI."""
-    started_at: datetime
-    started_monotonic: float
-    job_id: Optional[str]           # The job being processed when it started.
-    failed_requests: int = 0
-    last_request: str = ""
-    last_error: str = ""
-    mailed: bool = False            # DISCONNECTED was sent.
-    last_mail_monotonic: float = 0.0
-    ended_at: Optional[datetime] = None
-    ended_monotonic: Optional[float] = None
-
-
 @dataclass
 class _LostReport:
     """A job outcome that could not be reported because DocAPI was unreachable."""
@@ -1421,14 +1307,14 @@ class _LostReport:
 
 
 class _ReachabilityConnector:
-    """Passes a Connector through and tells the worker whether each DocAPI
-    request reached the server."""
+    """Passes a Connector through and tells the OutageMonitor whether each
+    DocAPI request reached the server."""
 
     REQUEST_METHODS = ("get", "post", "put", "patch", "delete")
 
-    def __init__(self, connector: Connector, worker: DocWorkerWrapper):
+    def __init__(self, connector: Connector, outages: OutageMonitor):
         self._connector = connector
-        self._worker = worker
+        self._outages = outages
 
     def __getattr__(self, name):
         attribute = getattr(self._connector, name)
@@ -1440,16 +1326,16 @@ class _ReachabilityConnector:
             try:
                 response = attribute(url, *args, **kwargs)
             except (requests.ConnectionError, requests.Timeout) as error:
-                self._worker._server_unreachable(label, f"{type(error).__name__}: {error}")
+                self._outages.unreachable(label, f"{type(error).__name__}: {error}")
                 raise
             status = getattr(response, "status_code", None)
             # Only a 404's body is read: its code tells DocAPI's own 404 from a proxy's.
             code = response_code(response) if status == 404 else None
             if _is_unreachable_status(status, code):
-                self._worker._server_unreachable(
+                self._outages.unreachable(
                     label, f"HTTP {status}" + (" without a DocAPI code" if status == 404 else ""))
             else:
-                self._worker._server_reached()
+                self._outages.reached()
             return response
 
         return request
@@ -1638,134 +1524,6 @@ class JobHistory:
         return result
 
 
-@dataclass(frozen=True)
-class WorkerHealthConfig:
-    """Opt-in lifecycle mail settings for DocWorkerWrapper.
-
-    Requires the wrapper's mail_sender and mail_receivers. An alive interval of
-    zero disables periodic mail. Explicit failure mail is handled independently
-    by the wrapper.
-    These notifications do not replace DocAPI's job outcome notifications.
-
-    Enable when constructing a worker subclass::
-
-        worker = MyWorker(
-            api_url=url, connector=connector, base_dir=data_dir,
-            mail_sender=sender, mail_receivers=["admin@example.org"],
-            identity="OCR worker", health_config=WorkerHealthConfig(),
-        )
-        worker.start()
-    """
-    mail_startup: bool = True
-    alive_interval_seconds: float = 86400
-
-    def __post_init__(self):
-        if not math.isfinite(self.alive_interval_seconds) or self.alive_interval_seconds < 0:
-            raise ValueError("alive_interval_seconds must be a finite, nonnegative number")
-
-
-class WorkerHealth:
-    # The thread that checks the worker's health and sends its ALIVE mail.
-    THREAD_NAME = "worker-health"
-
-    def __init__(self, worker: DocWorkerWrapper, config: WorkerHealthConfig):
-        self.worker = worker
-        self.mail_startup = config.mail_startup
-        self.alive_interval = config.alive_interval_seconds
-        self.started = time.monotonic()
-        self.last_pipeline_return = None
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = None
-
-    def start(self):
-        if self.worker.mail_sender is None:
-            message = "Worker health requires a mail sender."
-            logger.warning(message)
-            raise ValueError(message)
-        if not self.worker.mail_receivers:
-            message = "Worker health requires mail receivers."
-            logger.warning(message)
-            raise ValueError(message)
-        if self.mail_startup:
-            self.send_alive()
-        if self.alive_interval > 0:
-            thread = threading.Thread(target=self._run, name=self.THREAD_NAME, daemon=True)
-            thread.start()
-            self._thread = thread
-
-    def pipeline_returned(self):
-        with self._lock:
-            self.last_pipeline_return = time.monotonic()
-
-    def send_alive(self):
-        now = time.monotonic()
-        with self._lock:
-            last_return = self.last_pipeline_return
-        job = self.worker.current_job
-        lines = [
-            _row("uptime", _duration(now - self.started)),
-            _row("last job", "none yet" if last_return is None else f"{_duration(now - last_return)} ago"),
-            _row("active job", str(job.id) if job is not None else "none active"),
-        ]
-        history = self.worker.job_history
-        if history is not None:
-            try:
-                stats = history.statistics()
-                if stats.get("invalid_records", 0):
-                    lines += ["", "history", _row("unreadable", str(stats["invalid_records"]) + " records; inspect worker log", " ")]
-                for name, label in (("last_24_hours", "last 24 hours"), ("last_7_days", "last 7 days"),
-                                    ("total", "all time")):
-                    window = stats[name]
-                    counts = window["outcomes"]
-                    lines += ["", label,
-                              _row("attempts", window["attempts"], " "),
-                              _row("unique jobs", window["jobs"], " ")]
-                    for outcome, outcome_label in (("ok", "ok"), ("error", "error"), ("fail", "failed"),
-                                                   ("interrupted", "interrupted"), ("crashed", "crashed")):
-                        lines.append(_row(outcome_label, counts[outcome], " "))
-                    lines.append(_row("report fail", window["report_failures"], " "))
-                    lines.append(_row("runtime", _duration(window["duration_seconds"]), " "))
-            except Exception:
-                logger.exception("Could not read worker job history statistics")
-                lines += ["", "history", _row("statistics", "unavailable; inspect worker log", " ")]
-        message = "\n".join(lines) + "\n"
-        # This reports process liveness, not proof that inference is progressing.
-        self.worker._send_worker_mail("ALIVE", message)
-
-    def _run(self):
-        while not self._stop.wait(self.alive_interval):
-            self.send_alive()
-
-    def close(self):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1)
-
-
 def _join(*parts: Optional[str]) -> str:
     """Join the nonempty text parts with blank lines."""
     return "\n\n".join(part for part in parts if part)
-
-
-def _row(label: str, value: str, indent: str = "") -> str:
-    return textwrap.fill(str(value), width=60,
-                         initial_indent=f"{indent}{label:<12}",
-                         subsequent_indent=indent + " " * 12,
-                         break_long_words=False, break_on_hyphens=False)
-
-
-def _duration(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours or days:
-        parts.append(f"{hours}h")
-    if minutes or hours or days:
-        parts.append(f"{minutes}m")
-    parts.append(f"{seconds}s")
-    return " ".join(parts)

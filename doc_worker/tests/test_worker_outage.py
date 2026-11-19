@@ -10,6 +10,8 @@ import pytest
 import requests
 
 from doc_worker.doc_worker_wrapper import DocWorkerWrapper, WorkerResponse
+from doc_worker.outage_monitor import OutageMonitor
+from doc_worker.worker_mail import WorkerMail
 
 
 class FakeResponse:
@@ -87,12 +89,12 @@ def server():
 def worker(tmp_path, server, clock):
     return Worker("http://docapi.example.org/", server, base_dir=str(tmp_path), mail_sender=mock.Mock(),
                   mail_receivers=["admin@example.org"], identity="OCR worker", hostname="host",
-                  disconnected_grace_seconds=60, disconnected_mail_interval_seconds=3600)
+                  outage_grace_seconds=60, outage_mail_interval_seconds=3600)
 
 
 def _mails(worker):
     # Bodies with their wrapped lines joined.
-    return [(call.args[0], " ".join(call.args[1].split())) for call in worker.mail_sender.send.call_args_list]
+    return [(call.args[0], " ".join(call.args[1].split())) for call in worker.mail.sender.send.call_args_list]
 
 
 def _subjects(worker):
@@ -268,16 +270,45 @@ def test_a_request_that_times_out_is_an_outage(tmp_path, clock):
         listener.listen()
         worker = Worker(f"http://127.0.0.1:{listener.getsockname()[1]}/", Connector("key", timeout=(1, 0.2)),
                         base_dir=str(tmp_path), mail_sender=mock.Mock(), mail_receivers=["admin@example.org"],
-                        identity="OCR worker", hostname="host", disconnected_grace_seconds=0)
+                        identity="OCR worker", hostname="host", outage_grace_seconds=0)
         assert worker.run_job_pipeline() is None
     assert _subjects(worker) == ["[OCR worker] DISCONNECTED (host)"]
     assert "ReadTimeout" in _mails(worker)[0][1]
 
 
-@pytest.mark.parametrize("settings", [dict(disconnected_grace_seconds=-1),
-                                      dict(disconnected_grace_seconds=float("inf")),
-                                      dict(disconnected_mail_interval_seconds=0),
-                                      dict(disconnected_mail_interval_seconds=float("nan"))])
+@pytest.mark.parametrize("settings", [dict(outage_grace_seconds=-1),
+                                      dict(outage_grace_seconds=float("inf")),
+                                      dict(outage_mail_interval_seconds=0),
+                                      dict(outage_mail_interval_seconds=float("nan"))])
 def test_invalid_outage_settings_are_rejected(tmp_path, settings):
     with pytest.raises(ValueError):
         Worker("http://docapi.example.org/", FakeServer(), base_dir=str(tmp_path), **settings)
+
+
+# --- OutageMonitor on its own ---
+
+def test_an_outage_without_mail_is_only_logged(caplog):
+    outages = OutageMonitor(None, grace_seconds=0)
+    outages.unreachable("GET /v1/me", "ConnectionError: refused")
+    outages.reached()
+    assert "DocAPI unreachable: GET /v1/me" in caplog.text and "DocAPI is reachable again" in caplog.text
+
+
+def test_reconnected_waits_for_a_pending_report():
+    pending = [True]
+    mail = WorkerMail(mock.Mock(), ["admin@example.org"], identity="worker abc", hostname="host")
+    outages = OutageMonitor(mail, grace_seconds=0, report_pending=lambda: pending[0])
+    outages.unreachable("PATCH /v1/jobs/job-1/finish", "HTTP 503")
+    outages.reached()
+    assert [call.args[0] for call in mail.sender.send.call_args_list] == ["[worker abc] DISCONNECTED (host)"]
+    pending[0] = False
+    outages.report_settled("job-1: reported as ok after the outage")
+    subject, body = mail.sender.send.call_args.args[:2]
+    assert subject == "[worker abc] RECONNECTED (host)"
+    assert "job-1: reported as ok after the outage" in " ".join(body.split())
+
+
+@pytest.mark.parametrize("settings", [dict(grace_seconds=-1), dict(mail_interval_seconds=0)])
+def test_invalid_outage_timing_is_rejected(settings):
+    with pytest.raises(ValueError):
+        OutageMonitor(None, **settings)
