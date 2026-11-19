@@ -1,3 +1,20 @@
+# Deployment settings
+
+The server reads its settings from the environment. `.env_example` lists them
+all, each with its default; copy it to `.env` and change what you need.
+
+For a Docker deployment with `compose.yml`, also append `.env_docker_example`
+to `.env`:
+
+```sh
+cat .env_example .env_docker_example > .env
+```
+
+It holds the `POSTGRES_*` settings of the `db` and `db-backup` services. Compose
+reads them from `.env` to fill `${...}` in `compose.yml`, which also builds the
+server's `DATABASE_URL` from them. Keep `.env` out of version control; it holds
+secrets.
+
 # Database compatibility and migrations
 
 DocAPI initializes an empty database on startup. Existing databases are governed

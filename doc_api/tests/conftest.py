@@ -19,7 +19,7 @@ import pytest_asyncio
 
 from doc_api.api import main
 from doc_api.api.checkers import cleanup, job_readiness
-from doc_api.api import mail_senders
+from doc_api.api import services
 from doc_api.api import database as db_module
 from doc_api.api.main import app
 from doc_api.api.schemas.base_objects import ProcessingState
@@ -67,11 +67,23 @@ async def isolated_database(monkeypatch):
             await admin.close()
 
 
+@pytest.fixture
+def rebuild_services(monkeypatch):
+    """The server builds its masker and mail senders once, at startup
+    (api/services.py). A test that changes their settings calls this to build
+    them again from the settings in force; the originals come back afterwards."""
+    def rebuild():
+        monkeypatch.setattr(services, "masker", services.build_masker(config))
+        monkeypatch.setattr(services, "mail_senders", {
+            channel: services.build_mail_sender(config, channel) for channel in services.MAIL_CHANNELS})
+    return rebuild
+
+
 @pytest.fixture(autouse=True)
-def fresh_mail_senders(monkeypatch):
-    # Senders and their limits live for the server process; each test builds new
-    # ones from its own settings on first use.
-    monkeypatch.setattr(mail_senders, "_senders", {})
+def fresh_services(rebuild_services):
+    # Senders and their limits live for the server process; each test starts
+    # with new ones.
+    rebuild_services()
 
 
 @pytest.fixture
@@ -91,13 +103,14 @@ def test_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "PRODUCTION", False)
     monkeypatch.setattr(config, "ADMIN_KEY", None)
     monkeypatch.setattr(config, "INTERNAL_MAIL_SERVER", None)
+    monkeypatch.setitem(services.mail_senders, "INTERNAL", None)
     monkeypatch.setattr(config, "KEY_PREFIX", "doc-api")
     monkeypatch.setattr(config, "HMAC_SECRET", "isolated-test-hmac-secret")
     monkeypatch.setattr(config, "DELETE_JOB_INPUTS_ON_COMPLETION", False)
     monkeypatch.setattr(config, "DELETE_JOB_OUTPUTS", False)
     monkeypatch.setattr(config, "REQUIRE_IMAGE_EXTENSION", False)
     monkeypatch.setattr(config, "ALLOWED_IMAGE_EXTENSIONS", set())
-    for role in ("ADMIN", "READONLY", "USER", "WORKER"):
+    for role in ("ADMIN", "MANAGER", "READONLY", "USER", "WORKER"):
         monkeypatch.setattr(config, f"TEST_{role}_KEY", f"doc-api.test{role.lower()}kid.test{role.lower()}secret")
         monkeypatch.setattr(config, f"TEST_{role}_KEY_LABEL", f"test-{role.lower()}")
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
@@ -904,7 +917,7 @@ def blocked_upload_preparation(monkeypatch):
 
 
 @pytest.fixture
-def job_mail_outbox(monkeypatch):
+def job_mail_outbox(monkeypatch, rebuild_services):
     """Capture SMTP messages without sending email outside the test process."""
     from email import policy
     from email.parser import Parser
@@ -915,6 +928,7 @@ def job_mail_outbox(monkeypatch):
         monkeypatch.setattr(config, f"{channel}_MAIL_PASSWORD", None)
         monkeypatch.setattr(config, f"{channel}_MAIL_SEND_RECEIVER_LIMIT", 0)
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
+    rebuild_services()
     messages = []
     smtp = MagicMock()
     smtp.return_value.sendmail.side_effect = (
@@ -925,11 +939,8 @@ def job_mail_outbox(monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def manager_headers(client, admin_headers):
-    response = await client.post("/v1/admin/keys", headers=admin_headers,
-                                 json={"label": "test-manager", "role": "manager"})
-    assert response.status_code == 201, response.text
-    return {"X-API-Key": response.json()["data"]["secret"]}
+async def manager_headers(client, test_settings):
+    return {"X-API-Key": config.TEST_MANAGER_KEY}
 
 
 @pytest.fixture
@@ -941,10 +952,7 @@ def management_role():
 async def management_headers(client, admin_headers, management_role):
     if management_role == "admin":
         return admin_headers
-    response = await client.post("/v1/admin/keys", headers=admin_headers,
-                                 json={"label": "test-manager", "role": "manager"})
-    assert response.status_code == 201, response.text
-    return {"X-API-Key": response.json()["data"]["secret"]}
+    return {"X-API-Key": config.TEST_MANAGER_KEY}
 
 
 async def _manager_headers(client, label):

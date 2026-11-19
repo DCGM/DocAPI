@@ -50,9 +50,7 @@ async def test_get_keys_200(client, management_headers, dummy, management_role):
     assert body["code"] == AppCode.KEYS_RETRIEVED.value
     data = body["data"]
     assert isinstance(data, list)
-    expected = {"test-admin", "test-readonly", "test-user", "test-worker"}
-    if management_role == "manager":
-        expected.add("test-manager")
+    expected = {"test-admin", "test-manager", "test-readonly", "test-user", "test-worker"}
     assert {item["label"] for item in data} == expected
     for item in data:
         assert "label" in item

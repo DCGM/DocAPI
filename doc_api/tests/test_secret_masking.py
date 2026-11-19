@@ -5,6 +5,7 @@ import logging
 
 import pytest
 
+from doc_api.api import services
 from doc_api.api.checkers import job_mail
 from doc_api.api.schemas.base_objects import ProcessingState
 from doc_api.config import Config, config
@@ -27,8 +28,10 @@ SETTINGS = {
 
 
 @pytest.fixture(autouse=True)
-def masking_settings(monkeypatch):
-    """Each test starts from the default settings; monkeypatch restores them."""
+def masking_settings(monkeypatch, rebuild_services):
+    """Each test starts from the default settings; monkeypatch restores them.
+    A test that changes them calls rebuild_services(), as the server builds its
+    masker once at startup."""
     monkeypatch.setattr(config, "SECRET_MASKING", True)
     monkeypatch.setattr(config, "SECRET_MASKING_ALLOWED_KEYS", [])
     monkeypatch.setattr(config, "SECRET_MASKING_HIGH_ENTROPY", False)
@@ -38,16 +41,16 @@ def masking_settings(monkeypatch):
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_END", 4)
     monkeypatch.setattr(config, "SECRET_MASKING_INTERNAL_MAIL", True)
     monkeypatch.setattr(config, "SECRET_MASKING_EXTERNAL_MAIL", False)
-
+    rebuild_services()
 
 
 def masked_text(text):
-    """Masked with the server's settings in force, as the server masks."""
-    return config.secret_masking().mask_text(text)
+    """Masked with the server's masker, as the server masks."""
+    return services.masker.mask_text(text)
 
 
 def masked_struct(value):
-    return config.secret_masking().mask_struct(value)
+    return services.masker.mask_struct(value)
 
 
 def test_mask_secrets_in_struct_nested_keys_and_subtrees():
@@ -68,10 +71,11 @@ def test_mask_secrets_in_struct_nested_keys_and_subtrees():
     assert masked_struct(("x", 1, None)) == ("x", 1, None)
 
 
-def test_mask_secrets_in_struct_allowlist(monkeypatch):
+def test_mask_secrets_in_struct_allowlist(monkeypatch, rebuild_services):
     settings = {"api_key_env": "sk-abcdefghijklmnopqrstuvwx", "session": "s1", "cache_key": "pages", "author": "A"}
     assert masked_struct(settings) == {"api_key_env": MASK, "session": MASK, "cache_key": MASK, "author": MASK}
     monkeypatch.setattr(config, "SECRET_MASKING_ALLOWED_KEYS", ["api_key_env", "Cache-Key", " AUTHOR "])
+    rebuild_services()
     # Allowed values are still scanned for secret patterns.
     assert masked_struct(settings) == \
            {"api_key_env": MASK, "session": MASK, "cache_key": "pages", "author": "A"}
@@ -124,18 +128,20 @@ def test_dotted_names_with_key_prefix_are_not_masked(monkeypatch, prefix):
     assert masked_struct({"worker": {"api_key": key}}) == {"worker": {"api_key": MASK}}
 
 
-def test_custom_mask(monkeypatch):
+def test_custom_mask(monkeypatch, rebuild_services):
     monkeypatch.setattr(config, "SECRET_MASKING_MASK", "[hidden]")
+    rebuild_services()
     assert masked_struct({"api_key": "x", "n": 1}) == {"api_key": "[hidden]", "n": 1}
     assert masked_text(f"api_key={OPENAI_KEY}, note {OPENAI_KEY}") == "api_key=[hidden], note [hidden]"
 
 
-def test_mask_secrets_in_text_high_entropy_switch(monkeypatch):
+def test_mask_secrets_in_text_high_entropy_switch(monkeypatch, rebuild_services):
     text = "token-free id Q2xhdWRlIGNvZGUgaXMgaGVyZQ1234abcdXYZ and sha " + "9f86d081884c7d65" * 4
     assert masked_text(text) == text
     masked = "token-free id ***** and sha " + "9f86d081884c7d65" * 4
     assert SecretMasker(high_entropy=True).mask_text(text) == masked
     monkeypatch.setattr(config, "SECRET_MASKING_HIGH_ENTROPY", True)
+    rebuild_services()
     assert masked_text(text) == masked
 
 
@@ -144,23 +150,22 @@ def _masked_log(*, propagate_from: str = "doc_api.tests.secret_masking"):
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(logging.Formatter("%(levelname)s : %(message)s"))
-    handler.addFilter(SecretMaskingFilter(masker=config.secret_masking))
+    handler.addFilter(SecretMaskingFilter(masker=services.masker))
     logger = logging.getLogger(propagate_from)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     return logger, handler, stream
 
 
-def test_server_log_handlers_mask_secrets(monkeypatch):
+def test_server_log_handlers_mask_secrets():
+    from logging.config import BaseConfigurator
     server = Config()
     handlers = server.LOGGING_CONFIG["handlers"]
     mask_filter = server.LOGGING_CONFIG["filters"]["mask_secrets"]
     assert mask_filter["()"] == "doc_api.tools.secrets.SecretMaskingFilter"
     assert all(handler["filters"] == ["mask_secrets"] for handler in handlers.values())
-    # The filter reads the server's settings in force for each record.
-    monkeypatch.setattr(server, "SECRET_MASKING_MASK", "[hidden]")
-    assert mask_filter["masker"]() == server.secret_masking()
-    assert mask_filter["masker"]().mask == "[hidden]"
+    # The filter uses the server's masker, built once at startup.
+    assert BaseConfigurator({}).convert(mask_filter["masker"]) is services.masker
 
 
 def test_logging_masks_only_exceptions():
@@ -229,7 +234,7 @@ async def test_unhandled_error_masks_url_and_mail(monkeypatch):
     from doc_api.api import main
     from doc_api.config import config
     sender = Mock()
-    monkeypatch.setattr(config, "mail_sender", Mock(return_value=sender))
+    monkeypatch.setattr(services, "mail_sender", Mock(return_value=sender))
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
@@ -258,7 +263,7 @@ async def test_unhandled_error_mail_unmasked_when_internal_mail_masking_off(monk
     from doc_api.api import main
     monkeypatch.setattr(config, "SECRET_MASKING_INTERNAL_MAIL", False)
     sender = Mock()
-    monkeypatch.setattr(config, "mail_sender", Mock(return_value=sender))
+    monkeypatch.setattr(services, "mail_sender", Mock(return_value=sender))
     monkeypatch.setattr(config, "INTERNAL_MAIL_RECEIVER_MAILS", ["admin@example.com"])
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
@@ -283,8 +288,9 @@ def _sent_report(outbox, subject, body, channel="INTERNAL"):
     return message["Subject"], message.get_payload(decode=True).decode()
 
 
-def test_masking_can_be_disabled(monkeypatch, job_mail_outbox):
+def test_masking_can_be_disabled(monkeypatch, rebuild_services, job_mail_outbox):
     monkeypatch.setattr(config, "SECRET_MASKING", False)
+    rebuild_services()
     assert masked_struct(SETTINGS) == SETTINGS
     assert masked_text(f"api_key={OPENAI_KEY}") == f"api_key={OPENAI_KEY}"
     logger, handler, stream = _masked_log()
@@ -300,8 +306,9 @@ def test_masking_can_be_disabled(monkeypatch, job_mail_outbox):
     assert _sent_report(job_mail_outbox, "Job", f"api_key={OPENAI_KEY}")[1] == f"api_key={OPENAI_KEY}"
 
 
-def test_partial_keys_in_struct(monkeypatch):
+def test_partial_keys_in_struct(monkeypatch, rebuild_services):
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["API-Key", "model"])
+    rebuild_services()
     settings = {"vlm": {"api_key": OPENAI_KEY, "model": "gpt-4o-mini-2024-07-18-preview", "token": OPENAI_KEY},
                 "short": {"api_key": "sk-abc"}, "nested": {"api_key": {"value": OPENAI_KEY}},
                 "number": {"model": 4}, "unset": {"api_key": None}}
@@ -314,6 +321,7 @@ def test_partial_keys_in_struct(monkeypatch):
     }
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_START", 3)
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_END", 0)
+    rebuild_services()
     assert masked_struct({"api_key": OPENAI_KEY}) == {"api_key": "sk-*****"}
 
 
@@ -330,14 +338,16 @@ def test_partial_keys_in_struct(monkeypatch):
     # Outside a partial-key pair the general masking applies.
     (f"fallback {OPENAI_KEY}", "fallback *****"),
 ])
-def test_partial_keys_in_text(monkeypatch, text, expected):
+def test_partial_keys_in_text(monkeypatch, rebuild_services, text, expected):
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["api_key"])
+    rebuild_services()
     assert masked_text(text) == expected
 
 
-def test_partial_keys_apply_with_masking_disabled(monkeypatch, job_mail_outbox):
+def test_partial_keys_apply_with_masking_disabled(monkeypatch, rebuild_services, job_mail_outbox):
     monkeypatch.setattr(config, "SECRET_MASKING", False)
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["api_key"])
+    rebuild_services()
     assert masked_struct({"api_key": OPENAI_KEY, "token": OPENAI_KEY}) == \
            {"api_key": OPENAI_KEY_PARTLY, "token": OPENAI_KEY}
     assert masked_text(f"api_key={OPENAI_KEY} token={OPENAI_KEY}") == \
@@ -367,7 +377,7 @@ def test_masking_configuration(monkeypatch):
             defaults.SECRET_MASKING_PARTIAL_END) == ([], 8, 4)
     assert (defaults.SECRET_MASKING_INTERNAL_MAIL, defaults.SECRET_MASKING_EXTERNAL_MAIL) == (True, False)
     # The server's defaults are the masking tool's own.
-    assert defaults.secret_masking() == SecretMasker()
+    assert services.build_masker(defaults) == SecretMasker()
     monkeypatch.setenv("SECRET_MASKING", "false")
     monkeypatch.setenv("SECRET_MASKING_ALLOWED_KEYS", " api_key_env, max_tokens ,,")
     monkeypatch.setenv("SECRET_MASKING_HIGH_ENTROPY", "true")
@@ -384,7 +394,7 @@ def test_masking_configuration(monkeypatch):
     assert (configured.SECRET_MASKING_PARTIAL_KEYS, configured.SECRET_MASKING_PARTIAL_START,
             configured.SECRET_MASKING_PARTIAL_END) == (["api_key", "vlm_key"], 4, 0)
     assert (configured.SECRET_MASKING_INTERNAL_MAIL, configured.SECRET_MASKING_EXTERNAL_MAIL) == (False, True)
-    assert configured.secret_masking() == SecretMasker(
+    assert services.build_masker(configured) == SecretMasker(
         enabled=False, mask="[hidden]", allowed_keys=["api_key_env", "max_tokens"], high_entropy=True,
         partial_keys=["api_key", "vlm_key"], partial_start=4, partial_end=0)
     monkeypatch.setenv("SECRET_MASKING_MASK", "")
@@ -448,9 +458,10 @@ async def test_get_job_200_engine_settings_masked_for_readers(client, reader_hea
 
 @pytest.mark.parametrize("reader_role", ["user", "admin", "manager"])
 @pytest.mark.asyncio
-async def test_get_job_200_partial_keys_revealed_partly(monkeypatch, client, reader_headers, reader_role, job_factory,
+async def test_get_job_200_partial_keys_revealed_partly(monkeypatch, rebuild_services, client, reader_headers, reader_role, job_factory,
                                                         engine_factory, db_sessions):
     monkeypatch.setattr(config, "SECRET_MASKING_PARTIAL_KEYS", ["api_key"])
+    rebuild_services()
     engine = await engine_factory(name="partial-masking-engine")
     job_id = await job_factory(ProcessingState.PROCESSING)
     async with db_sessions.begin() as db:

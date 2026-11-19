@@ -31,7 +31,7 @@ from doc_api.api.checkers.cleanup import run_cleanup
 from doc_api.api.checkers.job_readiness import run_job_readiness_checks
 from doc_api.api.checkers.job_leases import run_job_lease_checks
 from doc_api.api.checkers.job_mail import run_job_mail_checks
-from doc_api.api.mail_senders import mail_sender
+from doc_api.api import services
 from doc_api.api.routes import admin_router, debug_router, root_router, monitor_router, monitor_page_router
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
@@ -140,85 +140,21 @@ async def lifespan(app: FastAPI):
         )
 
     if not config.PRODUCTION:
-        _, _, test_admin_salt = issue_key_components()
-        test_admin_kid, test_admin_secret = parse_api_key(config.TEST_ADMIN_KEY)
-        test_admin_digest = salted_hmac_sha256_hex(test_admin_secret, test_admin_salt)
-
-        _, _, test_readonly_salt = issue_key_components()
-        test_readonly_kid, test_readonly_secret = parse_api_key(config.TEST_READONLY_KEY)
-        test_readonly_digest = salted_hmac_sha256_hex(test_readonly_secret, test_readonly_salt)
-
-        _, _, test_user_salt = issue_key_components()
-        test_user_kid, test_user_secret = parse_api_key(config.TEST_USER_KEY)
-        test_user_digest = salted_hmac_sha256_hex(test_user_secret, test_user_salt)
-
-        _, _, test_worker_salt = issue_key_components()
-        test_worker_kid, test_worker_secret = parse_api_key(config.TEST_WORKER_KEY)
-        test_worker_digest = salted_hmac_sha256_hex(test_worker_secret, test_worker_salt)
+        test_keys = []
+        for role in (KeyRole.ADMIN, KeyRole.MANAGER, KeyRole.READONLY, KeyRole.USER, KeyRole.WORKER):
+            kid, secret = parse_api_key(getattr(config, f"TEST_{role.name}_KEY"))
+            test_keys.append((role, kid, secret, getattr(config, f"TEST_{role.name}_KEY_LABEL")))
 
         async with open_session() as db:
-            result = await db.execute(
-                select(model.Key).where(model.Key.kid.in_([
-                    test_admin_kid,
-                    test_readonly_kid,
-                    test_user_kid,
-                    test_worker_kid,
-                ]))
-            )
+            result = await db.execute(select(model.Key).where(model.Key.kid.in_([kid for _, kid, _, _ in test_keys])))
             existing_keys = {k.kid for k in result.scalars().all()}
-
-            if test_admin_kid not in existing_keys:
-                db.add(
-                    model.Key(
-                        kid=test_admin_kid,
-                        salt=test_admin_salt,
-                        key_hash=test_admin_digest,
-                        label=config.TEST_ADMIN_KEY_LABEL,
-                        active=True,
-                        role=KeyRole.ADMIN,
-                    )
-                )
-                logger.info("Test admin API key created!")
-
-            if test_readonly_kid not in existing_keys:
-                db.add(
-                    model.Key(
-                        kid=test_readonly_kid,
-                        salt=test_readonly_salt,
-                        key_hash=test_readonly_digest,
-                        label=config.TEST_READONLY_KEY_LABEL,
-                        active=True,
-                        role=KeyRole.READONLY,
-                    )
-                )
-                logger.info("Test readonly API key created!")
-
-            if test_user_kid not in existing_keys:
-                db.add(
-                    model.Key(
-                        kid=test_user_kid,
-                        salt=test_user_salt,
-                        key_hash=test_user_digest,
-                        label=config.TEST_USER_KEY_LABEL,
-                        active=True,
-                        role=KeyRole.USER,
-                    )
-                )
-                logger.info("Test user API key created!")
-
-            if test_worker_kid not in existing_keys:
-                db.add(
-                    model.Key(
-                        kid=test_worker_kid,
-                        salt=test_worker_salt,
-                        key_hash=test_worker_digest,
-                        label=config.TEST_WORKER_KEY_LABEL,
-                        active=True,
-                        role=KeyRole.WORKER,
-                    )
-                )
-                logger.info("Test worker API key created!")
-
+            for role, kid, secret, label in test_keys:
+                if kid in existing_keys:
+                    continue
+                _, _, salt = issue_key_components()
+                db.add(model.Key(kid=kid, salt=salt, key_hash=salted_hmac_sha256_hex(secret, salt),
+                                 label=label, active=True, role=role))
+                logger.info(f"Test {role.value} API key created!")
             await db.commit()
 
 
@@ -304,7 +240,7 @@ async def validation_handler(_: Request, exc: RequestValidationError):
         # UploadFile/type validators can include exception objects in ctx.
         # Preserve their messages without turning a client error into a 500.
         # Errors echo the submitted input, which may hold secrets.
-        details=config.secret_masking().mask_struct(jsonable_encoder(exc.errors(), custom_encoder={
+        details=services.masker.mask_struct(jsonable_encoder(exc.errors(), custom_encoder={
             Exception: str,
             # Invalid numeric input must still produce a valid JSON error response.
             float: lambda value: value if isfinite(value) else str(value),
@@ -319,8 +255,8 @@ async def unhandled(request: Request, exc: Exception):
     # logged exception is masked by the log handlers' filter; the URL line is
     # plain text and is masked here, and so is the mail if
     # SECRET_MASKING_INTERNAL_MAIL is on.
-    url = config.secret_masking().mask_text(str(request.url))
-    sender = mail_sender("INTERNAL")
+    url = services.masker.mask_text(str(request.url))
+    sender = services.mail_sender("INTERNAL")
     receivers = config.INTERNAL_MAIL_RECEIVER_MAILS
     if sender is not None and receivers:
         subject = config.INTERNAL_ERROR_MAIL_SUBJECT_TEMPLATE.format(
@@ -331,7 +267,7 @@ async def unhandled(request: Request, exc: Exception):
                 f'ERROR: {exc}\n\n'
                 f'{traceback.format_exc()}')
         if config.SECRET_MASKING_INTERNAL_MAIL:
-            body = config.secret_masking().mask_text(body)
+            body = services.masker.mask_text(body)
         mail_error_in_background(sender, list(receivers), " ".join(subject.splitlines()), body)
     exception_logger.error(f'URL: {url}')
     exception_logger.error(f'CLIENT: {request.client}')
