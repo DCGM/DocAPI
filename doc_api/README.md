@@ -1,22 +1,25 @@
 # Deployment settings
 
 The server reads its settings from the environment. `.env_example` lists them
-all, each with its default; copy it to `.env` and change what you need.
+with their defaults; copy it to `.env` and change what you need.
 
-The texts and examples of the API documentation (`JOB_DEFINITION_*`,
-`META_JSON_*`, `RESULT_*`) are at the end of `.env_example`, commented out with
-their defaults. To show your own, uncomment a block and edit it. A value in single
-quotes may span several lines, which Docker Compose reads as they are; it must not
-contain a single quote.
+To show your own texts and examples in the API documentation (`/docs`), also
+append `.env_docs_example` and edit it. It holds the defaults of the
+`JOB_DEFINITION_*`, `META_JSON_*` and `RESULT_*` settings; each replaces its
+default as a whole. Leave it out to keep the built-in texts, which follow DocAPI
+updates. A value in single quotes may span several lines, which Docker Compose
+reads as they are; it must not contain a single quote.
 
 For a Docker deployment with `compose.yml`, also append `.env_docker_example`
 to `.env`:
 
 ```sh
-cat .env_example .env_docker_example > .env
+cat .env_example .env_docker_example > .env                     # default texts
+cat .env_example .env_docs_example .env_docker_example > .env   # your own texts
 ```
 
-It holds the `POSTGRES_*` settings of the `db` and `db-backup` services. Compose
+`.env_docker_example` holds the `POSTGRES_*` settings of the `db` and `db-backup`
+services. Compose
 reads them from `.env` to fill `${...}` in `compose.yml`, which also builds the
 server's `DATABASE_URL` from them. Keep `.env` out of version control; it holds
 secrets.

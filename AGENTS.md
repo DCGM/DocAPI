@@ -99,6 +99,8 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a re
   what they need.
 - Server settings are read from the environment in `doc_api/config.py`,
   validated at startup and documented in `doc_api/.env_example` (see Tests).
+  The API documentation texts are documented in `doc_api/.env_docs_example`,
+  which follows `.env_example` in `config.py`'s order.
   `doc_api/.env_docker_example` holds only the extra settings Compose reads for
   `doc_api/compose.yml`, the database settings; Docker deployments append it
   to `.env`.
