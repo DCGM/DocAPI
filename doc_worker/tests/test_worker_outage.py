@@ -53,6 +53,9 @@ class FakeServer:
                                                      "detail": "updated"})
         return FakeResponse(200, {"status": 200, "code": "JOB_QUEUE_EMPTY", "detail": "No job"})
 
+    def set_user_agent(self, user_agent):
+        self.user_agent = user_agent
+
     def post(self, url, **kwargs):
         return self._answer("POST", url)
 

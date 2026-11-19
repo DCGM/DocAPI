@@ -80,3 +80,13 @@ def silent_server():
 def test_a_server_that_never_answers_times_out(silent_server):
     with pytest.raises(requests.Timeout):
         Connector("key", timeout=(1, 0.2)).get(silent_server + "v1/jobs")
+
+
+def test_the_user_agent_is_requests_own_unless_set():
+    connector = Connector(api_key="k")
+    assert connector.session.headers["User-Agent"] == requests.utils.default_user_agent()
+    connector.set_user_agent("OCR worker prod")
+    assert (connector.user_agent, connector.session.headers["User-Agent"]) == ("OCR worker prod", "OCR worker prod")
+    connector.set_user_agent(None)
+    assert connector.session.headers["User-Agent"] == requests.utils.default_user_agent()
+    assert Connector(api_key="k", user_agent="myapp/2").session.headers["User-Agent"] == "myapp/2"

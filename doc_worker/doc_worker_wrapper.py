@@ -7,6 +7,7 @@ import zipfile
 import time
 import shutil
 import glob
+import inspect
 import traceback
 import math
 import tempfile
@@ -29,6 +30,8 @@ from doc_api.adapter import Adapter, AdapterResponse, response_code
 from doc_api.api.schemas.base_objects import Job, JobLease
 from doc_api.connector import Connector
 from doc_api.tools.mail_sender import MailSender
+
+from doc_worker.config import Config
 
 
 logger = logging.getLogger(__name__)
@@ -169,7 +172,10 @@ class DocWorkerWrapper(ABC):
                 send() filters subject and body to mask or redact it.
             mail_receivers: Who send_mail() and the wrapper's own mail go to by
                 default; each gets a separate email.
-            identity: Worker identity used in all wrapper emails; defaults to the class name.
+            identity: The worker's name, in the subject and "worker" line of its emails and
+                as the User-Agent of its requests, which the wrapper sets on the connector.
+                None takes the label of the worker's API key from DocAPI when start() runs,
+                and uses the class name until DocAPI has answered.
             hostname: Host label used in all wrapper emails; defaults to socket.gethostname().
             mail_subject: Python format string with identity, hostname, status (ALIVE,
                 FAILURE, DISCONNECTED, STILL DISCONNECTED or RECONNECTED), and time
@@ -208,6 +214,10 @@ class DocWorkerWrapper(ABC):
             logger.warning(message)
             raise ValueError(message)
         self.identity = type(self).__name__ if identity is None else identity
+        # Until DocAPI has said what the key's label is.
+        self._identity_from_key = identity is None
+        self._identity_warned = False
+        self._connector = connector
         self.hostname = socket.gethostname() if hostname is None else hostname
         self.mail_subject = mail_subject
         # Reject invalid templates before constructing the adapter or creating directories.
@@ -230,6 +240,7 @@ class DocWorkerWrapper(ABC):
         self._outage: Optional["_ServerOutage"] = None
         self._lost_report: Optional["_LostReport"] = None
         self.adapter = Adapter(api_url, _ReachabilityConnector(connector, self))
+        self._set_user_agent()
 
         # Setup directory structure
         if base_dir:
@@ -264,6 +275,96 @@ class DocWorkerWrapper(ABC):
         if mail_sender is not None and not self.mail_receivers:
             logger.warning("Worker mail is off: the worker has a mail sender but no mail receivers")
         self.health = WorkerHealth(self, health_config) if health_config is not None else None
+
+    @classmethod
+    def from_config(cls, config: Config) -> "DocWorkerWrapper":
+        """Create the worker from a doc_worker.config.Config.
+
+        The config was checked when it was built; this only reads it. The
+        wrapper's arguments come from wrapper_args(), a subclass's own from
+        subclass_args(). To build the worker any other way, pass its arguments
+        to the class directly.
+        """
+        return cls(**cls.wrapper_args(config), **cls.subclass_args(config))
+
+    @classmethod
+    def wrapper_args(cls, config: Config) -> dict:
+        """The wrapper's constructor arguments, from the settings of Config itself.
+
+        Builds the Connector, the MailSender and the health mail (when a mail
+        server is set) and the error messages.
+        """
+        if config.WORKER_KEY_FILE:
+            with open(config.WORKER_KEY_FILE, encoding="utf-8") as file:
+                api_key = file.read().strip()
+            if not api_key:
+                raise ValueError("WORKER_KEY_FILE is empty")
+        else:
+            api_key = config.WORKER_KEY
+        connector = Connector(api_key=api_key,
+                              timeout=(config.API_CONNECT_TIMEOUT_SECONDS, config.API_READ_TIMEOUT_SECONDS))
+        mail_sender = None
+        if config.MAIL_SERVER:
+            mail_sender = MailSender(
+                server=config.MAIL_SERVER, port=config.MAIL_PORT, security=config.MAIL_SECURITY,
+                ca_file=config.MAIL_CA_FILE, timeout=config.MAIL_TIMEOUT_SECONDS,
+                sender_mail=config.MAIL_SENDER_MAIL, sender_name=config.MAIL_SENDER_NAME,
+                username=config.MAIL_USERNAME, password=config.MAIL_PASSWORD,
+                send_receiver_limit=config.MAIL_SEND_RECEIVER_LIMIT,
+                send_receiver_window_seconds=config.MAIL_SEND_RECEIVER_WINDOW_SECONDS,
+                send_server_limit=config.MAIL_SEND_SERVER_LIMIT,
+                send_server_window_seconds=config.MAIL_SEND_SERVER_WINDOW_SECONDS)
+        health_config = None
+        if config.MAIL_SERVER:
+            health_config = WorkerHealthConfig(mail_startup=config.MAIL_STARTUP,
+                                               alive_interval_seconds=config.MAIL_ALIVE_INTERVAL_SECONDS)
+        error_messages = {
+            name: WorkerErrorMessage(getattr(config, f"ERROR_{name.upper()}_LOG"),
+                                     getattr(config, f"ERROR_{name.upper()}_LOG_USER"))
+            for name in DEFAULT_WORKER_ERRORS}
+        return dict(
+            api_url=config.API_URL, connector=connector,
+            base_dir=config.BASE_DIR, jobs_dir=config.JOBS_DIR, engines_dir=config.ENGINES_DIR,
+            cleanup_job_dir=config.CLEANUP_JOB_DIR, cleanup_old_engines=config.CLEANUP_OLD_ENGINES,
+            job_history_path=config.JOB_HISTORY_PATH, polling_interval=config.POLLING_INTERVAL,
+            prefer_image_url=config.PREFER_IMAGE_URL, prefer_alto_url=config.PREFER_ALTO_URL,
+            prefer_page_url=config.PREFER_PAGE_URL,
+            mail_sender=mail_sender, mail_receivers=config.MAIL_RECEIVER_MAILS,
+            identity=config.WORKER_IDENTITY, hostname=config.WORKER_HOSTNAME, mail_subject=config.MAIL_SUBJECT,
+            health_config=health_config, error_messages=error_messages,
+            disconnected_grace_seconds=config.DISCONNECTED_GRACE_SECONDS,
+            disconnected_mail_interval_seconds=config.DISCONNECTED_MAIL_INTERVAL_SECONDS,
+        )
+
+    @classmethod
+    def subclass_args(cls, config: Config) -> dict:
+        """The constructor arguments of a subclass, from the settings its config adds.
+
+        Each setting a subclass of Config adds goes to the constructor parameter of
+        the same name in lower case: MODEL_PATH to model_path. A setting without
+        such a parameter is an error, so none is silently left unused. The settings
+        of Config itself are for the wrapper alone, even when a parameter has the
+        name of one (mail_password).
+
+        A subclass that builds something from its settings before the worker exists,
+        e.g. loads a model, overrides this and returns all its arguments itself:
+        {"model": load_model(config.MODEL_PATH)}. The wrapper's arguments are built
+        as usual; returning one of them fails with "got multiple values", as the
+        wrapper's settings are overridden when the config is built.
+        """
+        named = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        wrapper = inspect.signature(DocWorkerWrapper.__init__).parameters
+        parameters = set()
+        for klass in cls.__mro__[:cls.__mro__.index(DocWorkerWrapper)]:
+            if "__init__" in vars(klass):
+                parameters |= {name for name, parameter in inspect.signature(klass.__init__).parameters.items()
+                               if parameter.kind in named and name not in wrapper}
+        own = [name for name in type(config).setting_names() if name not in Config.setting_names()]
+        unused = [name for name in own if name.lower() not in parameters]
+        if unused:
+            raise TypeError(f"{type(config).__name__} settings without a parameter of {cls.__name__}: "
+                            f"{', '.join(unused)}; add the parameters, or override subclass_args()")
+        return {name.lower(): getattr(config, name) for name in own}
 
     @abstractmethod
     def process_job(self,
@@ -920,9 +1021,12 @@ class DocWorkerWrapper(ABC):
         """
         logger.info(f"Worker started, polling for jobs every {self.polling_interval} seconds")
         try:
+            self._resolve_identity()
             if self.health is not None:
                 self.health.start()
             while True:
+                if self._identity_from_key:
+                    self._resolve_identity()
                 result = self.run_job_pipeline()
                 if self.health is not None:
                     self.health.pipeline_returned()
@@ -938,6 +1042,43 @@ class DocWorkerWrapper(ABC):
             if self.health is not None:
                 self.health.close()
 
+
+    def _set_user_agent(self) -> None:
+        """Send the identity as the User-Agent of the worker's requests."""
+        # A header value is a single line.
+        self._connector.set_user_agent(" ".join(self.identity.split()))
+
+    def _resolve_identity(self) -> None:
+        """Take the identity from the key's label on DocAPI, when none was given.
+
+        While DocAPI cannot answer, the class name stays and the next loop pass
+        tries again; an answer without a label keeps the class name for good.
+        """
+        if not self._identity_from_key:
+            return
+        try:
+            response = self.adapter.get_me()
+        except requests.RequestException as error:
+            if not self._identity_warned:
+                logger.warning(f"Could not read the API key's label from DocAPI ({type(error).__name__}); "
+                               f"the worker is {self.identity!r} until it can.")
+                self._identity_warned = True
+            return
+        if not response.is_success:
+            if not self._identity_warned:
+                logger.warning(f"Could not read the API key's label from DocAPI (HTTP {response.status}); "
+                               f"the worker is {self.identity!r} until it can.")
+                self._identity_warned = True
+            return
+        self._identity_from_key = False
+        data = response.data.get("data") if isinstance(response.data, dict) else None
+        label = data.get("label") if isinstance(data, dict) else None
+        if isinstance(label, str) and label.strip():
+            self.identity = label.strip()
+            self._set_user_agent()
+            logger.info(f"Worker identity from the API key's label: {self.identity!r}")
+        else:
+            logger.warning(f"DocAPI returned no label for the API key; the worker stays {self.identity!r}.")
 
     def get_job_data_path(self) -> Optional[str]:
         """
