@@ -79,6 +79,16 @@ def test_env_docker_example_holds_what_compose_reads_and_no_server_settings(monk
     assert not set(compose) & set(read_settings(monkeypatch))
 
 
+def test_app_base_url_is_joined_as_a_url(monkeypatch):
+    for name in ("APP_BASE_URL", "APP_HOST", "APP_PORT", "APP_URL_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+    assert Config().APP_BASE_URL == "http://0.0.0.0:9999"
+    monkeypatch.setenv("APP_URL_ROOT", "/subpath")
+    assert Config().APP_BASE_URL == "http://0.0.0.0:9999/subpath"
+    monkeypatch.setenv("APP_BASE_URL", "https://docapi.example.org/")
+    assert Config().APP_BASE_URL == "https://docapi.example.org"
+
+
 def test_config_imports_only_the_standard_library():
     tree = ast.parse(Path(config_module.__file__).read_text())
     modules = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)

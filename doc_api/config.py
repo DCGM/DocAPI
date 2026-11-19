@@ -137,7 +137,9 @@ class Config:
         self.PRODUCTION = self._env_bool("PRODUCTION", False)
         # URL prefix, e.g. /subpath; empty for the root URL.
         self.APP_URL_ROOT = os.getenv("APP_URL_ROOT", "")
-        self.APP_BASE_URL = os.getenv("APP_BASE_URL", os.path.join(f"http://{self.APP_HOST}:{self.APP_PORT}", self.APP_URL_ROOT))
+        # Joined as a URL, without a trailing slash; links append paths to it.
+        self.APP_BASE_URL = os.getenv(
+            "APP_BASE_URL", f"http://{self.APP_HOST}:{self.APP_PORT}{self.APP_URL_ROOT}").rstrip("/")
 
         # Admin email identity.
         self.ADMIN_SERVER_NAME = os.getenv("ADMIN_SERVER_NAME", "pc-doc-api-01")

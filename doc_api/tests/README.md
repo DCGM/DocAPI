@@ -1719,6 +1719,7 @@ Additional existing configuration checks:
 - [x] `.env_example` lists every setting `config.py` reads, in the same order and with the same default. [`test_config.py::test_env_example_lists_every_setting_in_order_with_its_default`](test_config.py).
 - [x] settings the Docker image sets are commented out in `.env_example`, so a deployment's `.env` does not override them. [`test_config.py::test_settings_the_image_sets_are_commented_out_in_env_example`](test_config.py).
 - [x] `.env_docker_example` holds exactly the variables Compose fills into `compose.yml`, and no server settings. [`test_config.py::test_env_docker_example_holds_what_compose_reads_and_no_server_settings`](test_config.py).
+- [x] without `APP_BASE_URL`, the base URL is joined from host, port and `APP_URL_ROOT` as a URL, never with a trailing slash. [`test_config.py::test_app_base_url_is_joined_as_a_url`](test_config.py).
 - [x] `config.py` imports only the standard library; the masker and mail senders are built in `api/services.py`. [`test_config.py::test_config_imports_only_the_standard_library`](test_config.py).
 - [x] [`test_job_mail.py::test_default_subjects`](test_job_mail.py).
 - [x] [`test_job_mail.py::test_job_mail_passes_smtp_security_and_username`](test_job_mail.py).
