@@ -44,6 +44,17 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
+def check_json_content_type(request: Request):
+    """FastAPI parses a body as JSON only when the request says so
+    (Content-Type application/json or +json); any other body would reach a
+    route taking any JSON value as text and be stored as a JSON string. Such a
+    request gets the usual 422 response, as invalid JSON does."""
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not (media_type.startswith("application/") and media_type.endswith("+json")):
+        raise RequestValidationError([{"type": "json_invalid", "loc": ("body",), "input": media_type or None,
+                                       "msg": "The body must be sent as JSON (Content-Type: application/json)"}])
+
+
 def check_image_extensions(job_definition: base_objects.JobDefinition) -> None:
     """Reject image names whose extension the server settings do not allow.
 
@@ -671,6 +682,7 @@ async def put_meta_json(
         key: model.Key = Depends(require_api_key(base_objects.KeyRole.USER)),
         db: AsyncSession = Depends(get_async_session)):
 
+    check_json_content_type(request)
     db_job, job_code = await general_cruds.get_job(db=db, job_id=job_id)
     db_job = require_job_record(db_job, job_code, request)
 

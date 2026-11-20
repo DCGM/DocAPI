@@ -1,5 +1,5 @@
 # doc_api/Dockerfile
-FROM python:3.10-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # this is for GitHub Actions to inject build metadata
 ARG VERSION

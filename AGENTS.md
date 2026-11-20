@@ -21,14 +21,18 @@ checks these rules or runs the tests except whoever makes the change.
 
 ## Tests
 
-Install the pinned server versions, then the package and its test tools:
+Use Python 3.12 or newer, as the package and the Docker image do. Install the
+pinned server versions, then the package and its test tools:
 
 ```sh
 python -m pip install -r doc_api/requirements.txt -e '.[server,dev]'
 ```
 
-`doc_api/requirements.txt` holds the versions the server runs. Without it, pip
-installs the newest FastAPI, and the OpenAPI tests fail (#97).
+`doc_api/requirements.txt` holds the exact versions the server runs.
+`pyproject.toml` allows the same FastAPI, Starlette, Pydantic, numpy and OpenCV
+versions up to their patch releases; change them in both files at once
+(`test_dependency_versions.py` checks this, and that the image runs the Python
+that `requires-python` names).
 
 Database tests need `TEST_DATABASE_URL`: a disposable PostgreSQL whose user may
 create databases. Each test makes and drops its own database. Without it, those
