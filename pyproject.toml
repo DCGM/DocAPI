@@ -13,18 +13,17 @@ authors = [
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.12"
-# Everything the shared layer imports: doc_api.connector, doc_api.adapter,
-# doc_api.api.schemas and doc_api.tools.mail_sender. Installing doc-api on its
-# own gives a usable worker or client without pulling in the service stack.
-# The packages the server shares with the worker and the client follow the
-# versions the server runs (doc_api/requirements.txt, which pins them exactly);
-# here any patch release of them is allowed. test_dependency_versions.py keeps
-# the two in step. OpenCV is the headless build: nothing here opens a window.
+# Everything the shared layer imports: doc_api.connector, doc_api.api.schemas
+# and doc_api.tools.mail_sender. Installing doc-api on its own does not pull in
+# the service stack.
+# No versions: the server's are pinned in doc_api/requirements.txt, which the
+# Docker image installs and this repository develops and tests with. Workers
+# and clients in other projects choose their own versions of these packages;
+# only the Python version is required (see AGENTS.md).
 dependencies = [
-    "fastapi~=0.165.0",
-    "numpy~=2.5.5",
-    "opencv-python-headless~=5.1.0.95",
-    "pydantic[email]~=2.14.4",
+    "fastapi",
+    "numpy",
+    "pydantic[email]",
     "Requests"
 ]
 
@@ -34,23 +33,29 @@ dependencies = [
 # runs on; neither is imported directly, and greenlet is otherwise only
 # installed on some architectures. python-multipart is likewise never imported
 # -- FastAPI needs it to parse uploads.
+# OpenCV is in the extras, not the base, because the server and the projects
+# using DocAPI want different builds of the same cv2 module: the server the
+# headless one, as its image does, workers and clients usually the full one.
 server = [
     "aiofiles",
     "alembic",
     "defusedxml",
     "natsort",
+    "opencv-python-headless",
     "python-multipart",
     "SQLAlchemy[postgresql_asyncpg]",
-    "starlette~=1.10.0",
+    "starlette",
     "uvicorn"
 ]
 
-# doc_worker needs nothing beyond the base. Declared so that consumers can
-# depend on doc-api[worker] and keep working if that stops being true.
-worker = []
+# doc_worker: OpenCV decodes downloaded images (doc_api.adapter).
+worker = [
+    "opencv-python"
+]
 
 client = [
-    "natsort"
+    "natsort",
+    "opencv-python"
 ]
 
 dev = [
@@ -62,8 +67,10 @@ dev = [
     "pytest_asyncio"
 ]
 
+# Everything for working on this repository, with the server's OpenCV build
+# only: the worker and client extras would add a second one.
 all = [
-    "doc-api[server,worker,client,dev]"
+    "doc-api[server,dev]"
 ]
 
 [project.urls]

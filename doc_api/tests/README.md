@@ -1716,7 +1716,7 @@ Automated monitoring and presentation checks:
 
 Additional existing configuration checks:
 
-- [x] `doc_api/requirements.txt` and `pyproject.toml` pin the same FastAPI, Starlette, Pydantic, numpy and OpenCV versions. [`test_dependency_versions.py::test_requirements_and_pyproject_pin_the_same_shared_packages`](test_dependency_versions.py).
+- [x] `pyproject.toml` names its dependencies without versions, which `doc_api/requirements.txt` pins for the server. [`test_dependency_versions.py::test_pyproject_pins_no_versions`](test_dependency_versions.py).
 - [x] the Docker image runs the Python version `requires-python` names. [`test_dependency_versions.py::test_docker_image_runs_the_required_python`](test_dependency_versions.py).
 - [x] `.env_example` followed by `.env_docs_example` lists every setting `config.py` reads, in the same order and with the same default. [`test_config.py::test_env_example_lists_every_setting_in_order_with_its_default`](test_config.py).
 - [x] settings the Docker image sets are commented out in the server's examples, so a deployment's `.env` does not override them. [`test_config.py::test_settings_the_image_sets_are_commented_out_in_env_example`](test_config.py).

@@ -1,31 +1,20 @@
-"""The server's pinned versions (doc_api/requirements.txt, used by the Docker
-image) and the package's (pyproject.toml) name the same versions of the
-packages they share, and the image runs the Python the package requires."""
+"""The server's versions are pinned in doc_api/requirements.txt, which the Docker
+image installs; the package (pyproject.toml) leaves the versions to the projects
+that use DocAPI and requires only the Python the image runs."""
 import re
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-SHARED = ("fastapi", "starlette", "pydantic", "numpy", "opencv-python-headless")
 
 
-def _versions(requirements, operator):
-    """{name: version} of the shared packages pinned with operator."""
-    found = {}
-    for requirement in requirements:
-        match = re.fullmatch(r"\s*([A-Za-z0-9_.-]+)(\[[^\]]*\])?\s*" + re.escape(operator) + r"\s*([^\s;,]+)\s*",
-                             requirement)
-        if match and match[1].lower() in SHARED:
-            found[match[1].lower()] = match[3]
-    return found
-
-
-def test_requirements_and_pyproject_pin_the_same_shared_packages():
-    server = _versions((ROOT / "doc_api" / "requirements.txt").read_text().splitlines(), "==")
+def test_pyproject_pins_no_versions():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    package = _versions(project["dependencies"] + project["optional-dependencies"]["server"], "~=")
-    assert set(server) == set(SHARED), "requirements.txt pins each exactly"
-    assert package == server
+    requirements = project["dependencies"] + [requirement
+                                              for extra in project["optional-dependencies"].values()
+                                              for requirement in extra]
+    pinned = [requirement for requirement in requirements if re.search(r"[<>=!~;@]", requirement)]
+    assert not pinned, "pyproject.toml names packages only; the server's versions go in doc_api/requirements.txt"
 
 
 def test_docker_image_runs_the_required_python():
