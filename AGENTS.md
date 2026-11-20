@@ -28,11 +28,8 @@ pinned server versions, then the package and its test tools:
 python -m pip install -r doc_api/requirements.txt -e '.[server,dev]'
 ```
 
-`doc_api/requirements.txt` holds the exact versions the server runs.
-`pyproject.toml` allows the same FastAPI, Starlette, Pydantic, numpy and OpenCV
-versions up to their patch releases; change them in both files at once
-(`test_dependency_versions.py` checks this, and that the image runs the Python
-that `requires-python` names).
+This repository develops and tests with the versions in
+`doc_api/requirements.txt`; see Dependencies below.
 
 Database tests need `TEST_DATABASE_URL`: a disposable PostgreSQL whose user may
 create databases. Each test makes and drops its own database. Without it, those
@@ -55,6 +52,29 @@ python -m pytest -n 8 doc_api/tests doc_worker/tests               # before a re
   setting in both at once. `doc_api/tests/test_config.py` checks the names,
   order and defaults.
 - Report test results as they are, including failures that `main` has as well.
+
+## Dependencies
+
+DocAPI is first of all the API, and its versions are set in two places with
+different jobs:
+
+- `doc_api/requirements.txt` pins every package the server runs, exactly. The
+  Docker image installs it, and this repository develops and tests with it.
+  Updating a dependency means changing it here and running the full suite.
+- `pyproject.toml` names the packages without versions. Other projects use
+  DocAPI's worker and client (`doc-api[worker]`, `doc-api[client]`), often as
+  a Git submodule, next to their own pinned libraries; choosing the versions
+  is up to them, and a version here could make their install unresolvable.
+  Only `requires-python` is set, to what the shared code needs and the image
+  runs.
+- OpenCV is a dependency of the extras, not of the base: the `server` extra
+  takes `opencv-python-headless`, as the image does, and the `worker` and
+  `client` extras take `opencv-python`. Both builds install the same `cv2`
+  module, so one environment must not get both; `all` therefore takes only the
+  server's.
+
+`test_dependency_versions.py` checks that `pyproject.toml` pins no versions
+and that the image runs the Python that `requires-python` names.
 
 ## No real side effects
 
