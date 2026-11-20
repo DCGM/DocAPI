@@ -12,15 +12,19 @@ authors = [
 ]
 license = {file = "LICENSE"}
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # Everything the shared layer imports: doc_api.connector, doc_api.adapter,
 # doc_api.api.schemas and doc_api.tools.mail_sender. Installing doc-api on its
 # own gives a usable worker or client without pulling in the service stack.
+# The packages the server shares with the worker and the client follow the
+# versions the server runs (doc_api/requirements.txt, which pins them exactly);
+# here any patch release of them is allowed. test_dependency_versions.py keeps
+# the two in step. OpenCV is the headless build: nothing here opens a window.
 dependencies = [
-    "fastapi",
-    "numpy",
-    "opencv_python",
-    "pydantic[email]",
+    "fastapi~=0.165.0",
+    "numpy~=2.5.5",
+    "opencv-python-headless~=5.1.0.95",
+    "pydantic[email]~=2.14.4",
     "Requests"
 ]
 
@@ -37,7 +41,7 @@ server = [
     "natsort",
     "python-multipart",
     "SQLAlchemy[postgresql_asyncpg]",
-    "starlette",
+    "starlette~=1.10.0",
     "uvicorn"
 ]
 

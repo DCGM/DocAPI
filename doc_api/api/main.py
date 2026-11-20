@@ -33,6 +33,7 @@ from doc_api.api.checkers.job_leases import run_job_lease_checks
 from doc_api.api.checkers.job_mail import run_job_mail_checks
 from doc_api.api import services
 from doc_api.api.routes import admin_router, debug_router, root_router, monitor_router, monitor_page_router
+from doc_api.api.routes.helpers import api_routes, app_routes
 from doc_api.api.schemas.responses import AppCode, validate_server_error_response, DocAPIResponseServerError, \
     DocAPIResponseClientError, DocAPIClientErrorException, validate_client_error_response, \
     DETAILS_GENERAL, make_responses
@@ -280,7 +281,7 @@ async def unhandled(request: Request, exc: Exception):
 
 
 def _route_order(r) -> tuple[int, str]:
-    if isinstance(r, APIRoute):
+    if isinstance(r.original_route, APIRoute):
         order = (r.openapi_extra or {}).get("x-order", 1000)
         return order, r.path
     # Non-API routes go to the end
@@ -292,7 +293,7 @@ def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
 
-    routes_sorted = sorted(app.routes, key=_route_order)
+    routes_sorted = sorted(app_routes(app), key=_route_order)
     schema = get_openapi(
         title=app.title,
         version=app.version,
@@ -426,8 +427,8 @@ def inject_docs(*, app, schema: dict, route_predicate, route_responses: dict):
 
     # Determine which (path, METHOD) operations are guarded
     guarded_ops = set()
-    for r in app.routes:
-        if isinstance(r, APIRoute) and r.include_in_schema and _route_uses_guard(r, route_predicate):
+    for r in api_routes(app):
+        if r.include_in_schema and _route_uses_guard(r, route_predicate):
             for m in (r.methods or []):
                 guarded_ops.add((r.path, m.upper()))
 
@@ -584,8 +585,8 @@ def inject_validation_422_docs(*, schema: dict, validation_response: dict):
 def inject_roles_docs(*, app, schema: dict, ext_key: str = "x-roles-allowed"):
     """Attach machine-readable roles and append a human-readable line to descriptions."""
     route_roles = {}
-    for r in app.routes:
-        if isinstance(r, APIRoute) and r.include_in_schema:
+    for r in api_routes(app):
+        if r.include_in_schema:
             roles = _collect_roles_from_route(r)
             if roles:
                 for m in (r.methods or []):

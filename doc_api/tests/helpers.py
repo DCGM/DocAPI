@@ -354,8 +354,6 @@ async def assert_records_unchanged(sessions, records):
 
 async def interrupt_download(app, url, headers, path, monkeypatch, failure):
     """Observe ASGI framing: buffered HTTPX cannot detect an incomplete 200 body."""
-    from contextlib import asynccontextmanager
-    from types import SimpleNamespace
     import anyio
     import pytest
 
@@ -368,18 +366,27 @@ async def interrupt_download(app, url, headers, path, monkeypatch, failure):
         if Path(filename) != path or failure != "read":
             return opened
 
-        @asynccontextmanager
-        async def interrupted_reader():
+        class InterruptedFile:
+            """The opened file, failing on its second read. Starlette closes
+            it with aclose(); it also works as an async context manager."""
             reads = 0
-            async def read(size):
-                nonlocal reads
-                if reads:
+
+            async def read(self, size=-1):
+                if self.reads:
                     raise OSError("injected transfer failure")
-                reads += 1
+                self.reads += 1
                 return await opened.read(size)
-            async with opened:
-                yield SimpleNamespace(read=read)
-        return interrupted_reader()
+
+            async def aclose(self):
+                await opened.aclose()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                await self.aclose()
+
+        return InterruptedFile()
 
     messages = []
     async def receive():
@@ -512,3 +519,14 @@ async def notification_rows(db_sessions, job_id):
     async with db_sessions() as db:
         return list(await db.scalars(select(model.JobNotification).where(
             model.JobNotification.job_id == job_id).order_by(model.JobNotification.channel, model.JobNotification.id)))
+
+
+def set_route_visibility(monkeypatch, app, method: str, path: str, visible: bool):
+    """Show or hide one operation in the OpenAPI document for this test. The
+    server fixes include_in_schema when it defines its routes; FastAPI copies it
+    into the effective route of an included router, so both are set."""
+    from doc_api.api.routes.helpers import app_routes
+    route = next(route for route in app_routes(app) if route.path == path and method.upper() in (route.methods or ()))
+    monkeypatch.setattr(route.original_route, "include_in_schema", visible)
+    if route.original_route is not route._effective_route:
+        monkeypatch.setattr(route._effective_route, "include_in_schema", visible)

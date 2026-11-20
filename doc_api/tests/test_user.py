@@ -1,6 +1,6 @@
 from doc_api.api.cruds import general_cruds
 from doc_api.api.checkers.job_mail import check_job_notifications
-from doc_api.tests.helpers import assert_route_invariant, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
+from doc_api.tests.helpers import assert_route_invariant, set_route_visibility, delete_job_after_exists, delete_before_file_install, delete_job_before_crud
 import asyncio
 import io
 import builtins
@@ -4077,9 +4077,7 @@ async def test_get_openapi_200_endpoint_visibility(client, user_headers, readonl
                                                    flag, method, path, job_with_deletion_timestamps):
     # Startup configuration binding is tested independently in a fresh process.
     for other_flag, other_method, other_path in OPENAPI_VISIBILITY_ROUTES:
-        route = next(route for route in main.app.routes
-                     if getattr(route, "path", None) == other_path and other_method.upper() in route.methods)
-        monkeypatch.setattr(route, "include_in_schema", visible if other_flag == flag else True)
+        set_route_visibility(monkeypatch, main.app, other_method, other_path, visible if other_flag == flag else True)
     monkeypatch.setattr(config, "SHOW_SECTIONS", {"User", "Worker", "Admin"})
     monkeypatch.setattr(main.app, "openapi_schema", None)
     schema = await client.get("/openapi.json")
@@ -4133,9 +4131,7 @@ async def test_get_openapi_200_sections(client, user_headers, worker_headers, ad
     hidden = set()
     for index, (flag, method, path) in enumerate(OPENAPI_VISIBILITY_ROUTES):
         visible = visibility == "all" or (visibility == "mixed" and index % 2 == 0)
-        route = next(route for route in main.app.routes
-                     if getattr(route, "path", None) == path and method.upper() in route.methods)
-        monkeypatch.setattr(route, "include_in_schema", visible)
+        set_route_visibility(monkeypatch, main.app, method, path, visible)
         if not visible:
             hidden.add((method, path))
     monkeypatch.setattr(config, "SHOW_SECTIONS", sections)
@@ -4190,6 +4186,7 @@ def test_openapi_visibility_flags_from_environment(tmp_path, disabled):
     script = """
 import sys
 from doc_api.api.main import app
+from doc_api.api.routes.helpers import app_routes
 from doc_api.config import config
 from doc_api.tests.helpers import OPENAPI_SECTION_OPERATIONS, OPENAPI_VISIBILITY_ROUTES
 disabled = sys.argv[1]
@@ -4198,7 +4195,7 @@ assert config.SHOW_SECTIONS - {""} == sections
 hidden = set()
 for flag, method, path in OPENAPI_VISIBILITY_ROUTES:
     expected = disabled not in {"all", flag}
-    route = next(route for route in app.routes if getattr(route, "path", None) == path and method.upper() in route.methods)
+    route = next(route for route in app_routes(app) if route.path == path and method.upper() in (route.methods or ()))
     assert getattr(config, flag) == expected, flag
     assert route.include_in_schema == expected, flag
     if not expected:

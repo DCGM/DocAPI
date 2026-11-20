@@ -26,7 +26,7 @@ def normalize_utc_datetime(value: datetime) -> datetime:
 UTCDateTime = Annotated[datetime, AfterValidator(normalize_utc_datetime)]
 
 
-class ProcessingState(str, enum.Enum):
+class ProcessingState(enum.StrEnum):
     NEW = 'new'
     QUEUED = 'queued'
     PROCESSING = 'processing'
@@ -36,7 +36,7 @@ class ProcessingState(str, enum.Enum):
     FAILED = 'failed'
 
 
-class KeyRole(str, enum.Enum):
+class KeyRole(enum.StrEnum):
     READONLY = 'readonly'
     USER = 'user'
     WORKER = 'worker'

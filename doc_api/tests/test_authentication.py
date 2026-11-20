@@ -3,6 +3,7 @@ from starlette.routing import Route
 from sqlalchemy import update
 
 from doc_api.api.main import app
+from doc_api.api.routes.helpers import app_routes
 from doc_api.db import model
 from doc_api.tests.helpers import ROUTE_CASES, route_url
 
@@ -197,7 +198,7 @@ async def test_get_me_401_header_takes_precedence(client, user_headers):
 
 
 def test_registered_routes_have_test_cases():
-    registered = {(method, route.path) for route in app.routes if isinstance(route, Route)
+    registered = {(method, route.path) for route in app_routes(app) if isinstance(route.original_route, Route)
                   for method in route.methods}
     expected = {(method, path) for method, path, _, _ in ROUTE_CASES} | {("GET", path) for path in ("/", "/monitor", "/monitor/monitor.css", "/monitor/monitor.js")}
     expected |= {(method, path) for method in ("GET", "HEAD")
